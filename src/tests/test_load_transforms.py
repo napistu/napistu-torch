@@ -1,11 +1,12 @@
-import pytest
 import pandas as pd
-from sklearn.preprocessing import OneHotEncoder, StandardScaler, LabelEncoder
+import pytest
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 
 # Import functions from the main module
-from napistu_torch.load.transforms import validate_config, compose_configs
-
-from napistu_torch.load.constants import TRANSFORMATION, TRANSFORM_TABLE
+from napistu_torch.load import transforms
+from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
+from napistu_torch.load.transforms import validate_config
 
 
 class MockEmbedder:
@@ -68,6 +69,20 @@ def override_config():
     }
 
 
+@pytest.fixture
+def sample_data():
+    """Sample data for testing transformations."""
+    return pd.DataFrame(
+        {
+            "node_type": ["protein", "reaction", "protein", "reaction"],
+            "species_type": ["human", "mouse", "human", "mouse"],
+            "weight": [1.0, 2.0, 3.0, 4.0],
+            "score": [0.1, 0.2, 0.3, 0.4],
+            "source_col": ["src1", "src2", "src3", "src4"],
+        }
+    )
+
+
 def test_validate_config_valid(valid_config):
     """Test validation of a valid configuration."""
     table = validate_config(valid_config)
@@ -101,7 +116,7 @@ def test_validate_config_invalid(invalid_config):
 
 def test_compose_configs_merge_strategy(valid_config, override_config):
     """Test config composition with merge strategy."""
-    composed = compose_configs(valid_config, override_config)
+    composed = transforms.compose_configs(valid_config, override_config)
 
     # Check that composition succeeded
     assert isinstance(composed, dict)
@@ -127,7 +142,7 @@ def test_compose_configs_verbose_logging(valid_config, override_config, caplog):
     import logging
 
     with caplog.at_level(logging.INFO):
-        compose_configs(valid_config, override_config, verbose=True)
+        transforms.compose_configs(valid_config, override_config, verbose=True)
 
     # Check that conflict logging occurred
     assert "Cross-config conflicts detected" in caplog.text
@@ -156,7 +171,7 @@ def test_compose_configs_no_conflicts():
         }
     }
 
-    composed = compose_configs(base, override)
+    composed = transforms.compose_configs(base, override)
 
     # Should have both transforms with no changes
     assert set(composed.keys()) == {"categorical", "numerical"}
@@ -213,3 +228,64 @@ def test_passthrough_transformer(valid_config):
     table = validate_config(passthrough_config)
     assert len(table) == 1
     assert table.iloc[0][TRANSFORM_TABLE.TRANSFORMER_TYPE] == TRANSFORMATION.PASSTHROUGH
+
+
+def test_config_to_column_transformer(valid_config):
+    """Test conversion of config to ColumnTransformer."""
+    preprocessor = transforms.config_to_column_transformer(valid_config)
+
+    # Check it's a ColumnTransformer
+    assert isinstance(preprocessor, ColumnTransformer)
+
+    # Check transformers were added correctly
+    assert len(preprocessor.transformers) == 2
+
+    # Check transformer names and types
+    transformer_names = [name for name, _, _ in preprocessor.transformers]
+    assert set(transformer_names) == {"categorical", "numerical"}
+
+
+def test_config_to_column_transformer_invalid_config():
+    """Test that invalid config raises error in ColumnTransformer creation."""
+    invalid_config = {
+        "bad": {"columns": ["a", "b"], "transformer": OneHotEncoder()},
+        "worse": {
+            "columns": ["b", "c"],  # 'b' conflicts
+            "transformer": StandardScaler(),
+        },
+    }
+
+    with pytest.raises(ValueError, match="Column conflicts"):
+        transforms.config_to_column_transformer(invalid_config)
+
+
+def test_get_feature_names_unfitted():
+    """Test that get_feature_names raises error for unfitted preprocessor."""
+    config = {"cat": {"columns": ["node_type"], "transformer": OneHotEncoder()}}
+
+    preprocessor = transforms.config_to_column_transformer(config)
+
+    with pytest.raises(ValueError, match="ColumnTransformer must be fitted first"):
+        transforms.get_feature_names(preprocessor)
+
+
+def test_get_feature_names_fitted(valid_config, sample_data):
+    """Test get_feature_names with fitted ColumnTransformer."""
+    preprocessor = transforms.config_to_column_transformer(valid_config)
+
+    # Fit the preprocessor
+    preprocessor.fit(sample_data)
+
+    # Get feature names
+    feature_names = transforms.get_feature_names(preprocessor)
+
+    # Check we get a list of strings
+    assert isinstance(feature_names, list)
+    assert all(isinstance(name, str) for name in feature_names)
+
+    # Should have features for both categorical and numerical transforms
+    cat_features = [name for name in feature_names if name.startswith("categorical__")]
+    num_features = [name for name in feature_names if name.startswith("numerical__")]
+
+    assert len(cat_features) > 0  # OneHotEncoder creates multiple features
+    assert len(num_features) == 2  # StandardScaler preserves column count

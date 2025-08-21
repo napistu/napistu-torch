@@ -1,8 +1,10 @@
-from pydantic import BaseModel, Field, field_validator, model_validator, RootModel
-import pandas as pd
-from typing import Dict, List, Any
-from collections import defaultdict
 import logging
+from collections import defaultdict
+from typing import Any, Dict, List
+
+import pandas as pd
+from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
+from sklearn.compose import ColumnTransformer
 
 
 class TransformConfig(BaseModel):
@@ -73,32 +75,6 @@ class EncodingConfig(RootModel[Dict[str, TransformConfig]]):
         return self
 
 
-def validate_config(config_dict: Dict[str, Dict]) -> pd.DataFrame:
-    """Validate a config dict and return transform table.
-
-    Parameters
-    ----------
-    config_dict : Dict[str, Dict]
-        Raw configuration dictionary with transform definitions.
-
-    Returns
-    -------
-    pd.DataFrame
-        Transform table showing transform_name, column, transformer_type relationships.
-
-    Raises
-    ------
-    ValueError
-        If config structure is invalid or column conflicts exist.
-    """
-    try:
-        validated_config = EncodingConfig(config_dict)
-    except ValueError as e:
-        raise ValueError(f"Config validation failed: {e}")
-
-    return _create_transform_table(validated_config.root)
-
-
 def compose_configs(
     base_config: Dict[str, Dict],
     override_config: Dict[str, Dict],
@@ -165,6 +141,113 @@ def compose_configs(
     validate_config(composed_dict)
 
     return composed_dict
+
+
+def config_to_column_transformer(config_dict: Dict[str, Dict]) -> ColumnTransformer:
+    """Convert validated config dict to sklearn ColumnTransformer.
+
+    Parameters
+    ----------
+    config_dict : Dict[str, Dict]
+        Configuration dictionary (will be validated first).
+
+    Returns
+    -------
+    ColumnTransformer
+        sklearn ColumnTransformer ready for fit/transform.
+
+    Raises
+    ------
+    ValueError
+        If config is invalid.
+
+    Examples
+    --------
+    >>> config = {
+    ...     'categorical': {
+    ...         'columns': ['node_type', 'species_type'],
+    ...         'transformer': OneHotEncoder(handle_unknown='ignore')
+    ...     },
+    ...     'numerical': {
+    ...         'columns': ['weight', 'score'],
+    ...         'transformer': StandardScaler()
+    ...     }
+    ... }
+    >>> preprocessor = config_to_column_transformer(config)
+    >>> # Equivalent to:
+    >>> # ColumnTransformer([
+    >>> #     ('categorical', OneHotEncoder(handle_unknown='ignore'), ['node_type', 'species_type']),
+    >>> #     ('numerical', StandardScaler(), ['weight', 'score'])
+    >>> # ])
+    """
+    # Validate config first
+    validate_config(config_dict)
+
+    # Build transformers list for ColumnTransformer
+    transformers = []
+    for transform_name, transform_config in config_dict.items():
+        transformer = transform_config["transformer"]
+        columns = transform_config["columns"]
+
+        transformers.append((transform_name, transformer, columns))
+
+    return ColumnTransformer(transformers, remainder="drop")
+
+
+def get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
+    """Get feature names from fitted ColumnTransformer using sklearn's standard method.
+
+    Parameters
+    ----------
+    preprocessor : ColumnTransformer
+        Fitted ColumnTransformer instance.
+
+    Returns
+    -------
+    List[str]
+        List of feature names in the same order as transform output columns.
+
+    Examples
+    --------
+    >>> preprocessor = config_to_column_transformer(config)
+    >>> preprocessor.fit(data)  # Must fit first!
+    >>> feature_names = get_feature_names(preprocessor)
+    >>> # ['cat__node_type_A', 'cat__node_type_B', 'num__weight']
+    """
+    if not hasattr(preprocessor, "transformers_"):
+        raise ValueError("ColumnTransformer must be fitted first")
+
+    # Use sklearn's built-in method (available since sklearn 1.0+)
+    return preprocessor.get_feature_names_out().tolist()
+
+
+def validate_config(config_dict: Dict[str, Dict]) -> pd.DataFrame:
+    """Validate a config dict and return transform table.
+
+    Parameters
+    ----------
+    config_dict : Dict[str, Dict]
+        Raw configuration dictionary with transform definitions.
+
+    Returns
+    -------
+    pd.DataFrame
+        Transform table showing transform_name, column, transformer_type relationships.
+
+    Raises
+    ------
+    ValueError
+        If config structure is invalid or column conflicts exist.
+    """
+    try:
+        validated_config = EncodingConfig(config_dict)
+    except ValueError as e:
+        raise ValueError(f"Config validation failed: {e}")
+
+    return _create_transform_table(validated_config.root)
+
+
+# utils
 
 
 def _create_transform_table(config: Dict[str, TransformConfig]) -> pd.DataFrame:
