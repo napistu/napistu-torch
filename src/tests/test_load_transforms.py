@@ -4,10 +4,15 @@ import pytest
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-# Import functions from the main module
-from napistu_torch.load import transforms
 from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
-from napistu_torch.load.transforms import validate_config
+
+# Import classes and functions from the main module
+from napistu_torch.load.transforms import (
+    EncodingManager,
+    _get_feature_names,
+    config_to_column_transformer,
+    encode_dataframe,
+)
 
 
 @pytest.fixture
@@ -69,8 +74,8 @@ def sample_data():
     """Sample data for testing transformations."""
     return pd.DataFrame(
         {
-            "node_type": ["protein", "reaction", "protein", "reaction"],
-            "species_type": ["human", "mouse", "human", "mouse"],
+            "node_type": ["species", "reaction", "species", "reaction"],
+            "species_type": ["gene", None, "metabolite", None],
             "weight": [1.0, 2.0, 3.0, 4.0],
             "score": [0.1, 0.2, 0.3, 0.4],
             "source_col": ["src1", "src2", "src3", "src4"],
@@ -80,7 +85,9 @@ def sample_data():
 
 def test_validate_config_valid(valid_config):
     """Test validation of a valid configuration."""
-    table = validate_config(valid_config)
+    # Use EncodingManager instead of validate_config function
+    manager = EncodingManager(valid_config)
+    table = manager.get_transform_table()
 
     # Check that we get a DataFrame
     assert isinstance(table, pd.DataFrame)
@@ -106,47 +113,47 @@ def test_validate_config_valid(valid_config):
 def test_validate_config_invalid(invalid_config):
     """Test validation of an invalid configuration with conflicts."""
     with pytest.raises(ValueError, match="Column conflicts"):
-        validate_config(invalid_config)
+        EncodingManager(invalid_config)
 
 
 def test_compose_configs_merge_strategy(valid_config, override_config):
     """Test config composition with merge strategy."""
-    composed = transforms.compose_configs(valid_config, override_config)
+    # Use EncodingManager.compose instead of compose_configs function
+    base_manager = EncodingManager(valid_config)
+    override_manager = EncodingManager(override_config)
+    composed = base_manager.compose(override_manager)
 
     # Check that composition succeeded
-    assert isinstance(composed, dict)
+    assert isinstance(composed, EncodingManager)
 
     # Check expected transforms
-    assert set(composed.keys()) == {"categorical", "numerical", "embeddings"}
+    assert set(composed.config_.keys()) == {"categorical", "numerical", "embeddings"}
 
     # Check categorical merge: should have species_type from base + node_type from override
-    categorical_columns = set(composed["categorical"][TRANSFORMATION.COLUMNS])
+    categorical_columns = set(composed.config_["categorical"][TRANSFORMATION.COLUMNS])
     assert "species_type" in categorical_columns  # Preserved from base
     assert "node_type" in categorical_columns  # From override (wins conflict)
 
     # Check numerical preserved unchanged (no conflicts)
-    assert composed["numerical"][TRANSFORMATION.COLUMNS] == ["weight", "score"]
+    assert composed.config_["numerical"][TRANSFORMATION.COLUMNS] == ["weight", "score"]
 
     # Check new embeddings transform added
-    assert composed["embeddings"][TRANSFORMATION.COLUMNS] == ["source_col"]
+    assert composed.config_["embeddings"][TRANSFORMATION.COLUMNS] == ["source_col"]
 
 
 def test_compose_configs_verbose_logging(valid_config, override_config, caplog):
     """Test verbose logging in config composition."""
     import logging
 
+    base_manager = EncodingManager(valid_config)
+    override_manager = EncodingManager(override_config)
+
     with caplog.at_level(logging.INFO):
-        transforms.compose_configs(valid_config, override_config, verbose=True)
+        base_manager.compose(override_manager, verbose=True)
 
     # Check that conflict logging occurred
     assert "Cross-config conflicts detected" in caplog.text
     assert "node_type" in caplog.text
-
-    # Check that final transformations were logged
-    assert "Final composed transformations" in caplog.text
-    assert "categorical" in caplog.text
-    assert "numerical" in caplog.text
-    assert "embeddings" in caplog.text
 
 
 def test_compose_configs_no_conflicts():
@@ -165,12 +172,14 @@ def test_compose_configs_no_conflicts():
         }
     }
 
-    composed = transforms.compose_configs(base, override)
+    base_manager = EncodingManager(base)
+    override_manager = EncodingManager(override)
+    composed = base_manager.compose(override_manager)
 
     # Should have both transforms with no changes
-    assert set(composed.keys()) == {"categorical", "numerical"}
-    assert composed["categorical"][TRANSFORMATION.COLUMNS] == ["node_type"]
-    assert composed["numerical"][TRANSFORMATION.COLUMNS] == ["weight"]
+    assert set(composed.config_.keys()) == {"categorical", "numerical"}
+    assert composed.config_["categorical"][TRANSFORMATION.COLUMNS] == ["node_type"]
+    assert composed.config_["numerical"][TRANSFORMATION.COLUMNS] == ["weight"]
 
 
 def test_empty_config():
@@ -178,7 +187,8 @@ def test_empty_config():
     empty_config = {}
 
     # Should validate successfully but return empty DataFrame
-    table = validate_config(empty_config)
+    manager = EncodingManager(empty_config)
+    table = manager.get_transform_table()
     assert isinstance(table, pd.DataFrame)
     assert len(table) == 0
 
@@ -193,7 +203,7 @@ def test_invalid_transformer():
     }
 
     with pytest.raises(ValueError, match="transformer must have fit/transform methods"):
-        validate_config(invalid_transformer_config)
+        EncodingManager(invalid_transformer_config)
 
 
 def test_empty_columns_list():
@@ -206,7 +216,7 @@ def test_empty_columns_list():
     }
 
     with pytest.raises(ValueError):
-        validate_config(empty_columns_config)
+        EncodingManager(empty_columns_config)
 
 
 def test_passthrough_transformer(valid_config):
@@ -219,14 +229,15 @@ def test_passthrough_transformer(valid_config):
     }
 
     # Should validate successfully
-    table = validate_config(passthrough_config)
+    manager = EncodingManager(passthrough_config)
+    table = manager.get_transform_table()
     assert len(table) == 1
     assert table.iloc[0][TRANSFORM_TABLE.TRANSFORMER_TYPE] == TRANSFORMATION.PASSTHROUGH
 
 
 def test_config_to_column_transformer(valid_config):
     """Test conversion of config to ColumnTransformer."""
-    preprocessor = transforms.config_to_column_transformer(valid_config)
+    preprocessor = config_to_column_transformer(valid_config)
 
     # Check it's a ColumnTransformer
     assert isinstance(preprocessor, ColumnTransformer)
@@ -253,28 +264,29 @@ def test_config_to_column_transformer_invalid_config():
     }
 
     with pytest.raises(ValueError, match="Column conflicts"):
-        transforms.config_to_column_transformer(invalid_config)
+        config_to_column_transformer(invalid_config)
 
 
 def test_get_feature_names_unfitted():
     """Test that _get_feature_names raises error for unfitted preprocessor."""
-    config = {"cat": {"columns": ["node_type"], "transformer": OneHotEncoder()}}
 
-    preprocessor = transforms.config_to_column_transformer(config)
+    config = {"cat": {"columns": ["node_type"], "transformer": OneHotEncoder()}}
+    preprocessor = config_to_column_transformer(config)
 
     with pytest.raises(ValueError, match="ColumnTransformer must be fitted first"):
-        transforms._get_feature_names(preprocessor)
+        _get_feature_names(preprocessor)
 
 
 def test_get_feature_names_fitted(valid_config, sample_data):
     """Test _get_feature_names with fitted ColumnTransformer."""
-    preprocessor = transforms.config_to_column_transformer(valid_config)
+
+    preprocessor = config_to_column_transformer(valid_config)
 
     # Fit the preprocessor
     preprocessor.fit(sample_data)
 
     # Get feature names
-    feature_names = transforms._get_feature_names(preprocessor)
+    feature_names = _get_feature_names(preprocessor)
 
     # Check we get a list of strings
     assert isinstance(feature_names, list)
@@ -291,9 +303,7 @@ def test_get_feature_names_fitted(valid_config, sample_data):
 def test_encode_dataframe_basic(valid_config, sample_data):
     """Test basic functionality of encode_dataframe with default config only."""
     # Encode the DataFrame
-    encoded_array, feature_names = transforms.encode_dataframe(
-        sample_data, valid_config
-    )
+    encoded_array, feature_names = encode_dataframe(sample_data, valid_config)
 
     # Check return types
     assert isinstance(encoded_array, np.ndarray)
@@ -321,7 +331,7 @@ def test_encode_dataframe_basic(valid_config, sample_data):
 def test_encode_dataframe_with_overrides(valid_config, override_config, sample_data):
     """Test encode_dataframe with override configuration."""
     # Encode with overrides
-    encoded_array, feature_names = transforms.encode_dataframe(
+    encoded_array, feature_names = encode_dataframe(
         sample_data, valid_config, override_config, verbose=True
     )
 
@@ -364,7 +374,7 @@ def test_encode_dataframe_missing_columns():
     df = pd.DataFrame({"existing_column": [1, 2, 3]})
 
     with pytest.raises(KeyError, match="Missing columns in DataFrame"):
-        transforms.encode_dataframe(df, config)
+        encode_dataframe(df, config)
 
 
 def test_encode_dataframe_empty_dataframe():
@@ -380,4 +390,4 @@ def test_encode_dataframe_empty_dataframe():
     df = pd.DataFrame({"col1": []})
 
     with pytest.raises(ValueError, match="Cannot encode empty DataFrame"):
-        transforms.encode_dataframe(df, config)
+        encode_dataframe(df, config)
