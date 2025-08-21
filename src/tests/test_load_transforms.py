@@ -1,22 +1,13 @@
+import numpy as np
 import pandas as pd
 import pytest
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 # Import functions from the main module
 from napistu_torch.load import transforms
 from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
 from napistu_torch.load.transforms import validate_config
-
-
-class MockEmbedder:
-    """Mock transformer class for testing."""
-
-    def fit(self, X, y=None):
-        return self
-
-    def transform(self, X):
-        return X
 
 
 @pytest.fixture
@@ -58,13 +49,17 @@ def override_config():
         "categorical": {
             TRANSFORMATION.COLUMNS: [
                 "node_type",
-                "new_col",
+                "species_type",  # Use existing column instead of "new_col"
             ],  # node_type conflicts with base
-            TRANSFORMATION.TRANSFORMER: LabelEncoder(),  # Different transformer than base
+            TRANSFORMATION.TRANSFORMER: OneHotEncoder(
+                sparse_output=False
+            ),  # Different transformer than base
         },
         "embeddings": {
             TRANSFORMATION.COLUMNS: ["source_col"],
-            TRANSFORMATION.TRANSFORMER: MockEmbedder(),  # Use actual transformer object
+            TRANSFORMATION.TRANSFORMER: OneHotEncoder(
+                sparse_output=False
+            ),  # Use real transformer
         },
     }
 
@@ -124,11 +119,10 @@ def test_compose_configs_merge_strategy(valid_config, override_config):
     # Check expected transforms
     assert set(composed.keys()) == {"categorical", "numerical", "embeddings"}
 
-    # Check categorical merge: should have species_type from base + node_type,new_col from override
+    # Check categorical merge: should have species_type from base + node_type from override
     categorical_columns = set(composed["categorical"][TRANSFORMATION.COLUMNS])
     assert "species_type" in categorical_columns  # Preserved from base
     assert "node_type" in categorical_columns  # From override (wins conflict)
-    assert "new_col" in categorical_columns  # From override
 
     # Check numerical preserved unchanged (no conflicts)
     assert composed["numerical"][TRANSFORMATION.COLUMNS] == ["weight", "score"]
@@ -248,10 +242,13 @@ def test_config_to_column_transformer(valid_config):
 def test_config_to_column_transformer_invalid_config():
     """Test that invalid config raises error in ColumnTransformer creation."""
     invalid_config = {
-        "bad": {"columns": ["a", "b"], "transformer": OneHotEncoder()},
+        "bad": {
+            TRANSFORMATION.COLUMNS: ["a", "b"],
+            TRANSFORMATION.TRANSFORMER: OneHotEncoder(),
+        },
         "worse": {
-            "columns": ["b", "c"],  # 'b' conflicts
-            "transformer": StandardScaler(),
+            TRANSFORMATION.COLUMNS: ["b", "c"],  # 'b' conflicts
+            TRANSFORMATION.TRANSFORMER: StandardScaler(),
         },
     }
 
@@ -260,24 +257,24 @@ def test_config_to_column_transformer_invalid_config():
 
 
 def test_get_feature_names_unfitted():
-    """Test that get_feature_names raises error for unfitted preprocessor."""
+    """Test that _get_feature_names raises error for unfitted preprocessor."""
     config = {"cat": {"columns": ["node_type"], "transformer": OneHotEncoder()}}
 
     preprocessor = transforms.config_to_column_transformer(config)
 
     with pytest.raises(ValueError, match="ColumnTransformer must be fitted first"):
-        transforms.get_feature_names(preprocessor)
+        transforms._get_feature_names(preprocessor)
 
 
 def test_get_feature_names_fitted(valid_config, sample_data):
-    """Test get_feature_names with fitted ColumnTransformer."""
+    """Test _get_feature_names with fitted ColumnTransformer."""
     preprocessor = transforms.config_to_column_transformer(valid_config)
 
     # Fit the preprocessor
     preprocessor.fit(sample_data)
 
     # Get feature names
-    feature_names = transforms.get_feature_names(preprocessor)
+    feature_names = transforms._get_feature_names(preprocessor)
 
     # Check we get a list of strings
     assert isinstance(feature_names, list)
@@ -289,3 +286,98 @@ def test_get_feature_names_fitted(valid_config, sample_data):
 
     assert len(cat_features) > 0  # OneHotEncoder creates multiple features
     assert len(num_features) == 2  # StandardScaler preserves column count
+
+
+def test_encode_dataframe_basic(valid_config, sample_data):
+    """Test basic functionality of encode_dataframe with default config only."""
+    # Encode the DataFrame
+    encoded_array, feature_names = transforms.encode_dataframe(
+        sample_data, valid_config
+    )
+
+    # Check return types
+    assert isinstance(encoded_array, np.ndarray)
+    assert isinstance(feature_names, list)
+
+    # Check array properties
+    assert encoded_array.shape[0] == sample_data.shape[0]  # Same number of rows
+    assert encoded_array.shape[1] == len(feature_names)  # Columns match feature names
+
+    # Check feature names format (should follow sklearn convention)
+    assert all(
+        "__" in name for name in feature_names
+    ), f"Feature names should contain '__': {feature_names}"
+
+    # Check we have both categorical and numerical features
+    cat_features = [name for name in feature_names if name.startswith("categorical__")]
+    num_features = [name for name in feature_names if name.startswith("numerical__")]
+
+    assert len(cat_features) > 0, f"Expected categorical features, got: {cat_features}"
+    assert (
+        len(num_features) == 2
+    ), f"Expected 2 numerical features, got {len(num_features)}: {num_features}"
+
+
+def test_encode_dataframe_with_overrides(valid_config, override_config, sample_data):
+    """Test encode_dataframe with override configuration."""
+    # Encode with overrides
+    encoded_array, feature_names = transforms.encode_dataframe(
+        sample_data, valid_config, override_config, verbose=True
+    )
+
+    # Check return types
+    assert isinstance(encoded_array, np.ndarray)
+    assert isinstance(feature_names, list)
+
+    # Check array properties
+    assert encoded_array.shape[0] == sample_data.shape[0]  # Same number of rows
+    assert encoded_array.shape[1] == len(feature_names)  # Columns match feature names
+
+    # Check feature names format
+    assert all(
+        "__" in name for name in feature_names
+    ), f"Feature names should contain '__': {feature_names}"
+
+    # Should have features from all three transforms: categorical, numerical, embeddings
+    cat_features = [name for name in feature_names if name.startswith("categorical__")]
+    num_features = [name for name in feature_names if name.startswith("numerical__")]
+    emb_features = [name for name in feature_names if name.startswith("embeddings__")]
+
+    assert len(cat_features) > 0, f"Expected categorical features, got: {cat_features}"
+    assert (
+        len(num_features) == 2
+    ), f"Expected 2 numerical features, got {len(num_features)}: {num_features}"
+    assert (
+        len(emb_features) > 0
+    ), f"Expected embedding features, got: {emb_features}"  # OneHotEncoder creates multiple features
+
+
+def test_encode_dataframe_missing_columns():
+    """Test that encode_dataframe raises error for missing columns."""
+    config = {
+        "categorical": {
+            TRANSFORMATION.COLUMNS: ["missing_column"],
+            TRANSFORMATION.TRANSFORMER: OneHotEncoder(sparse_output=False),
+        }
+    }
+
+    df = pd.DataFrame({"existing_column": [1, 2, 3]})
+
+    with pytest.raises(KeyError, match="Missing columns in DataFrame"):
+        transforms.encode_dataframe(df, config)
+
+
+def test_encode_dataframe_empty_dataframe():
+    """Test that encode_dataframe raises error for empty DataFrame."""
+    config = {
+        "categorical": {
+            TRANSFORMATION.COLUMNS: ["col1"],
+            TRANSFORMATION.TRANSFORMER: OneHotEncoder(sparse_output=False),
+        }
+    }
+
+    # Empty DataFrame with required column
+    df = pd.DataFrame({"col1": []})
+
+    with pytest.raises(ValueError, match="Cannot encode empty DataFrame"):
+        transforms.encode_dataframe(df, config)

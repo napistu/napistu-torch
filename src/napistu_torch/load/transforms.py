@@ -1,10 +1,15 @@
 import logging
 from collections import defaultdict
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from sklearn.compose import ColumnTransformer
+
+from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
+
+logger = logging.getLogger(__name__)
 
 
 class TransformConfig(BaseModel):
@@ -21,7 +26,7 @@ class TransformConfig(BaseModel):
     columns: List[str] = Field(..., min_length=1)
     transformer: Any = Field(...)
 
-    @field_validator("columns")
+    @field_validator(TRANSFORMATION.COLUMNS)
     @classmethod
     def validate_columns(cls, v):
         for col in v:
@@ -29,10 +34,14 @@ class TransformConfig(BaseModel):
                 raise ValueError("all columns must be non-empty strings")
         return v
 
-    @field_validator("transformer")
+    @field_validator(TRANSFORMATION.TRANSFORMER)
     @classmethod
     def validate_transformer(cls, v):
-        if not (hasattr(v, "fit") or hasattr(v, "transform") or v == "passthrough"):
+        if not (
+            hasattr(v, TRANSFORMATION.FIT)
+            or hasattr(v, TRANSFORMATION.TRANSFORM)
+            or v == TRANSFORMATION.PASSTHROUGH
+        ):
             raise ValueError(
                 'transformer must have fit/transform methods or be "passthrough"'
             )
@@ -105,7 +114,6 @@ def compose_configs(
     ValueError
         If either config is invalid.
     """
-    logger = logging.getLogger(__name__)
 
     # Validate both configs
     base_table = validate_config(base_config)
@@ -118,7 +126,7 @@ def compose_configs(
         logger.info("Cross-config conflicts detected:")
         for column, details in cross_conflicts.items():
             logger.info(
-                f"  Column '{column}': base transforms {details['base']} -> override transforms {details['override']}"
+                f"  Column '{column}': base transforms {details[TRANSFORMATION.BASE]} -> override transforms {details[TRANSFORMATION.OVERRIDE]}"
             )
     elif verbose:
         logger.info("No cross-config conflicts detected")
@@ -130,11 +138,12 @@ def compose_configs(
         logger.info("Final composed transformations:")
         for transform_name, transform_config in composed_dict.items():
             transformer_type = (
-                type(transform_config["transformer"]).__name__
-                if transform_config["transformer"] != "passthrough"
-                else "passthrough"
+                type(transform_config[TRANSFORMATION.TRANSFORMER]).__name__
+                if transform_config[TRANSFORMATION.TRANSFORMER]
+                != TRANSFORMATION.PASSTHROUGH
+                else TRANSFORMATION.PASSTHROUGH
             )
-            columns = transform_config["columns"]
+            columns = transform_config[TRANSFORMATION.COLUMNS]
             logger.info(f"  {transform_name} ({transformer_type}): {columns}")
 
     # Validate final result
@@ -194,31 +203,119 @@ def config_to_column_transformer(config_dict: Dict[str, Dict]) -> ColumnTransfor
     return ColumnTransformer(transformers, remainder="drop")
 
 
-def get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
-    """Get feature names from fitted ColumnTransformer using sklearn's standard method.
+def encode_dataframe(
+    df: pd.DataFrame,
+    encoding_defaults: Dict[str, Dict],
+    encoding_overrides: Optional[Dict[str, Dict]] = None,
+    verbose: bool = False,
+) -> tuple[np.ndarray, List[str]]:
+    """Encode a DataFrame using sklearn transformers with configurable encoding rules.
+
+    This function applies a series of transformations to a DataFrame based on
+    encoding configurations. It supports both default encoding rules and optional
+    overrides that can modify or extend the default behavior.
 
     Parameters
     ----------
-    preprocessor : ColumnTransformer
-        Fitted ColumnTransformer instance.
+    df : pd.DataFrame
+        Input DataFrame to be encoded. Must contain all columns specified in
+        the encoding configurations.
+    encoding_defaults : Dict[str, Dict]
+        Base encoding configuration dictionary. Each key is a transform name
+        and each value is a dict with 'columns' and 'transformer' keys.
+        Example: {
+            'categorical': {
+                'columns': ['col1', 'col2'],
+                'transformer': OneHotEncoder()
+            },
+            'numerical': {
+                'columns': ['col3'],
+                'transformer': StandardScaler()
+            }
+        }
+    encoding_overrides : Optional[Dict[str, Dict]], default=None
+        Optional override configuration that will be merged with encoding_defaults.
+        For column conflicts, the override configuration takes precedence.
+        If None, only encoding_defaults will be used.
+    verbose : bool, default=False
+        If True, log detailed information about config composition and conflicts.
 
     Returns
     -------
-    List[str]
-        List of feature names in the same order as transform output columns.
+    tuple[np.ndarray, List[str]]
+        A tuple containing:
+        - encoded_array : np.ndarray
+            Transformed numpy array with encoded features. The number of columns
+            may differ from the input due to transformations like OneHotEncoder.
+        - feature_names : List[str]
+            List of feature names corresponding to the columns in encoded_array.
+            Names follow sklearn's convention: 'transform_name__column_name'.
+
+    Raises
+    ------
+    ValueError
+        If encoding configurations are invalid, have column conflicts, or if
+        required columns are missing from the input DataFrame.
+    KeyError
+        If the input DataFrame is missing columns specified in the encoding config.
 
     Examples
     --------
-    >>> preprocessor = config_to_column_transformer(config)
-    >>> preprocessor.fit(data)  # Must fit first!
-    >>> feature_names = get_feature_names(preprocessor)
-    >>> # ['cat__node_type_A', 'cat__node_type_B', 'num__weight']
+    >>> import pandas as pd
+    >>> from sklearn.preprocessing import OneHotEncoder, StandardScaler
+    >>>
+    >>> # Sample data
+    >>> df = pd.DataFrame({
+    ...     'category': ['A', 'B', 'A', 'C'],
+    ...     'value': [1.0, 2.0, 3.0, 4.0]
+    ... })
+    >>>
+    >>> # Encoding configuration
+    >>> defaults = {
+    ...     'categorical': {
+    ...         'columns': ['category'],
+    ...         'transformer': OneHotEncoder(sparse_output=False)
+    ...     },
+    ...     'numerical': {
+    ...         'columns': ['value'],
+    ...         'transformer': StandardScaler()
+    ...     }
+    ... }
+    >>>
+    >>> # Encode the DataFrame
+    >>> encoded_array, feature_names = encode_dataframe(df, defaults)
+    >>> print(f"Encoded shape: {encoded_array.shape}")
+    >>> print(f"Feature names: {feature_names}")
     """
-    if not hasattr(preprocessor, "transformers_"):
-        raise ValueError("ColumnTransformer must be fitted first")
+    if encoding_overrides is None:
+        config = encoding_defaults
+    else:
+        config = compose_configs(encoding_defaults, encoding_overrides, verbose=verbose)
 
-    # Use sklearn's built-in method (available since sklearn 1.0+)
-    return preprocessor.get_feature_names_out().tolist()
+    preprocessor = config_to_column_transformer(config)
+
+    # Check for missing columns before fitting
+    required_columns = set()
+    for transform_config in config.values():
+        required_columns.update(transform_config.get("columns", []))
+
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise KeyError(
+            f"Missing columns in DataFrame: {list(missing_columns)}. Available columns: {list(df.columns)}"
+        )
+
+    # Check for empty DataFrame
+    if len(df) == 0:
+        raise ValueError(
+            "Cannot encode empty DataFrame. DataFrame must contain at least one row."
+        )
+
+    encoded_array = preprocessor.fit_transform(df)
+    feature_names = _get_feature_names(preprocessor)
+
+    # Return numpy array directly for PyTorch compatibility
+    return encoded_array, feature_names
 
 
 def validate_config(config_dict: Dict[str, Dict]) -> pd.DataFrame:
@@ -247,7 +344,7 @@ def validate_config(config_dict: Dict[str, Dict]) -> pd.DataFrame:
     return _create_transform_table(validated_config.root)
 
 
-# utils
+# private
 
 
 def _create_transform_table(config: Dict[str, TransformConfig]) -> pd.DataFrame:
@@ -256,16 +353,16 @@ def _create_transform_table(config: Dict[str, TransformConfig]) -> pd.DataFrame:
     for transform_name, transform_config in config.items():
         transformer_type = (
             type(transform_config.transformer).__name__
-            if transform_config.transformer != "passthrough"
-            else "passthrough"
+            if transform_config.transformer != TRANSFORMATION.PASSTHROUGH
+            else TRANSFORMATION.PASSTHROUGH
         )
 
         for column in transform_config.columns:
             rows.append(
                 {
-                    "transform_name": transform_name,
-                    "column": column,
-                    "transformer_type": transformer_type,
+                    TRANSFORM_TABLE.TRANSFORM_NAME: transform_name,
+                    TRANSFORM_TABLE.COLUMN: column,
+                    TRANSFORM_TABLE.TRANSFORMER_TYPE: transformer_type,
                 }
             )
 
@@ -279,22 +376,52 @@ def _find_cross_config_conflicts(
     if base_table.empty or override_table.empty:
         return {}
 
-    base_columns = set(base_table["column"])
-    override_columns = set(override_table["column"])
+    base_columns = set(base_table[TRANSFORM_TABLE.COLUMN])
+    override_columns = set(override_table[TRANSFORM_TABLE.COLUMN])
     conflicted_columns = base_columns & override_columns
 
     conflicts = {}
     for column in conflicted_columns:
-        base_transforms = base_table[base_table["column"] == column][
-            "transform_name"
+        base_transforms = base_table[base_table[TRANSFORM_TABLE.COLUMN] == column][
+            TRANSFORM_TABLE.TRANSFORM_NAME
         ].tolist()
-        override_transforms = override_table[override_table["column"] == column][
-            "transform_name"
-        ].tolist()
+        override_transforms = override_table[
+            override_table[TRANSFORM_TABLE.COLUMN] == column
+        ][TRANSFORM_TABLE.TRANSFORM_NAME].tolist()
 
-        conflicts[column] = {"base": base_transforms, "override": override_transforms}
+        conflicts[column] = {
+            TRANSFORMATION.BASE: base_transforms,
+            TRANSFORMATION.OVERRIDE: override_transforms,
+        }
 
     return conflicts
+
+
+def _get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
+    """Get feature names from fitted ColumnTransformer using sklearn's standard method.
+
+    Parameters
+    ----------
+    preprocessor : ColumnTransformer
+        Fitted ColumnTransformer instance.
+
+    Returns
+    -------
+    List[str]
+        List of feature names in the same order as transform output columns.
+
+    Examples
+    --------
+    >>> preprocessor = config_to_column_transformer(config)
+    >>> preprocessor.fit(data)  # Must fit first!
+    >>> feature_names = _get_feature_names(preprocessor)
+    >>> # ['cat__node_type_A', 'cat__node_type_B', 'num__weight']
+    """
+    if not hasattr(preprocessor, "transformers_"):
+        raise ValueError("ColumnTransformer must be fitted first")
+
+    # Use sklearn's built-in method (available since sklearn 1.0+)
+    return preprocessor.get_feature_names_out().tolist()
 
 
 def _merge_configs(
@@ -307,16 +434,18 @@ def _merge_configs(
     for transform_name, transform_config in override_config.items():
         if transform_name in composed:
             # Merge column lists
-            base_columns = set(composed[transform_name]["columns"])
-            override_columns = set(transform_config["columns"])
+            base_columns = set(composed[transform_name][TRANSFORMATION.COLUMNS])
+            override_columns = set(transform_config[TRANSFORMATION.COLUMNS])
 
             # Remove conflicts from base (override wins)
             base_columns -= conflicted_columns
             merged_columns = list(base_columns | override_columns)
 
             composed[transform_name] = {
-                "columns": merged_columns,
-                "transformer": transform_config["transformer"],
+                TRANSFORMATION.COLUMNS: merged_columns,
+                TRANSFORMATION.TRANSFORMER: transform_config[
+                    TRANSFORMATION.TRANSFORMER
+                ],
             }
         else:
             composed[transform_name] = transform_config
