@@ -7,7 +7,13 @@ import pandas as pd
 from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
 from sklearn.compose import ColumnTransformer
 
-from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
+from napistu_torch.load.encoders import DEFAULT_ENCODERS
+from napistu_torch.load.constants import (
+    ENCODING_MANAGER,
+    ENCODING_MANAGER_TABLE,
+    ENCODINGS,
+    NEVER_ENCODE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,30 +26,52 @@ class EncodingManager:
 
     Parameters
     ----------
-    config : Dict[str, Dict]
-        Encoding configuration dictionary. Each key is a transform name
-        and each value is a dict with 'columns' and 'transformer' keys.
-        Example: {
-            'categorical': {
-                'columns': ['col1', 'col2'],
-                'transformer': OneHotEncoder()
-            },
-            'numerical': {
-                'columns': ['col3'],
-                'transformer': StandardScaler()
+    config : Dict[str, Dict] or Dict[str, set]
+        Encoding configuration dictionary. Supports two formats:
+        
+        Complex format (when encoders=None):
+            Each key is a transform name and each value is a dict with
+            'columns' and 'transformer' keys.
+            Example: {
+                'categorical': {
+                    'columns': ['col1', 'col2'],
+                    'transformer': OneHotEncoder()
+                },
+                'numerical': {
+                    'columns': ['col3'],
+                    'transformer': StandardScaler()
+                }
             }
+        
+        Simple format (when encoders is provided):
+            Each key is an encoding type and each value is a set/list of column names.
+            Example: {
+                'categorical': {'col1', 'col2'},
+                'numerical': {'col3'}
+            }
+    
+    encoders : Dict[str, Any], optional
+        Mapping from encoding type to transformer instance. Only used with
+        simple format. If provided, config is treated as simple format and
+        converted to complex format internally.
+        Example: {
+            'categorical': OneHotEncoder(),
+            'numerical': StandardScaler()
         }
 
     Attributes
     ----------
     config_ : Dict[str, Dict]
-        The validated configuration dictionary.
+        The validated configuration dictionary (always in complex format).
 
     Methods
     -------
     compose(override_config, verbose=False)
         Compose this configuration with another configuration using merge strategy.
-    get_transform_table()
+    ensure(config, encoders=None)
+        Class method to ensure config is an EncodingManager instance.
+        Supports both simple and complex dict formats via encoders parameter.
+    get_encoding_table()
         Get a summary table of all configured transformations.
     log_summary()
         Log a summary of all configured transformations.
@@ -52,7 +80,7 @@ class EncodingManager:
 
     Private Methods
     ---------------
-    _create_transform_table(config)
+    _create_encoding_table(config)
         Create transform table from validated config.
 
     Raises
@@ -62,6 +90,8 @@ class EncodingManager:
 
     Examples
     --------
+    Complex format:
+    
     >>> from sklearn.preprocessing import OneHotEncoder, StandardScaler
     >>>
     >>> config_dict = {
@@ -75,13 +105,69 @@ class EncodingManager:
     ...     }
     ... }
     >>>
-    >>> config = EncodingConfig(config_dict)
+    >>> config = EncodingManager(config_dict)
     >>> config.log_summary()
-    >>> print(config.get_transform_table())
+    >>> print(config.get_encoding_table())
+    
+    Simple format:
+    
+    >>> simple_spec = {
+    ...     'categorical': {'category'},
+    ...     'numerical': {'value'}
+    ... }
+    >>> encoders = {
+    ...     'categorical': OneHotEncoder(sparse_output=False),
+    ...     'numerical': StandardScaler()
+    ... }
+    >>> config = EncodingManager(simple_spec, encoders=encoders)
+    >>> print(config.get_encoding_table())
     """
 
-    def __init__(self, config: Dict[str, Dict]):
+    def __init__(
+        self,
+        config: Union[Dict[str, Dict], Dict[str, set]],
+        encoders: Optional[Dict[str, Any]] = None
+    ):
+        # If encoders provided, convert simple format to complex format
+        if encoders is not None:
+            config = self._convert_simple_to_complex(config, encoders)
+        
         self.config_ = self.validate(config)
+    
+    @staticmethod
+    def _convert_simple_to_complex(
+        simple_spec: Dict[str, set],
+        encoders: Dict[str, Any]
+    ) -> Dict[str, Dict]:
+        """Convert simple spec format to complex format.
+        
+        Parameters
+        ----------
+        simple_spec : Dict[str, set]
+            Mapping from encoding type to set of column names.
+        encoders : Dict[str, Any]
+            Mapping from encoding type to transformer instance.
+        
+        Returns
+        -------
+        Dict[str, Dict]
+            Complex format configuration.
+        """
+        complex_config = {}
+        
+        for encoding_type, columns in simple_spec.items():
+            if encoding_type not in encoders:
+                raise ValueError(f"Unknown encoding type: {encoding_type}")
+            
+            # Convert set to sorted list for consistent ordering
+            column_list = sorted(list(columns))
+            
+            complex_config[encoding_type] = {
+                ENCODING_MANAGER.COLUMNS: column_list,
+                ENCODING_MANAGER.TRANSFORMER: encoders[encoding_type],
+            }
+        
+        return complex_config
 
     def compose(
         self,
@@ -116,8 +202,8 @@ class EncodingManager:
         # Both configs are already validated since they're EncodingConfig instances
 
         # Create transform tables for conflict detection
-        base_table = self.get_transform_table()
-        override_table = override_config.get_transform_table()
+        base_table = self.get_encoding_table()
+        override_table = override_config.get_encoding_table()
 
         # Find cross-config conflicts
         cross_conflicts = _find_cross_config_conflicts(base_table, override_table)
@@ -126,7 +212,7 @@ class EncodingManager:
             logger.info("Cross-config conflicts detected:")
             for column, details in cross_conflicts.items():
                 logger.info(
-                    f"  Column '{column}': base transforms {details[TRANSFORMATION.BASE]} -> override transforms {details[TRANSFORMATION.OVERRIDE]}"
+                    f"  Column '{column}': base transforms {details[ENCODING_MANAGER.BASE]} -> override transforms {details[ENCODING_MANAGER.OVERRIDE]}"
                 )
         elif verbose:
             logger.info("No cross-config conflicts detected")
@@ -139,7 +225,73 @@ class EncodingManager:
         # Return new EncodingConfig instance (validation happens in __init__)
         return EncodingManager(composed_dict)
 
-    def get_transform_table(self) -> pd.DataFrame:
+    @classmethod
+    def ensure(
+        cls,
+        config: Union[dict, "EncodingManager"],
+        encoders: Optional[Dict[str, Any]] = None
+    ) -> "EncodingManager":
+        """
+        Ensure that config is an EncodingManager object.
+
+        If config is a dict, it will be converted to an EncodingManager.
+        If it's already an EncodingManager, it will be returned as-is.
+
+        Parameters
+        ----------
+        config : Union[dict, EncodingManager]
+            Either a dict (simple or complex format) or an EncodingManager object.
+        encoders : Dict[str, Any], optional
+            Mapping from encoding type to transformer instance. Only used when
+            config is a dict in simple format. Ignored if config is already an
+            EncodingManager.
+
+        Returns
+        -------
+        EncodingManager
+            The EncodingManager object
+
+        Raises
+        ------
+        ValueError
+            If config is neither a dict nor an EncodingManager
+
+        Examples
+        --------
+        Complex format dict:
+        
+        >>> config = EncodingManager.ensure({
+        ...     "foo": {"columns": ["bar"], "transformer": StandardScaler()}
+        ... })
+        >>> isinstance(config, EncodingManager)
+        True
+        
+        Simple format dict:
+        
+        >>> config = EncodingManager.ensure(
+        ...     {"categorical": {"col1", "col2"}},
+        ...     encoders={"categorical": OneHotEncoder()}
+        ... )
+        >>> isinstance(config, EncodingManager)
+        True
+        
+        EncodingManager passthrough:
+        
+        >>> manager = EncodingManager({"foo": {"columns": ["bar"], "transformer": StandardScaler()}})
+        >>> result = EncodingManager.ensure(manager)
+        >>> result is manager
+        True
+        """
+        if isinstance(config, dict):
+            return cls(config, encoders=encoders)
+        elif isinstance(config, cls):
+            return config
+        else:
+            raise ValueError(
+                f"config must be a dict or an EncodingManager object, got {type(config)}"
+            )
+
+    def get_encoding_table(self) -> pd.DataFrame:
         """Get a summary table of all configured transformations.
 
         Returns
@@ -151,7 +303,7 @@ class EncodingManager:
         Examples
         --------
         >>> config = EncodingConfig(config_dict)
-        >>> table = config.get_transform_table()
+        >>> table = config.get_encoding_table()
         >>> print(table)
            transform_name    column transformer_type
         0     categorical      col1    OneHotEncoder
@@ -163,7 +315,7 @@ class EncodingManager:
         for name, config in self.config_.items():
             validated_config[name] = TransformConfig(**config)
 
-        return self._create_transform_table(validated_config)
+        return self._create_encoding_table(validated_config)
 
     def log_summary(self) -> None:
         """Log a summary of all configured transformations.
@@ -179,16 +331,18 @@ class EncodingManager:
         INFO:__main__:numerical (StandardScaler): ['col3']
         """
         for transform_name, transform_config in self.config_.items():
-            transformer = transform_config[TRANSFORMATION.TRANSFORMER]
-            columns = transform_config[TRANSFORMATION.COLUMNS]
+            transformer = transform_config[ENCODING_MANAGER.TRANSFORMER]
+            columns = transform_config[ENCODING_MANAGER.COLUMNS]
+            columns_str = ", ".join(columns)
 
             transformer_type = (
                 type(transformer).__name__
-                if transformer != TRANSFORMATION.PASSTHROUGH
-                else TRANSFORMATION.PASSTHROUGH
+                if transformer != ENCODING_MANAGER.PASSTHROUGH
+                else ENCODING_MANAGER.PASSTHROUGH
             )
 
-            logger.info(f"{transform_name} ({transformer_type}): {columns}")
+            logger.info(f"{transform_name} ({transformer_type}): {columns_str}")
+
 
     def validate(self, config: Dict[str, Dict]) -> Dict[str, Dict]:
         """Validate a configuration dictionary.
@@ -221,14 +375,14 @@ class EncodingManager:
                 if not isinstance(transform_config, dict):
                     raise ValueError(f"Transform '{name}' must be a dictionary")
 
-                if TRANSFORMATION.COLUMNS not in transform_config:
+                if ENCODING_MANAGER.COLUMNS not in transform_config:
                     raise ValueError(f"Transform '{name}' missing 'columns' key")
 
-                if TRANSFORMATION.TRANSFORMER not in transform_config:
+                if ENCODING_MANAGER.TRANSFORMER not in transform_config:
                     raise ValueError(f"Transform '{name}' missing 'transformer' key")
 
-                columns = transform_config[TRANSFORMATION.COLUMNS]
-                transformer = transform_config[TRANSFORMATION.TRANSFORMER]
+                columns = transform_config[ENCODING_MANAGER.COLUMNS]
+                transformer = transform_config[ENCODING_MANAGER.TRANSFORMER]
 
                 # Validate columns
                 if not isinstance(columns, list) or len(columns) == 0:
@@ -244,9 +398,9 @@ class EncodingManager:
 
                 # Validate transformer
                 if not (
-                    hasattr(transformer, TRANSFORMATION.FIT)
-                    or hasattr(transformer, TRANSFORMATION.TRANSFORM)
-                    or transformer == TRANSFORMATION.PASSTHROUGH
+                    hasattr(transformer, ENCODING_MANAGER.FIT)
+                    or hasattr(transformer, ENCODING_MANAGER.TRANSFORM)
+                    or transformer == ENCODING_MANAGER.PASSTHROUGH
                 ):
                     raise ValueError(
                         f"Transform '{name}': transformer must have fit/transform methods or be 'passthrough'"
@@ -257,7 +411,7 @@ class EncodingManager:
             # Check for column conflicts across transforms
             column_to_transforms = defaultdict(list)
             for transform_name, transform_config in validated_transforms.items():
-                for column in transform_config[TRANSFORMATION.COLUMNS]:
+                for column in transform_config[ENCODING_MANAGER.COLUMNS]:
                     column_to_transforms[column].append(transform_name)
 
             conflicts = {
@@ -292,12 +446,12 @@ class EncodingManager:
         """Return string representation of the configuration."""
         n_transforms = len(self.config_)
         total_columns = sum(
-            len(config.get(TRANSFORMATION.COLUMNS, []))
+            len(config.get(ENCODING_MANAGER.COLUMNS, []))
             for config in self.config_.values()
         )
         return f"EncodingConfig(transforms={n_transforms}, columns={total_columns})"
 
-    def _create_transform_table(
+    def _create_encoding_table(
         self, config: Dict[str, "TransformConfig"]
     ) -> pd.DataFrame:
         """Create transform table from validated config.
@@ -316,16 +470,16 @@ class EncodingManager:
         for transform_name, transform_config in config.items():
             transformer_type = (
                 type(transform_config.transformer).__name__
-                if transform_config.transformer != TRANSFORMATION.PASSTHROUGH
-                else TRANSFORMATION.PASSTHROUGH
+                if transform_config.transformer != ENCODING_MANAGER.PASSTHROUGH
+                else ENCODING_MANAGER.PASSTHROUGH
             )
 
             for column in transform_config.columns:
                 rows.append(
                     {
-                        TRANSFORM_TABLE.TRANSFORM_NAME: transform_name,
-                        TRANSFORM_TABLE.COLUMN: column,
-                        TRANSFORM_TABLE.TRANSFORMER_TYPE: transformer_type,
+                        ENCODING_MANAGER_TABLE.TRANSFORM_NAME: transform_name,
+                        ENCODING_MANAGER_TABLE.COLUMN: column,
+                        ENCODING_MANAGER_TABLE.TRANSFORMER_TYPE: transformer_type,
                     }
                 )
 
@@ -346,7 +500,7 @@ class TransformConfig(BaseModel):
     columns: List[str] = Field(..., min_length=1)
     transformer: Any = Field(...)
 
-    @field_validator(TRANSFORMATION.COLUMNS)
+    @field_validator(ENCODING_MANAGER.COLUMNS)
     @classmethod
     def validate_columns(cls, v):
         for col in v:
@@ -354,13 +508,13 @@ class TransformConfig(BaseModel):
                 raise ValueError("all columns must be non-empty strings")
         return v
 
-    @field_validator(TRANSFORMATION.TRANSFORMER)
+    @field_validator(ENCODING_MANAGER.TRANSFORMER)
     @classmethod
     def validate_transformer(cls, v):
         if not (
-            hasattr(v, TRANSFORMATION.FIT)
-            or hasattr(v, TRANSFORMATION.TRANSFORM)
-            or v == TRANSFORMATION.PASSTHROUGH
+            hasattr(v, ENCODING_MANAGER.FIT)
+            or hasattr(v, ENCODING_MANAGER.TRANSFORM)
+            or v == ENCODING_MANAGER.PASSTHROUGH
         ):
             raise ValueError(
                 'transformer must have fit/transform methods or be "passthrough"'
@@ -402,6 +556,130 @@ class EncodingConfig(RootModel[Dict[str, TransformConfig]]):
             raise ValueError(f"Column conflicts: {'; '.join(conflict_details)}")
 
         return self
+
+
+def auto_encode(graph_df: pd.DataFrame, existing_encodings: Union[Dict, EncodingManager], encoders: Dict = DEFAULT_ENCODERS) -> EncodingManager:
+
+    """
+    Select appropriate encodings for each column in a graph dataframe (either the vertex_df or edge_df)
+
+    Parameters
+    ----------
+    graph_df : pd.DataFrame
+        The dataframe to select encodings for.
+    existing_encodings : Union[Dict, EncodingManager]
+        The existing encodings to use. This could be VERTEX_DEFAULT_TRANSFORMS or EDGE_DEFAULT_TRANSFORMS
+        or any modified version of these.
+    encoders : Dict, default=ENCODERS
+        The encoders to use. These will be used to map from column encoding classes to the encoders themselves. If existing_encodings is a dict, then it must be passed in the 'simple' format which is a lookup from encoder keys to the columns using that encoder.
+
+    Returns
+    -------
+    EncodingManager
+        A new EncodingManager with the selected encodings.
+    """
+
+    # accounted for variables
+    columns = set(graph_df.columns.tolist())
+
+    encoding_manager = EncodingManager.ensure(existing_encodings, encoders)
+    existing_encoding_columns = set(encoding_manager.get_encoding_table()[ENCODING_MANAGER_TABLE.COLUMN].tolist())
+
+    unencoded_columns = columns - existing_encoding_columns - NEVER_ENCODE
+
+    select_encodings = graph_df.loc[:, list(unencoded_columns)].apply(classify_encoding)
+
+    # If this is a Series showing dtypes (like df.dtypes)
+    new_encodings = select_encodings.groupby(select_encodings).groups
+    new_encodings = {k: set(v) for k, v in new_encodings.items()}
+
+    new_encoding_manager = EncodingManager(new_encodings, encoders)
+
+    # combine existing and new encodings
+    return encoding_manager.compose(new_encoding_manager)
+
+
+def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[str]:
+    """
+    Classify the encoding type for a pandas Series.
+    
+    Parameters
+    ----------
+    series : pd.Series
+        The column to classify
+    max_categories : int, default=50
+        Maximum number of unique values for categorical encoding.
+        If exceeded, logs a warning and returns None.
+    
+    Returns
+    -------
+    Optional[str]
+        One of: 'binary', 'categorical', 'numeric', 'numeric_sparse', or None
+        Returns None for constant variables or high-cardinality features.
+    
+    Examples
+    --------
+    >>> classify_encoding(pd.Series([0, 1, 0, 1]))
+    'binary'
+    >>> classify_encoding(pd.Series([0, 1, np.nan]))
+    'categorical'
+    >>> classify_encoding(pd.Series([1.5, 2.3, 4.1]))
+    'numeric'
+    >>> classify_encoding(pd.Series([1.5, np.nan, 4.1]))
+    'numeric_sparse'
+    >>> classify_encoding(pd.Series([5, 5, 5, 5]))  # Constant
+    None
+    """
+    # Drop NaN for initial analysis
+    non_null = series.dropna()
+    has_missing = len(non_null) < len(series)
+    
+    # Handle empty or all-NaN series
+    if len(non_null) == 0:
+        logger.warning(f"Series '{series.name}' is empty or all NaN")
+        return None
+    
+    # Get unique values (excluding NaN)
+    unique_values = non_null.unique()
+    n_unique = len(unique_values)
+    
+    # Check for constant variable (only 1 unique value, no NaNs)
+    if n_unique == 1 and not has_missing:
+        logger.warning(f"Series '{series.name}' has only 1 unique value ({unique_values[0]}), no variance")
+        return None
+    
+    # Check if numeric dtype
+    is_numeric = pd.api.types.is_numeric_dtype(series)
+    
+    if is_numeric:
+        # Check for binary/boolean (only 0 and 1, no missing values)
+        if not has_missing and n_unique <= 2 and set(unique_values).issubset({0, 1}):
+            return ENCODINGS.BINARY
+        
+        # Check if values are only 0 and 1 but has missing (treat as categorical)
+        if has_missing and n_unique <= 2 and set(unique_values).issubset({0, 1}):
+            return ENCODINGS.CATEGORICAL
+        
+        # Numeric continuous values
+        if has_missing:
+            return ENCODINGS.SPARSE_NUMERIC
+        else:
+            return ENCODINGS.NUMERIC
+    
+    else:
+        # Non-numeric data: categorical or boolean strings
+        # Check for True/False strings
+        if not has_missing and n_unique <= 2:
+            str_values = set(str(v).lower() for v in unique_values)
+            if str_values.issubset({'true', 'false', '0', '1'}):
+                return ENCODINGS.BINARY
+        
+        # Categorical
+        if n_unique > max_categories:
+            logger.warning(f"Series '{series.name}' has {n_unique} unique values, exceeding max_categories={max_categories}")
+            return None
+        
+        return ENCODINGS.CATEGORICAL
 
 
 def config_to_column_transformer(
@@ -456,8 +734,8 @@ def config_to_column_transformer(
     # Build transformers list for ColumnTransformer
     transformers = []
     for transform_name, transform_config in encoding_config.items():
-        transformer = transform_config["transformer"]
-        columns = transform_config["columns"]
+        transformer = transform_config[ENCODING_MANAGER.TRANSFORMER]
+        columns = transform_config[ENCODING_MANAGER.COLUMNS]
 
         transformers.append((transform_name, transformer, columns))
 
@@ -567,7 +845,7 @@ def encode_dataframe(
     # Check for missing columns before fitting
     required_columns = set()
     for transform_config in config.values():
-        required_columns.update(transform_config.get("columns", []))
+        required_columns.update(transform_config.get(ENCODING_MANAGER.COLUMNS, []))
 
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
@@ -587,9 +865,7 @@ def encode_dataframe(
     # Return numpy array directly for PyTorch compatibility
     return encoded_array, feature_names
 
-
 # private
-
 
 def _find_cross_config_conflicts(
     base_table: pd.DataFrame, override_table: pd.DataFrame
@@ -598,22 +874,22 @@ def _find_cross_config_conflicts(
     if base_table.empty or override_table.empty:
         return {}
 
-    base_columns = set(base_table[TRANSFORM_TABLE.COLUMN])
-    override_columns = set(override_table[TRANSFORM_TABLE.COLUMN])
+    base_columns = set(base_table[ENCODING_MANAGER_TABLE.COLUMN])
+    override_columns = set(override_table[ENCODING_MANAGER_TABLE.COLUMN])
     conflicted_columns = base_columns & override_columns
 
     conflicts = {}
     for column in conflicted_columns:
-        base_transforms = base_table[base_table[TRANSFORM_TABLE.COLUMN] == column][
-            TRANSFORM_TABLE.TRANSFORM_NAME
+        base_transforms = base_table[base_table[ENCODING_MANAGER_TABLE.COLUMN] == column][
+            ENCODING_MANAGER_TABLE.TRANSFORM_NAME
         ].tolist()
         override_transforms = override_table[
-            override_table[TRANSFORM_TABLE.COLUMN] == column
-        ][TRANSFORM_TABLE.TRANSFORM_NAME].tolist()
+            override_table[ENCODING_MANAGER_TABLE.COLUMN] == column
+        ][ENCODING_MANAGER_TABLE.TRANSFORM_NAME].tolist()
 
         conflicts[column] = {
-            TRANSFORMATION.BASE: base_transforms,
-            TRANSFORMATION.OVERRIDE: override_transforms,
+            ENCODING_MANAGER.BASE: base_transforms,
+            ENCODING_MANAGER.OVERRIDE: override_transforms,
         }
 
     return conflicts
@@ -656,17 +932,17 @@ def _merge_configs(
     for transform_name, transform_config in override_config.items():
         if transform_name in composed:
             # Merge column lists
-            base_columns = set(composed[transform_name][TRANSFORMATION.COLUMNS])
-            override_columns = set(transform_config[TRANSFORMATION.COLUMNS])
+            base_columns = set(composed[transform_name][ENCODING_MANAGER.COLUMNS])
+            override_columns = set(transform_config[ENCODING_MANAGER.COLUMNS])
 
             # Remove conflicts from base (override wins)
             base_columns -= conflicted_columns
             merged_columns = list(base_columns | override_columns)
 
             composed[transform_name] = {
-                TRANSFORMATION.COLUMNS: merged_columns,
-                TRANSFORMATION.TRANSFORMER: transform_config[
-                    TRANSFORMATION.TRANSFORMER
+                ENCODING_MANAGER.COLUMNS: merged_columns,
+                ENCODING_MANAGER.TRANSFORMER: transform_config[
+                    ENCODING_MANAGER.TRANSFORMER
                 ],
             }
         else:

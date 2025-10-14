@@ -1,47 +1,100 @@
 from typing import Dict, Optional
 
 import torch
-from napistu.network.constants import NAPISTU_GRAPH_EDGES, NAPISTU_GRAPH_VERTICES
+from napistu.constants import SBML_DFS
+
+from napistu.sbml_dfs_core import SBML_dfs
+from napistu.network.constants import NAPISTU_GRAPH_EDGES, NAPISTU_GRAPH_VERTICES, ADDING_ENTITY_DATA_DEFS
 from napistu.network.ng_core import NapistuGraph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from torch_geometric.data import Data
 
-from napistu_torch.load import transforms
-from napistu_torch.load.constants import TRANSFORMATION
+from napistu_torch.load import encoding
+from napistu_torch.load.constants import ENCODING_MANAGER
 
 # Node configuration
 VERTEX_DEFAULT_TRANSFORMS = {
     "cat": {
-        TRANSFORMATION.COLUMNS: [
+        ENCODING_MANAGER.COLUMNS: [
             NAPISTU_GRAPH_VERTICES.NODE_TYPE,
             NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,
         ],
-        TRANSFORMATION.TRANSFORMER: OneHotEncoder(handle_unknown="ignore"),
+        ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(handle_unknown="ignore"),
     }
 }
 
 # Edge configuration
 EDGE_DEFAULT_TRANSFORMS = {
     "cat": {
-        TRANSFORMATION.COLUMNS: [
+        ENCODING_MANAGER.COLUMNS: [
             NAPISTU_GRAPH_EDGES.DIRECTION,
             NAPISTU_GRAPH_EDGES.SBO_TERM,
         ],
-        TRANSFORMATION.TRANSFORMER: OneHotEncoder(handle_unknown="ignore"),
+        ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(handle_unknown="ignore"),
     },
     "num": {
-        TRANSFORMATION.COLUMNS: [
+        ENCODING_MANAGER.COLUMNS: [
             NAPISTU_GRAPH_EDGES.STOICHIOMETRY,
             NAPISTU_GRAPH_EDGES.WEIGHT,
             NAPISTU_GRAPH_EDGES.UPSTREAM_WEIGHT,
         ],
-        TRANSFORMATION.TRANSFORMER: StandardScaler(),
+        ENCODING_MANAGER.TRANSFORMER: StandardScaler(),
     },
     "bool": {
-        TRANSFORMATION.COLUMNS: [NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE],
-        TRANSFORMATION.TRANSFORMER: TRANSFORMATION.PASSTHROUGH,
+        ENCODING_MANAGER.COLUMNS: [NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE],
+        ENCODING_MANAGER.TRANSFORMER: ENCODING_MANAGER.PASSTHROUGH,
     },
 }
+
+def augment_napistu_graph(sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph, inplace: bool = False) -> None:
+
+    """
+    Augment the NapistuGraph with information from the SBML_dfs.
+
+    This function adds summaries of the SBML_dfs to the NapistuGraph,
+    and extends the graph with reaction and species data from the SBML_dfs.
+
+    Parameters
+    ----------
+    sbml_dfs : SBML_dfs
+        The SBML_dfs to augment the NapistuGraph with.
+    napistu_graph : NapistuGraph
+        The NapistuGraph to augment.
+    inplace : bool, default=False
+        If True, modify the NapistuGraph in place.
+        If False, return a new NapistuGraph with the augmentations.
+
+    Returns
+    -------
+    None
+        Modifies the NapistuGraph in place.
+    """
+
+    if not inplace:
+        napistu_graph = napistu_graph.copy()
+
+    # augment napistu graph with infomration from the sbml_dfs
+    napistu_graph.add_sbml_dfs_summaries(
+        sbml_dfs,
+        stratify_by_bqb = False,
+        add_name_prefixes = True
+    )
+
+    # add reactions_data to edges
+    napistu_graph.add_all_entity_data(
+        sbml_dfs,
+        SBML_DFS.REACTIONS,
+        overwrite=True,
+        add_name_prefixes = True
+    )
+
+    napistu_graph.add_all_entity_data(
+        sbml_dfs, SBML_DFS.SPECIES,
+        mode = ADDING_ENTITY_DATA_DEFS.EXTEND,
+        add_name_prefixes = True
+    )
+
+    return None if inplace else napistu_graph
 
 
 def napistu_graph_to_pyg_data(
@@ -144,10 +197,10 @@ def napistu_graph_to_pyg_data(
     vertex_df, edge_df = napistu_graph.to_pandas_dfs()
 
     # 2. Encode node and edge data in numpy arrays
-    vertex_features, _ = transforms.encode_dataframe(
+    vertex_features, _ = encoding.encode_dataframe(
         vertex_df, vertex_default_transforms, vertex_transforms, verbose=verbose
     )
-    edge_features, _ = transforms.encode_dataframe(
+    edge_features, _ = encoding.encode_dataframe(
         edge_df, edge_default_transforms, edge_transforms, verbose=verbose
     )
 
