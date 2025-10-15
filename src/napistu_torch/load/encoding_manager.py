@@ -2,10 +2,18 @@
 
 import logging
 from collections import defaultdict
-from typing import Any, Dict, Optional, Union
+from types import SimpleNamespace
+from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
-from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    RootModel,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from napistu_torch.load.constants import (
     ENCODING_MANAGER,
@@ -13,6 +21,12 @@ from napistu_torch.load.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+ENCODING_CONFIG_FORMAT = SimpleNamespace(
+    SIMPLE="simple",
+    COMPLEX="complex",
+)
 
 
 class EncodingManager:
@@ -279,7 +293,16 @@ class EncodingManager:
         True
         """
         if isinstance(config, dict):
-            return cls(config, encoders=encoders)
+            # Detect config format and validate
+            config_format = detect_config_format(config)
+
+            # Only pass encoders if config is in simple format
+            if config_format == ENCODING_CONFIG_FORMAT.COMPLEX:
+                return cls(config, encoders=None)
+            elif config_format == ENCODING_CONFIG_FORMAT.SIMPLE:
+                return cls(config, encoders=encoders)
+            else:
+                raise ValueError(f"Invalid config format: {config_format}")
         elif isinstance(config, cls):
             return config
         else:
@@ -551,6 +574,96 @@ class EncodingConfig(RootModel[Dict[str, TransformConfig]]):
             raise ValueError(f"Column conflicts: {'; '.join(conflict_details)}")
 
         return self
+
+
+class SimpleEncodingConfig(RootModel[Dict[str, Union[List[str], set]]]):
+    """Simple encoding configuration format validator.
+
+    Validates that each value is a list or set of column names (strings).
+
+    Parameters
+    ----------
+    root : Dict[str, Union[List[str], set]]
+        Dictionary mapping transform names to column name collections.
+    """
+
+    @model_validator(mode="after")
+    def validate_all_values_are_column_collections(self):
+        """Ensure all values are lists or sets of strings."""
+        for transform_name, columns in self.root.items():
+            if not isinstance(columns, (list, set)):
+                raise ValueError(
+                    f"Transform '{transform_name}': value must be a list or set of column names, got {type(columns)}"
+                )
+
+            if not columns:
+                raise ValueError(
+                    f"Transform '{transform_name}': column collection cannot be empty"
+                )
+
+            for col in columns:
+                if not isinstance(col, str):
+                    raise ValueError(
+                        f"Transform '{transform_name}': all column names must be strings, got {type(col)}"
+                    )
+
+        return self
+
+
+def detect_config_format(config: Dict) -> str:
+    """Detect whether a config dict is in simple or complex format.
+
+    Parameters
+    ----------
+    config : Dict
+        Configuration dictionary to analyze.
+
+    Returns
+    -------
+    str
+        ENCODING_CONFIG_FORMAT.SIMPLE or ENCODING_CONFIG_FORMAT.COMPLEX
+
+    Raises
+    ------
+    ValueError
+        If config doesn't match either format specification.
+
+    Examples
+    --------
+    >>> detect_config_format({'categorical': ['col1', 'col2']})
+    'simple'
+
+    >>> detect_config_format({'categorical': {'columns': ['col1'], 'transformer': OneHotEncoder()}})
+    'complex'
+    """
+    if not config:
+        # Empty config is valid for both formats, treat as complex
+        return ENCODING_CONFIG_FORMAT.COMPLEX
+
+    # Try validating as complex format first (more specific)
+    try:
+        EncodingConfig(root=config)
+        return ENCODING_CONFIG_FORMAT.COMPLEX
+    except ValidationError:
+        pass
+
+    # Try validating as simple format
+    try:
+        SimpleEncodingConfig(root=config)
+        return ENCODING_CONFIG_FORMAT.SIMPLE
+    except ValidationError:
+        pass
+
+    # If neither format is valid, provide helpful error
+    raise ValueError(
+        f"Config does not match simple or complex format. "
+        f"Simple format: Dict[str, List[str]] (transform -> columns). "
+        f"Complex format: Dict[str, Dict] with 'columns' and 'transformer' keys. "
+        f"Got: {config}"
+    )
+
+
+# private utils
 
 
 def _find_cross_config_conflicts(

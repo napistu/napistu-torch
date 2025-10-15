@@ -217,9 +217,14 @@ def encode_dataframe(
     df: pd.DataFrame,
     encoding_defaults: Union[Dict[str, Dict], EncodingManager],
     encoding_overrides: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    encoders: Dict = DEFAULT_ENCODERS,
     verbose: bool = False,
 ) -> tuple[np.ndarray, List[str]]:
     """Encode a DataFrame using sklearn transformers with configurable encoding rules.
+
+    This is a convenience function that combines fitting and transforming in one step.
+    For more control (e.g., fitting on training data and transforming test data),
+    use fit_encoders() and transform_dataframe() separately.
 
     This function applies a series of transformations to a DataFrame based on
     encoding configurations. It supports both default encoding rules and optional
@@ -230,7 +235,7 @@ def encode_dataframe(
     df : pd.DataFrame
         Input DataFrame to be encoded. Must contain all columns specified in
         the encoding configurations.
-    encoding_defaults : Dict[str, Dict]
+    encoding_defaults : Union[Dict[str, Dict], EncodingManager]
         Base encoding configuration dictionary. Each key is a transform name
         and each value is a dict with 'columns' and 'transformer' keys.
         Example: {
@@ -243,10 +248,12 @@ def encode_dataframe(
                 'transformer': StandardScaler()
             }
         }
-    encoding_overrides : Optional[Dict[str, Dict]], default=None
+    encoding_overrides : Optional[Union[Dict[str, Dict], EncodingManager]], default=None
         Optional override configuration that will be merged with encoding_defaults.
         For column conflicts, the override configuration takes precedence.
         If None, only encoding_defaults will be used.
+    encoders : Dict, default=ENCODERS
+        The encoders to use. If encoding_defaults or encoding_overrides are dicts, then these will be used to map from column encoding classes to the encoders themselves. If existing_encodings is a dict, then it must be passed in the 'simple' format which is a lookup from encoder keys to the columns using that encoder.
     verbose : bool, default=False
         If True, log detailed information about config composition and conflicts.
 
@@ -292,17 +299,79 @@ def encode_dataframe(
     ...     }
     ... }
     >>>
-    >>> # Encode the DataFrame
+    >>> # Encode the DataFrame (fit and transform in one step)
     >>> encoded_array, feature_names = encode_dataframe(df, defaults)
     >>> print(f"Encoded shape: {encoded_array.shape}")
     >>> print(f"Feature names: {feature_names}")
+    >>>
+    >>> # For train/test split, use the two-step approach:
+    >>> fitted_transformer = fit_encoders(train_df, defaults)
+    >>> train_encoded, train_features = transform_dataframe(train_df, fitted_transformer)
+    >>> test_encoded, test_features = transform_dataframe(test_df, fitted_transformer)
     """
+    # Fit encoders on the provided DataFrame
+    fitted_transformer = fit_encoders(
+        df, encoding_defaults, encoding_overrides, encoders, verbose
+    )
 
-    if isinstance(encoding_defaults, dict):
-        encoding_defaults = EncodingManager(encoding_defaults)
-    if isinstance(encoding_overrides, dict):
-        encoding_overrides = EncodingManager(encoding_overrides)
+    # Transform using the fitted transformer
+    return transform_dataframe(df, fitted_transformer)
 
+
+def fit_encoders(
+    df: pd.DataFrame,
+    encoding_defaults: Union[Dict[str, Dict], EncodingManager],
+    encoding_overrides: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    encoders: Dict = DEFAULT_ENCODERS,
+    verbose: bool = False,
+) -> ColumnTransformer:
+    """Fit encoding transformers on a DataFrame.
+
+    This function creates and fits a ColumnTransformer based on encoding
+    configurations. The fitted transformer can then be used to transform
+    this DataFrame or other DataFrames with the same schema.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame to fit encoders on. Must contain all columns specified
+        in the encoding configurations.
+    encoding_defaults : Union[Dict[str, Dict], EncodingManager]
+        Base encoding configuration. Each key is a transform name and each value
+        is a dict with 'columns' and 'transformer' keys.
+    encoding_overrides : Optional[Union[Dict[str, Dict], EncodingManager]], default=None
+        Optional override configuration that will be merged with encoding_defaults.
+        For column conflicts, the override configuration takes precedence.
+    verbose : bool, default=False
+        If True, log detailed information about config composition and conflicts.
+
+    Returns
+    -------
+    ColumnTransformer
+        Fitted sklearn ColumnTransformer ready to transform data.
+
+    Raises
+    ------
+    ValueError
+        If encoding configurations are invalid or if the DataFrame is empty.
+    KeyError
+        If the input DataFrame is missing columns specified in the encoding config.
+
+    Examples
+    --------
+    >>> # Fit encoders on training data
+    >>> fitted_transformer = fit_encoders(train_df, encoding_defaults)
+    >>>
+    >>> # Use the fitted transformer on train and test data
+    >>> train_encoded, train_features = transform_dataframe(train_df, fitted_transformer)
+    >>> test_encoded, test_features = transform_dataframe(test_df, fitted_transformer)
+    """
+    # Ensure configs are EncodingManager instances
+    encoding_defaults = EncodingManager.ensure(encoding_defaults, encoders)
+    if encoding_overrides is not None:
+        encoding_overrides = EncodingManager.ensure(encoding_overrides, encoders)
+
+    # Compose configurations
     if encoding_overrides is None:
         config = encoding_defaults
     else:
@@ -311,6 +380,7 @@ def encode_dataframe(
     if verbose:
         config.log_summary()
 
+    # Create ColumnTransformer from config
     preprocessor = config_to_column_transformer(config)
 
     # Check for missing columns before fitting
@@ -321,19 +391,97 @@ def encode_dataframe(
     missing_columns = required_columns - set(df.columns)
     if missing_columns:
         raise KeyError(
-            f"Missing columns in DataFrame: {list(missing_columns)}. Available columns: {list(df.columns)}"
+            f"Missing columns in DataFrame: {list(missing_columns)}. "
+            f"Available columns: {list(df.columns)}"
         )
 
     # Check for empty DataFrame
     if len(df) == 0:
         raise ValueError(
-            "Cannot encode empty DataFrame. DataFrame must contain at least one row."
+            "Cannot fit encoders on empty DataFrame. DataFrame must contain at least one row."
         )
 
-    encoded_array = preprocessor.fit_transform(df)
-    feature_names = _get_feature_names(preprocessor)
+    # Fit the transformer
+    preprocessor.fit(df)
 
-    # Return numpy array directly for PyTorch compatibility
+    return preprocessor
+
+
+def transform_dataframe(
+    df: pd.DataFrame,
+    fitted_transformer: ColumnTransformer,
+) -> tuple[np.ndarray, List[str]]:
+    """Transform a DataFrame using a fitted ColumnTransformer.
+
+    This function applies pre-fitted transformations to a DataFrame. The
+    transformer must have been fitted previously using fit_encoders() or
+    by calling .fit() directly.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame to transform. Must contain all columns that the
+        transformer expects.
+    fitted_transformer : ColumnTransformer
+        A fitted sklearn ColumnTransformer instance.
+
+    Returns
+    -------
+    tuple[np.ndarray, List[str]]
+        A tuple containing:
+        - encoded_array : np.ndarray
+            Transformed numpy array with encoded features.
+        - feature_names : List[str]
+            List of feature names corresponding to columns in encoded_array.
+
+    Raises
+    ------
+    ValueError
+        If the transformer is not fitted or if the DataFrame is empty.
+    KeyError
+        If the DataFrame is missing columns required by the transformer.
+
+    Examples
+    --------
+    >>> # Fit on training data
+    >>> fitted_transformer = fit_encoders(train_df, encoding_config)
+    >>>
+    >>> # Transform multiple DataFrames with same fitted transformer
+    >>> train_encoded, train_features = transform_dataframe(train_df, fitted_transformer)
+    >>> test_encoded, test_features = transform_dataframe(test_df, fitted_transformer)
+    >>> val_encoded, val_features = transform_dataframe(val_df, fitted_transformer)
+    """
+    # Check that transformer is fitted
+    if not hasattr(fitted_transformer, "transformers_"):
+        raise ValueError(
+            "ColumnTransformer must be fitted before transforming. "
+            "Use fit_encoders() to fit the transformer first."
+        )
+
+    # Check for empty DataFrame
+    if len(df) == 0:
+        raise ValueError(
+            "Cannot transform empty DataFrame. DataFrame must contain at least one row."
+        )
+
+    # Extract required columns from fitted transformer
+    required_columns = set()
+    for name, _, columns in fitted_transformer.transformers_:
+        if name != "remainder":  # Skip the remainder transformer
+            required_columns.update(columns)
+
+    # Check for missing columns
+    missing_columns = required_columns - set(df.columns)
+    if missing_columns:
+        raise KeyError(
+            f"Missing columns in DataFrame: {list(missing_columns)}. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    # Transform the data
+    encoded_array = fitted_transformer.transform(df)
+    feature_names = _get_feature_names(fitted_transformer)
+
     return encoded_array, feature_names
 
 

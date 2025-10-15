@@ -4,20 +4,20 @@ import pandas as pd
 import pytest
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from napistu_torch.load.constants import ENCODING_MANAGER
+from napistu_torch.load.constants import ENCODING_MANAGER, ENCODINGS
 
 
 @pytest.fixture
 def valid_encoding_config():
     """Valid encoding configuration without conflicts."""
     return {
-        "categorical": {
+        ENCODINGS.CATEGORICAL: {
             ENCODING_MANAGER.COLUMNS: ["node_type", "species_type"],
             ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(
                 handle_unknown="ignore", sparse_output=False
             ),
         },
-        "numerical": {
+        ENCODINGS.NUMERIC: {
             ENCODING_MANAGER.COLUMNS: ["weight", "score"],
             ENCODING_MANAGER.TRANSFORMER: StandardScaler(),
         },
@@ -25,17 +25,14 @@ def valid_encoding_config():
 
 
 @pytest.fixture
-def invalid_encoding_config():
-    """Invalid encoding configuration with column conflicts."""
+def valid_simple_encoding_config():
+    """Valid encoding configuration in simple format (equivalent to valid_encoding_config).
+
+    Note: Uses lists instead of sets to ensure consistent column ordering with valid_encoding_config.
+    """
     return {
-        "cat": {
-            ENCODING_MANAGER.COLUMNS: ["node_type", "weight"],
-            ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(),
-        },
-        "num": {
-            ENCODING_MANAGER.COLUMNS: ["weight", "score"],  # 'weight' conflict
-            ENCODING_MANAGER.TRANSFORMER: StandardScaler(),
-        },
+        ENCODINGS.CATEGORICAL: ["node_type", "species_type"],
+        ENCODINGS.NUMERIC: ["weight", "score"],
     }
 
 

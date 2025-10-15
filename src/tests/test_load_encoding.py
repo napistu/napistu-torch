@@ -6,9 +6,14 @@ import pytest
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from napistu_torch.load.constants import ENCODING_MANAGER
+from napistu_torch.load.constants import (
+    ENCODING_MANAGER,
+    ENCODING_MANAGER_TABLE,
+    ENCODINGS,
+)
 from napistu_torch.load.encoding import (
     _get_feature_names,
+    auto_encode,
     config_to_column_transformer,
     encode_dataframe,
 )
@@ -26,7 +31,7 @@ def test_config_to_column_transformer(valid_encoding_config):
 
     # Check transformer names and types
     transformer_names = [name for name, _, _ in preprocessor.transformers]
-    assert set(transformer_names) == {"categorical", "numerical"}
+    assert set(transformer_names) == {ENCODINGS.CATEGORICAL, ENCODINGS.NUMERIC}
 
 
 def test_config_to_column_transformer_invalid_config():
@@ -71,9 +76,9 @@ def test_get_feature_names_fitted(valid_encoding_config, simple_raw_graph_df):
     assert isinstance(feature_names, list)
     assert all(isinstance(name, str) for name in feature_names)
 
-    # Should have features for both categorical and numerical transforms
+    # Should have features for both categorical and numeric transforms
     cat_features = [name for name in feature_names if name.startswith("categorical__")]
-    num_features = [name for name in feature_names if name.startswith("numerical__")]
+    num_features = [name for name in feature_names if name.startswith("numeric__")]
 
     assert len(cat_features) > 0  # OneHotEncoder creates multiple features
     assert len(num_features) == 2  # StandardScaler preserves column count
@@ -99,14 +104,14 @@ def test_encode_dataframe_basic(valid_encoding_config, simple_raw_graph_df):
         "__" in name for name in feature_names
     ), f"Feature names should contain '__': {feature_names}"
 
-    # Check we have both categorical and numerical features
+    # Check we have both categorical and numeric features
     cat_features = [name for name in feature_names if name.startswith("categorical__")]
-    num_features = [name for name in feature_names if name.startswith("numerical__")]
+    num_features = [name for name in feature_names if name.startswith("numeric__")]
 
     assert len(cat_features) > 0, f"Expected categorical features, got: {cat_features}"
     assert (
         len(num_features) == 2
-    ), f"Expected 2 numerical features, got {len(num_features)}: {num_features}"
+    ), f"Expected 2 numeric features, got {len(num_features)}: {num_features}"
 
 
 def test_encode_dataframe_with_overrides(
@@ -134,15 +139,15 @@ def test_encode_dataframe_with_overrides(
         "__" in name for name in feature_names
     ), f"Feature names should contain '__': {feature_names}"
 
-    # Should have features from all three transforms: categorical, numerical, embeddings
+    # Should have features from all three transforms: categorical, numeric, embeddings
     cat_features = [name for name in feature_names if name.startswith("categorical__")]
-    num_features = [name for name in feature_names if name.startswith("numerical__")]
+    num_features = [name for name in feature_names if name.startswith("numeric__")]
     emb_features = [name for name in feature_names if name.startswith("embeddings__")]
 
     assert len(cat_features) > 0, f"Expected categorical features, got: {cat_features}"
     assert (
         len(num_features) == 2
-    ), f"Expected 2 numerical features, got {len(num_features)}: {num_features}"
+    ), f"Expected 2 numeric features, got {len(num_features)}: {num_features}"
     assert (
         len(emb_features) > 0
     ), f"Expected embedding features, got: {emb_features}"  # OneHotEncoder creates multiple features
@@ -175,5 +180,70 @@ def test_encode_dataframe_empty_dataframe():
     # Empty DataFrame with required column
     df = pd.DataFrame({"col1": []})
 
-    with pytest.raises(ValueError, match="Cannot encode empty DataFrame"):
+    with pytest.raises(ValueError, match="Cannot fit encoders on empty DataFrame"):
         encode_dataframe(df, config)
+
+
+def test_auto_encode_mixed_types():
+    """Test auto_encode correctly assigns encodings to different column types."""
+    # Create DataFrame with various column types
+    test_df = pd.DataFrame(
+        {
+            "binary_col": [0, 1, 0, 1, 0, 1],  # Binary (0/1 no NaN)
+            "binary_with_nan_col": [
+                0,
+                1,
+                np.nan,
+                1,
+                0,
+                np.nan,
+            ],  # Binary with NaN (becomes categorical)
+            "boolean_col": [True, False, True, False, True, False],  # Boolean dtype
+            "categorical_col": ["A", "B", "A", "C", "B", "A"],  # Categorical (object)
+            "categorical_with_nan_col": [
+                "X",
+                "Y",
+                np.nan,
+                "Z",
+                "Y",
+                np.nan,
+            ],  # Categorical with NaN
+            "numeric_col": [1.5, 2.3, 4.1, 5.2, 3.8, 2.9],  # Numeric (no NaN)
+            "sparse_numeric_col": [
+                1.0,
+                np.nan,
+                np.nan,
+                4.0,
+                np.nan,
+                np.nan,
+            ],  # Sparse numeric (>50% NaN)
+            "preencoded_col": [10, 20, 30, 40, 50, 60],  # Already in existing config
+        }
+    )
+
+    # Existing encodings that already handle "preencoded_col"
+    existing_encodings = {ENCODINGS.NUMERIC: ["preencoded_col"]}
+
+    # Run auto_encode
+    result_manager = auto_encode(test_df, existing_encodings)
+
+    # Get the encoding table
+    table = result_manager.get_encoding_table()
+
+    # Define expected column -> encoding mappings
+    expected_encodings = {
+        "binary_col": ENCODINGS.BINARY,
+        "binary_with_nan_col": ENCODINGS.CATEGORICAL,
+        "boolean_col": ENCODINGS.BINARY,
+        "categorical_col": ENCODINGS.CATEGORICAL,
+        "categorical_with_nan_col": ENCODINGS.CATEGORICAL,
+        "numeric_col": ENCODINGS.NUMERIC,
+        "sparse_numeric_col": ENCODINGS.SPARSE_NUMERIC,
+        "preencoded_col": ENCODINGS.NUMERIC,
+    }
+
+    # Check each column is assigned to the correct encoding type
+    for column, expected_encoding in expected_encodings.items():
+        rows = table[table[ENCODING_MANAGER_TABLE.COLUMN] == column]
+        assert len(rows) == 1, f"Expected 1 row for {column}, got {len(rows)}"
+        assert rows.iloc[0][ENCODING_MANAGER_TABLE.TRANSFORM_NAME] == expected_encoding
