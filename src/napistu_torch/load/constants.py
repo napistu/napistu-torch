@@ -73,3 +73,14 @@ EDGE_DEFAULT_TRANSFORMS = {
         NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE,
     },
 }
+
+# splitting strategies
+
+SPLITTING_STRATEGIES = SimpleNamespace(
+    EDGE_MASK="edge_mask",
+    VERTEX_MASK="vertex_mask",
+    NO_MASK="no_mask",
+    INDUCTIVE="inductive",
+)
+
+VALID_SPLITTING_STRATEGIES = list(SPLITTING_STRATEGIES.__dict__.values())

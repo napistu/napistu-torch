@@ -1,10 +1,51 @@
 """Shared fixtures for napistu_torch tests."""
 
+import os
+
 import pandas as pd
 import pytest
+from napistu import consensus, indices
+from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
+from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from napistu_torch.load.constants import ENCODING_MANAGER, ENCODINGS
+
+
+@pytest.fixture
+def test_data_path():
+    """Path to test data directory."""
+    return os.path.join(os.path.dirname(__file__), "test_data")
+
+
+@pytest.fixture
+def pw_index(test_data_path):
+    """Create a pathway index for metabolism test data."""
+    return indices.PWIndex(os.path.join(test_data_path, "pw_index_metabolism.tsv"))
+
+
+@pytest.fixture
+def sbml_dfs(pw_index):
+    """Create a consensus SBML_dfs model from metabolism test data."""
+
+    # Create SBML_dfs dictionary
+    sbml_dfs_dict = consensus.construct_sbml_dfs_dict(pw_index)
+
+    # Create consensus model
+    return consensus.construct_consensus_model(sbml_dfs_dict, pw_index)
+
+
+@pytest.fixture
+def napistu_graph(sbml_dfs):
+    """Create a NapistuGraph from sbml_dfs_metabolism with directed=True and topology weighting."""
+
+    napistu_graph = process_napistu_graph(
+        sbml_dfs,
+        directed=True,
+        weighting_strategy=NAPISTU_WEIGHTING_STRATEGIES.TOPOLOGY,
+    )
+
+    return napistu_graph
 
 
 @pytest.fixture
