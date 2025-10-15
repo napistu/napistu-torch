@@ -20,6 +20,49 @@ from napistu_torch.load.encoding_manager import (
 logger = logging.getLogger(__name__)
 
 
+def compose_encoding_configs(
+    encoding_defaults: Union[Dict, EncodingManager],
+    encoding_overrides: Optional[Union[Dict, EncodingManager]] = None,
+    encoders: Dict = DEFAULT_ENCODERS,
+    verbose: bool = False,
+) -> EncodingManager:
+    """Compose encoding configurations with optional overrides.
+
+    Parameters
+    ----------
+    encoding_defaults : Union[Dict, EncodingManager]
+        Base encoding configuration.
+    encoding_overrides : Optional[Union[Dict, EncodingManager]], default=None
+        Optional override configuration to merge with defaults.
+        For column conflicts, overrides take precedence.
+    encoders : Dict, default=DEFAULT_ENCODERS
+        Encoder instances to use when configs are in simple format.
+    verbose : bool, default=False
+        If True, log config composition details.
+
+    Returns
+    -------
+    EncodingManager
+        Composed configuration (or just defaults if no overrides).
+
+    Examples
+    --------
+    >>> defaults = {ENCODINGS.NUMERIC: ['col1']}
+    >>> overrides = {ENCODINGS.CATEGORICAL: ['col2']}
+    >>> config = compose_encoding_configs(defaults, overrides)
+    """
+    # Ensure configs are EncodingManager instances
+    encoding_defaults = EncodingManager.ensure(encoding_defaults, encoders)
+    if encoding_overrides is not None:
+        encoding_overrides = EncodingManager.ensure(encoding_overrides, encoders)
+
+    # Compose configurations
+    if encoding_overrides is None:
+        return encoding_defaults
+    else:
+        return encoding_defaults.compose(encoding_overrides, verbose=verbose)
+
+
 def auto_encode(
     graph_df: pd.DataFrame,
     existing_encodings: Union[Dict, EncodingManager],
@@ -366,26 +409,20 @@ def fit_encoders(
     >>> train_encoded, train_features = transform_dataframe(train_df, fitted_transformer)
     >>> test_encoded, test_features = transform_dataframe(test_df, fitted_transformer)
     """
-    # Ensure configs are EncodingManager instances
-    encoding_defaults = EncodingManager.ensure(encoding_defaults, encoders)
-    if encoding_overrides is not None:
-        encoding_overrides = EncodingManager.ensure(encoding_overrides, encoders)
-
-    # Compose configurations
-    if encoding_overrides is None:
-        config = encoding_defaults
-    else:
-        config = encoding_defaults.compose(encoding_overrides, verbose=verbose)
+    # Compose configurations (handles ensure, composition, and optional logging)
+    encoding_config = compose_encoding_configs(
+        encoding_defaults, encoding_overrides, encoders, verbose
+    )
 
     if verbose:
-        config.log_summary()
+        encoding_config.log_summary()
 
     # Create ColumnTransformer from config
-    preprocessor = config_to_column_transformer(config)
+    preprocessor = config_to_column_transformer(encoding_config)
 
     # Check for missing columns before fitting
     required_columns = set()
-    for transform_config in config.values():
+    for transform_config in encoding_config.values():
         required_columns.update(transform_config.get(ENCODING_MANAGER.COLUMNS, []))
 
     missing_columns = required_columns - set(df.columns)

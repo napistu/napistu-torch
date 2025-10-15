@@ -14,9 +14,33 @@ from napistu_torch.load.constants import (
 from napistu_torch.load.encoding import (
     _get_feature_names,
     auto_encode,
+    compose_encoding_configs,
     config_to_column_transformer,
     encode_dataframe,
 )
+from napistu_torch.load.encoding_manager import EncodingManager
+
+
+def test_compose_encoding_configs(valid_encoding_config, override_encoding_config):
+    """Test compose_encoding_configs helper function."""
+    # Test with no overrides (should return defaults)
+    result = compose_encoding_configs(valid_encoding_config)
+    assert isinstance(result, EncodingManager)
+    assert set(result.config_.keys()) == {ENCODINGS.CATEGORICAL, ENCODINGS.NUMERIC}
+
+    # Test with overrides (should merge configs)
+    result = compose_encoding_configs(valid_encoding_config, override_encoding_config)
+    assert isinstance(result, EncodingManager)
+    assert set(result.config_.keys()) == {
+        ENCODINGS.CATEGORICAL,
+        ENCODINGS.NUMERIC,
+        "embeddings",
+    }
+
+    # Verify override took precedence for categorical transform
+    assert (
+        "node_type" in result.config_[ENCODINGS.CATEGORICAL][ENCODING_MANAGER.COLUMNS]
+    )
 
 
 def test_config_to_column_transformer(valid_encoding_config):
