@@ -12,5 +12,5 @@ line-length = 88
 lint.select = ["E", "F", "I"]
 lint.ignore = ["E501"]
 
-[tool.uv]
-no-build-isolation-package = ["torch-sparse", "torch-scatter", "torch-geometric"]
+[tool.uv.extra-build-dependencies]
+torch-sparse = ["torch"]
