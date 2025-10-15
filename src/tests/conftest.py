@@ -9,7 +9,15 @@ from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from napistu_torch.load.constants import ENCODING_MANAGER, ENCODINGS
+from napistu_torch.load.constants import (
+    ENCODING_MANAGER,
+    ENCODINGS,
+    SPLITTING_STRATEGIES,
+)
+from napistu_torch.load.napistu_graphs import (
+    augment_napistu_graph,
+    napistu_graph_to_pyg,
+)
 
 
 @pytest.fixture
@@ -110,4 +118,16 @@ def simple_raw_graph_df():
             "score": [0.1, 0.2, 0.3, 0.4],
             "source_col": ["src1", "src2", "src3", "src4"],
         }
+    )
+
+
+@pytest.fixture
+def napistu_data(napistu_graph, sbml_dfs):
+    """Create a NapistuData object using the no_mask split strategy."""
+    # Augment the graph with SBML_dfs information
+    augment_napistu_graph(sbml_dfs, napistu_graph, inplace=True)
+
+    # Convert to NapistuData using no_mask strategy
+    return napistu_graph_to_pyg(
+        napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
     )

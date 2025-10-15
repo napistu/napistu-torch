@@ -9,7 +9,6 @@ from napistu.network.constants import (
 )
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
-from torch_geometric.data import Data
 
 from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
@@ -22,6 +21,7 @@ from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import EncodingManager
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
+from napistu_torch.napistu_data import NapistuData
 
 
 def augment_napistu_graph(
@@ -83,7 +83,7 @@ def napistu_graph_to_pyg(
     encoders: Dict = DEFAULT_ENCODERS,
     verbose: bool = True,
     **strategy_kwargs: Any,
-) -> Union[Data, dict[str, Data]]:
+) -> Union[NapistuData, dict[str, NapistuData]]:
     """
     Convert a NapistuGraph to PyTorch Geometric Data object(s) with specified splitting strategy.
 
@@ -130,8 +130,8 @@ def napistu_graph_to_pyg(
 
     Returns
     -------
-    Data
-        PyTorch Geometric Data object containing:
+    NapistuData
+        NapistuData object (subclass of PyTorch Geometric Data) containing:
         - x : torch.Tensor
             Node features tensor of shape (num_nodes, num_node_features)
         - edge_index : torch.Tensor
@@ -149,7 +149,7 @@ def napistu_graph_to_pyg(
         - optional, val_mask : torch.Tensor
             Mask tensor for validation split
 
-    Or, if splitting_strategy is 'inductive', a dictionary of Data objects
+    Or, if splitting_strategy is 'inductive', a dictionary of NapistuData objects
 
     Examples
     --------
@@ -212,7 +212,7 @@ def _napistu_graph_to_pyg_edge_mask(
     auto_encode: bool = True,
     encoders: Dict = DEFAULT_ENCODERS,
     verbose: bool = True,
-) -> dict[str, Data]:
+) -> dict[str, NapistuData]:
     """NapistuGraph to PyG Data object with edge masks split across train, test, and validation edge sets."""
 
     # 1. extract vertex and edge DataFrames and set encodings
@@ -256,8 +256,8 @@ def _napistu_graph_to_pyg_edge_mask(
         edge_df[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
     )
 
-    # 8. Create PyG Data object
-    return Data(
+    # 8. Create NapistuData object
+    return NapistuData(
         x=torch.tensor(encoded_vertices, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(encoded_edges, dtype=torch.float),
@@ -317,8 +317,8 @@ def _napistu_graph_to_pyg_inductive(
             edges[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
         )
 
-        # 6. Create PyG Data
-        pyg_data[k] = Data(
+        # 6. Create NapistuData
+        pyg_data[k] = NapistuData(
             x=torch.tensor(vertex_features, dtype=torch.float),
             edge_index=edge_index,
             edge_attr=torch.tensor(edge_features, dtype=torch.float),
@@ -337,7 +337,7 @@ def _napistu_graph_to_pyg_no_mask(
     encoders: Dict = DEFAULT_ENCODERS,
     auto_encode: bool = True,
     verbose: bool = False,
-) -> Data:
+) -> NapistuData:
     """Create a PyTorch Geometric Data object from a NapistuGraph without any splitting/masking of vertices or edges"""
 
     # 1. extract vertex and edge DataFrames and set encodings
@@ -366,8 +366,8 @@ def _napistu_graph_to_pyg_no_mask(
         [[e.source, e.target] for e in napistu_graph.es], dtype=torch.long
     ).T
 
-    # 4. Create PyG Data
-    data = Data(
+    # 4. Create NapistuData
+    data = NapistuData(
         x=torch.tensor(vertex_features, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(edge_features, dtype=torch.float),
@@ -387,7 +387,7 @@ def _napistu_graph_to_pyg_vertex_mask(
     auto_encode: bool = True,
     encoders: Dict = DEFAULT_ENCODERS,
     verbose: bool = True,
-) -> dict[str, Data]:
+) -> dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with vertex masks split across train, test, and validation vertex sets.
     """
@@ -433,8 +433,8 @@ def _napistu_graph_to_pyg_vertex_mask(
         edge_df[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
     )
 
-    # 8. Create PyG Data object
-    return Data(
+    # 8. Create NapistuData object
+    return NapistuData(
         x=torch.tensor(vertex_features, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(encoded_edges, dtype=torch.float),
