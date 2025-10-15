@@ -2,10 +2,13 @@ from typing import Dict, Optional
 
 import torch
 from napistu.constants import SBML_DFS
-
-from napistu.sbml_dfs_core import SBML_dfs
-from napistu.network.constants import NAPISTU_GRAPH_EDGES, NAPISTU_GRAPH_VERTICES, ADDING_ENTITY_DATA_DEFS
+from napistu.network.constants import (
+    ADDING_ENTITY_DATA_DEFS,
+    NAPISTU_GRAPH_EDGES,
+    NAPISTU_GRAPH_VERTICES,
+)
 from napistu.network.ng_core import NapistuGraph
+from napistu.sbml_dfs_core import SBML_dfs
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from torch_geometric.data import Data
 
@@ -46,8 +49,10 @@ EDGE_DEFAULT_TRANSFORMS = {
     },
 }
 
-def augment_napistu_graph(sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph, inplace: bool = False) -> None:
 
+def augment_napistu_graph(
+    sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph, inplace: bool = False
+) -> None:
     """
     Augment the NapistuGraph with information from the SBML_dfs.
 
@@ -75,23 +80,19 @@ def augment_napistu_graph(sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph, inpla
 
     # augment napistu graph with infomration from the sbml_dfs
     napistu_graph.add_sbml_dfs_summaries(
-        sbml_dfs,
-        stratify_by_bqb = False,
-        add_name_prefixes = True
+        sbml_dfs, stratify_by_bqb=False, add_name_prefixes=True
     )
 
     # add reactions_data to edges
     napistu_graph.add_all_entity_data(
-        sbml_dfs,
-        SBML_DFS.REACTIONS,
-        overwrite=True,
-        add_name_prefixes = True
+        sbml_dfs, SBML_DFS.REACTIONS, overwrite=True, add_name_prefixes=True
     )
 
     napistu_graph.add_all_entity_data(
-        sbml_dfs, SBML_DFS.SPECIES,
-        mode = ADDING_ENTITY_DATA_DEFS.EXTEND,
-        add_name_prefixes = True
+        sbml_dfs,
+        SBML_DFS.SPECIES,
+        mode=ADDING_ENTITY_DATA_DEFS.EXTEND,
+        add_name_prefixes=True,
     )
 
     return None if inplace else napistu_graph

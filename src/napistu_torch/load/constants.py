@@ -1,7 +1,11 @@
 from types import SimpleNamespace
 
 from napistu.constants import SBML_DFS
-from napistu.network.constants import NAPISTU_GRAPH_EDGES, NAPISTU_GRAPH_VERTICES, IGRAPH_DEFS
+from napistu.network.constants import (
+    IGRAPH_DEFS,
+    NAPISTU_GRAPH_EDGES,
+    NAPISTU_GRAPH_VERTICES,
+)
 
 # transformation defs
 
@@ -26,10 +30,10 @@ ENCODING_MANAGER_TABLE = SimpleNamespace(
 # encodings
 
 ENCODINGS = SimpleNamespace(
-    CATEGORICAL = "categorical",
-    NUMERIC = "numeric",
-    SPARSE_NUMERIC = "sparse_numeric",
-    BINARY = "binary",
+    CATEGORICAL="categorical",
+    NUMERIC="numeric",
+    SPARSE_NUMERIC="sparse_numeric",
+    BINARY="binary",
 )
 
 NEVER_ENCODE = {
