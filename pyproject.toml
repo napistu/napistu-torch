@@ -11,3 +11,8 @@ target-version = "py39"
 line-length = 88
 lint.select = ["E", "F", "I"]
 lint.ignore = ["E501"]
+
+[tool.uv.extra-build-dependencies]
+torch-sparse = ["torch"]
+torch-scatter = ["torch"]
+torch-geometric = ["torch"]

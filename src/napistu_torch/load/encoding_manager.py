@@ -1,15 +1,32 @@
+"""Configuration management for DataFrame encoding transformations."""
+
 import logging
 from collections import defaultdict
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Union
 
-import numpy as np
 import pandas as pd
-from pydantic import BaseModel, Field, RootModel, field_validator, model_validator
-from sklearn.compose import ColumnTransformer
+from pydantic import (
+    BaseModel,
+    Field,
+    RootModel,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
-from napistu_torch.load.constants import TRANSFORM_TABLE, TRANSFORMATION
+from napistu_torch.load.constants import (
+    ENCODING_MANAGER,
+    ENCODING_MANAGER_TABLE,
+)
 
 logger = logging.getLogger(__name__)
+
+
+ENCODING_CONFIG_FORMAT = SimpleNamespace(
+    SIMPLE="simple",
+    COMPLEX="complex",
+)
 
 
 class EncodingManager:
@@ -20,30 +37,52 @@ class EncodingManager:
 
     Parameters
     ----------
-    config : Dict[str, Dict]
-        Encoding configuration dictionary. Each key is a transform name
-        and each value is a dict with 'columns' and 'transformer' keys.
-        Example: {
-            'categorical': {
-                'columns': ['col1', 'col2'],
-                'transformer': OneHotEncoder()
-            },
-            'numerical': {
-                'columns': ['col3'],
-                'transformer': StandardScaler()
+    config : Dict[str, Dict] or Dict[str, set]
+        Encoding configuration dictionary. Supports two formats:
+
+        Complex format (when encoders=None):
+            Each key is a transform name and each value is a dict with
+            'columns' and 'transformer' keys.
+            Example: {
+                'categorical': {
+                    'columns': ['col1', 'col2'],
+                    'transformer': OneHotEncoder()
+                },
+                'numerical': {
+                    'columns': ['col3'],
+                    'transformer': StandardScaler()
+                }
             }
+
+        Simple format (when encoders is provided):
+            Each key is an encoding type and each value is a set/list of column names.
+            Example: {
+                'categorical': {'col1', 'col2'},
+                'numerical': {'col3'}
+            }
+
+    encoders : Dict[str, Any], optional
+        Mapping from encoding type to transformer instance. Only used with
+        simple format. If provided, config is treated as simple format and
+        converted to complex format internally.
+        Example: {
+            'categorical': OneHotEncoder(),
+            'numerical': StandardScaler()
         }
 
     Attributes
     ----------
     config_ : Dict[str, Dict]
-        The validated configuration dictionary.
+        The validated configuration dictionary (always in complex format).
 
     Methods
     -------
     compose(override_config, verbose=False)
         Compose this configuration with another configuration using merge strategy.
-    get_transform_table()
+    ensure(config, encoders=None)
+        Class method to ensure config is an EncodingManager instance.
+        Supports both simple and complex dict formats via encoders parameter.
+    get_encoding_table()
         Get a summary table of all configured transformations.
     log_summary()
         Log a summary of all configured transformations.
@@ -52,7 +91,7 @@ class EncodingManager:
 
     Private Methods
     ---------------
-    _create_transform_table(config)
+    _create_encoding_table(config)
         Create transform table from validated config.
 
     Raises
@@ -62,6 +101,8 @@ class EncodingManager:
 
     Examples
     --------
+    Complex format:
+
     >>> from sklearn.preprocessing import OneHotEncoder, StandardScaler
     >>>
     >>> config_dict = {
@@ -75,13 +116,68 @@ class EncodingManager:
     ...     }
     ... }
     >>>
-    >>> config = EncodingConfig(config_dict)
+    >>> config = EncodingManager(config_dict)
     >>> config.log_summary()
-    >>> print(config.get_transform_table())
+    >>> print(config.get_encoding_table())
+
+    Simple format:
+
+    >>> simple_spec = {
+    ...     'categorical': {'category'},
+    ...     'numerical': {'value'}
+    ... }
+    >>> encoders = {
+    ...     'categorical': OneHotEncoder(sparse_output=False),
+    ...     'numerical': StandardScaler()
+    ... }
+    >>> config = EncodingManager(simple_spec, encoders=encoders)
+    >>> print(config.get_encoding_table())
     """
 
-    def __init__(self, config: Dict[str, Dict]):
+    def __init__(
+        self,
+        config: Union[Dict[str, Dict], Dict[str, set]],
+        encoders: Optional[Dict[str, Any]] = None,
+    ):
+        # If encoders provided, convert simple format to complex format
+        if encoders is not None:
+            config = self._convert_simple_to_complex(config, encoders)
+
         self.config_ = self.validate(config)
+
+    @staticmethod
+    def _convert_simple_to_complex(
+        simple_spec: Dict[str, set], encoders: Dict[str, Any]
+    ) -> Dict[str, Dict]:
+        """Convert simple spec format to complex format.
+
+        Parameters
+        ----------
+        simple_spec : Dict[str, set]
+            Mapping from encoding type to set of column names.
+        encoders : Dict[str, Any]
+            Mapping from encoding type to transformer instance.
+
+        Returns
+        -------
+        Dict[str, Dict]
+            Complex format configuration.
+        """
+        complex_config = {}
+
+        for encoding_type, columns in simple_spec.items():
+            if encoding_type not in encoders:
+                raise ValueError(f"Unknown encoding type: {encoding_type}")
+
+            # Convert set to sorted list for consistent ordering
+            column_list = sorted(list(columns))
+
+            complex_config[encoding_type] = {
+                ENCODING_MANAGER.COLUMNS: column_list,
+                ENCODING_MANAGER.TRANSFORMER: encoders[encoding_type],
+            }
+
+        return complex_config
 
     def compose(
         self,
@@ -116,8 +212,8 @@ class EncodingManager:
         # Both configs are already validated since they're EncodingConfig instances
 
         # Create transform tables for conflict detection
-        base_table = self.get_transform_table()
-        override_table = override_config.get_transform_table()
+        base_table = self.get_encoding_table()
+        override_table = override_config.get_encoding_table()
 
         # Find cross-config conflicts
         cross_conflicts = _find_cross_config_conflicts(base_table, override_table)
@@ -126,7 +222,7 @@ class EncodingManager:
             logger.info("Cross-config conflicts detected:")
             for column, details in cross_conflicts.items():
                 logger.info(
-                    f"  Column '{column}': base transforms {details[TRANSFORMATION.BASE]} -> override transforms {details[TRANSFORMATION.OVERRIDE]}"
+                    f"  Column '{column}': base transforms {details[ENCODING_MANAGER.BASE]} -> override transforms {details[ENCODING_MANAGER.OVERRIDE]}"
                 )
         elif verbose:
             logger.info("No cross-config conflicts detected")
@@ -139,7 +235,82 @@ class EncodingManager:
         # Return new EncodingConfig instance (validation happens in __init__)
         return EncodingManager(composed_dict)
 
-    def get_transform_table(self) -> pd.DataFrame:
+    @classmethod
+    def ensure(
+        cls,
+        config: Union[dict, "EncodingManager"],
+        encoders: Optional[Dict[str, Any]] = None,
+    ) -> "EncodingManager":
+        """
+        Ensure that config is an EncodingManager object.
+
+        If config is a dict, it will be converted to an EncodingManager.
+        If it's already an EncodingManager, it will be returned as-is.
+
+        Parameters
+        ----------
+        config : Union[dict, EncodingManager]
+            Either a dict (simple or complex format) or an EncodingManager object.
+        encoders : Dict[str, Any], optional
+            Mapping from encoding type to transformer instance. Only used when
+            config is a dict in simple format. Ignored if config is already an
+            EncodingManager.
+
+        Returns
+        -------
+        EncodingManager
+            The EncodingManager object
+
+        Raises
+        ------
+        ValueError
+            If config is neither a dict nor an EncodingManager
+
+        Examples
+        --------
+        Complex format dict:
+
+        >>> config = EncodingManager.ensure({
+        ...     "foo": {"columns": ["bar"], "transformer": StandardScaler()}
+        ... })
+        >>> isinstance(config, EncodingManager)
+        True
+
+        Simple format dict:
+
+        >>> config = EncodingManager.ensure(
+        ...     {"categorical": {"col1", "col2"}},
+        ...     encoders={"categorical": OneHotEncoder()}
+        ... )
+        >>> isinstance(config, EncodingManager)
+        True
+
+        EncodingManager passthrough:
+
+        >>> manager = EncodingManager({"foo": {"columns": ["bar"], "transformer": StandardScaler()}})
+        >>> result = EncodingManager.ensure(manager)
+        >>> result is manager
+        True
+        """
+        if isinstance(config, dict):
+            # Detect config format and validate
+            config_format = detect_config_format(config)
+
+            # Only pass encoders if config is in simple format
+            if config_format == ENCODING_CONFIG_FORMAT.COMPLEX:
+                return cls(config, encoders=None)
+            elif config_format == ENCODING_CONFIG_FORMAT.SIMPLE:
+                return cls(config, encoders=encoders)
+            else:
+                raise ValueError(f"Invalid config format: {config_format}")
+        elif isinstance(config, cls):
+            return config
+        else:
+            raise ValueError(
+                f"config must be a dict or an EncodingManager object, got {type(config)}"
+            )
+
+    def get_encoding_table(self) -> pd.DataFrame:
         """Get a summary table of all configured transformations.
 
         Returns
@@ -151,7 +322,7 @@ class EncodingManager:
         Examples
         --------
         >>> config = EncodingConfig(config_dict)
-        >>> table = config.get_transform_table()
+        >>> table = config.get_encoding_table()
         >>> print(table)
            transform_name    column transformer_type
         0     categorical      col1    OneHotEncoder
@@ -163,7 +334,7 @@ class EncodingManager:
         for name, config in self.config_.items():
             validated_config[name] = TransformConfig(**config)
 
-        return self._create_transform_table(validated_config)
+        return self._create_encoding_table(validated_config)
 
     def log_summary(self) -> None:
         """Log a summary of all configured transformations.
@@ -179,16 +350,17 @@ class EncodingManager:
         INFO:__main__:numerical (StandardScaler): ['col3']
         """
         for transform_name, transform_config in self.config_.items():
-            transformer = transform_config[TRANSFORMATION.TRANSFORMER]
-            columns = transform_config[TRANSFORMATION.COLUMNS]
+            transformer = transform_config[ENCODING_MANAGER.TRANSFORMER]
+            columns = transform_config[ENCODING_MANAGER.COLUMNS]
+            columns_str = ", ".join(columns)
 
             transformer_type = (
                 type(transformer).__name__
-                if transformer != TRANSFORMATION.PASSTHROUGH
-                else TRANSFORMATION.PASSTHROUGH
+                if transformer != ENCODING_MANAGER.PASSTHROUGH
+                else ENCODING_MANAGER.PASSTHROUGH
             )
 
-            logger.info(f"{transform_name} ({transformer_type}): {columns}")
+            logger.info(f"{transform_name} ({transformer_type}): {columns_str}")
 
     def validate(self, config: Dict[str, Dict]) -> Dict[str, Dict]:
         """Validate a configuration dictionary.
@@ -221,14 +393,14 @@ class EncodingManager:
                 if not isinstance(transform_config, dict):
                     raise ValueError(f"Transform '{name}' must be a dictionary")
 
-                if TRANSFORMATION.COLUMNS not in transform_config:
+                if ENCODING_MANAGER.COLUMNS not in transform_config:
                     raise ValueError(f"Transform '{name}' missing 'columns' key")
 
-                if TRANSFORMATION.TRANSFORMER not in transform_config:
+                if ENCODING_MANAGER.TRANSFORMER not in transform_config:
                     raise ValueError(f"Transform '{name}' missing 'transformer' key")
 
-                columns = transform_config[TRANSFORMATION.COLUMNS]
-                transformer = transform_config[TRANSFORMATION.TRANSFORMER]
+                columns = transform_config[ENCODING_MANAGER.COLUMNS]
+                transformer = transform_config[ENCODING_MANAGER.TRANSFORMER]
 
                 # Validate columns
                 if not isinstance(columns, list) or len(columns) == 0:
@@ -244,9 +416,9 @@ class EncodingManager:
 
                 # Validate transformer
                 if not (
-                    hasattr(transformer, TRANSFORMATION.FIT)
-                    or hasattr(transformer, TRANSFORMATION.TRANSFORM)
-                    or transformer == TRANSFORMATION.PASSTHROUGH
+                    hasattr(transformer, ENCODING_MANAGER.FIT)
+                    or hasattr(transformer, ENCODING_MANAGER.TRANSFORM)
+                    or transformer == ENCODING_MANAGER.PASSTHROUGH
                 ):
                     raise ValueError(
                         f"Transform '{name}': transformer must have fit/transform methods or be 'passthrough'"
@@ -257,7 +429,7 @@ class EncodingManager:
             # Check for column conflicts across transforms
             column_to_transforms = defaultdict(list)
             for transform_name, transform_config in validated_transforms.items():
-                for column in transform_config[TRANSFORMATION.COLUMNS]:
+                for column in transform_config[ENCODING_MANAGER.COLUMNS]:
                     column_to_transforms[column].append(transform_name)
 
             conflicts = {
@@ -292,12 +464,12 @@ class EncodingManager:
         """Return string representation of the configuration."""
         n_transforms = len(self.config_)
         total_columns = sum(
-            len(config.get(TRANSFORMATION.COLUMNS, []))
+            len(config.get(ENCODING_MANAGER.COLUMNS, []))
             for config in self.config_.values()
         )
         return f"EncodingConfig(transforms={n_transforms}, columns={total_columns})"
 
-    def _create_transform_table(
+    def _create_encoding_table(
         self, config: Dict[str, "TransformConfig"]
     ) -> pd.DataFrame:
         """Create transform table from validated config.
@@ -316,16 +488,16 @@ class EncodingManager:
         for transform_name, transform_config in config.items():
             transformer_type = (
                 type(transform_config.transformer).__name__
-                if transform_config.transformer != TRANSFORMATION.PASSTHROUGH
-                else TRANSFORMATION.PASSTHROUGH
+                if transform_config.transformer != ENCODING_MANAGER.PASSTHROUGH
+                else ENCODING_MANAGER.PASSTHROUGH
             )
 
             for column in transform_config.columns:
                 rows.append(
                     {
-                        TRANSFORM_TABLE.TRANSFORM_NAME: transform_name,
-                        TRANSFORM_TABLE.COLUMN: column,
-                        TRANSFORM_TABLE.TRANSFORMER_TYPE: transformer_type,
+                        ENCODING_MANAGER_TABLE.TRANSFORM_NAME: transform_name,
+                        ENCODING_MANAGER_TABLE.COLUMN: column,
+                        ENCODING_MANAGER_TABLE.TRANSFORMER_TYPE: transformer_type,
                     }
                 )
 
@@ -343,10 +515,10 @@ class TransformConfig(BaseModel):
         sklearn transformer object or 'passthrough'.
     """
 
-    columns: List[str] = Field(..., min_length=1)
+    columns: list[str] = Field(..., min_length=1)
     transformer: Any = Field(...)
 
-    @field_validator(TRANSFORMATION.COLUMNS)
+    @field_validator(ENCODING_MANAGER.COLUMNS)
     @classmethod
     def validate_columns(cls, v):
         for col in v:
@@ -354,13 +526,13 @@ class TransformConfig(BaseModel):
                 raise ValueError("all columns must be non-empty strings")
         return v
 
-    @field_validator(TRANSFORMATION.TRANSFORMER)
+    @field_validator(ENCODING_MANAGER.TRANSFORMER)
     @classmethod
     def validate_transformer(cls, v):
         if not (
-            hasattr(v, TRANSFORMATION.FIT)
-            or hasattr(v, TRANSFORMATION.TRANSFORM)
-            or v == TRANSFORMATION.PASSTHROUGH
+            hasattr(v, ENCODING_MANAGER.FIT)
+            or hasattr(v, ENCODING_MANAGER.TRANSFORM)
+            or v == ENCODING_MANAGER.PASSTHROUGH
         ):
             raise ValueError(
                 'transformer must have fit/transform methods or be "passthrough"'
@@ -404,191 +576,94 @@ class EncodingConfig(RootModel[Dict[str, TransformConfig]]):
         return self
 
 
-def config_to_column_transformer(
-    encoding_config: Union[Dict[str, Dict], EncodingConfig],
-) -> ColumnTransformer:
-    """Convert validated config dict to sklearn ColumnTransformer.
+class SimpleEncodingConfig(RootModel[Dict[str, Union[List[str], set]]]):
+    """Simple encoding configuration format validator.
+
+    Validates that each value is a list or set of column names (strings).
 
     Parameters
     ----------
-    encoding_config : Union[Dict[str, Dict], EncodingConfig]
-        Configuration dictionary (will be validated first).
+    root : Dict[str, Union[List[str], set]]
+        Dictionary mapping transform names to column name collections.
+    """
+
+    @model_validator(mode="after")
+    def validate_all_values_are_column_collections(self):
+        """Ensure all values are lists or sets of strings."""
+        for transform_name, columns in self.root.items():
+            if not isinstance(columns, (list, set)):
+                raise ValueError(
+                    f"Transform '{transform_name}': value must be a list or set of column names, got {type(columns)}"
+                )
+
+            if not columns:
+                raise ValueError(
+                    f"Transform '{transform_name}': column collection cannot be empty"
+                )
+
+            for col in columns:
+                if not isinstance(col, str):
+                    raise ValueError(
+                        f"Transform '{transform_name}': all column names must be strings, got {type(col)}"
+                    )
+
+        return self
+
+
+def detect_config_format(config: Dict) -> str:
+    """Detect whether a config dict is in simple or complex format.
+
+    Parameters
+    ----------
+    config : Dict
+        Configuration dictionary to analyze.
 
     Returns
     -------
-    ColumnTransformer
-        sklearn ColumnTransformer ready for fit/transform.
+    str
+        ENCODING_CONFIG_FORMAT.SIMPLE or ENCODING_CONFIG_FORMAT.COMPLEX
 
     Raises
     ------
     ValueError
-        If config is invalid.
+        If config doesn't match either format specification.
 
     Examples
     --------
-    >>> config = {
-    ...     'categorical': {
-    ...         'columns': ['node_type', 'species_type'],
-    ...         'transformer': OneHotEncoder(handle_unknown='ignore')
-    ...     },
-    ...     'numerical': {
-    ...         'columns': ['weight', 'score'],
-    ...         'transformer': StandardScaler()
-    ...     }
-    ... }
-    >>> preprocessor = config_to_column_transformer(config)
-    >>> # Equivalent to:
-    >>> # ColumnTransformer([
-    >>> #     ('categorical', OneHotEncoder(handle_unknown='ignore'), ['node_type', 'species_type']),
-    >>> #     ('numerical', StandardScaler(), ['weight', 'score'])
-    >>> # ])
+    >>> detect_config_format({'categorical': ['col1', 'col2']})
+    'simple'
+
+    >>> detect_config_format({'categorical': {'columns': ['col1'], 'transformer': OneHotEncoder()}})
+    'complex'
     """
-    # Validate config first
+    if not config:
+        # Empty config is valid for both formats, treat as complex
+        return ENCODING_CONFIG_FORMAT.COMPLEX
 
-    if isinstance(encoding_config, dict):
-        encoding_config = EncodingManager(encoding_config)
+    # Try validating as complex format first (more specific)
+    try:
+        EncodingConfig(root=config)
+        return ENCODING_CONFIG_FORMAT.COMPLEX
+    except ValidationError:
+        pass
 
-    if not isinstance(encoding_config, EncodingManager):
-        raise ValueError(
-            "encoding_config must be a dictionary or an EncodingManager instance"
-        )
+    # Try validating as simple format
+    try:
+        SimpleEncodingConfig(root=config)
+        return ENCODING_CONFIG_FORMAT.SIMPLE
+    except ValidationError:
+        pass
 
-    # Build transformers list for ColumnTransformer
-    transformers = []
-    for transform_name, transform_config in encoding_config.items():
-        transformer = transform_config["transformer"]
-        columns = transform_config["columns"]
-
-        transformers.append((transform_name, transformer, columns))
-
-    return ColumnTransformer(transformers, remainder="drop")
-
-
-def encode_dataframe(
-    df: pd.DataFrame,
-    encoding_defaults: Union[Dict[str, Dict], EncodingManager],
-    encoding_overrides: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
-    verbose: bool = False,
-) -> tuple[np.ndarray, List[str]]:
-    """Encode a DataFrame using sklearn transformers with configurable encoding rules.
-
-    This function applies a series of transformations to a DataFrame based on
-    encoding configurations. It supports both default encoding rules and optional
-    overrides that can modify or extend the default behavior.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Input DataFrame to be encoded. Must contain all columns specified in
-        the encoding configurations.
-    encoding_defaults : Dict[str, Dict]
-        Base encoding configuration dictionary. Each key is a transform name
-        and each value is a dict with 'columns' and 'transformer' keys.
-        Example: {
-            'categorical': {
-                'columns': ['col1', 'col2'],
-                'transformer': OneHotEncoder()
-            },
-            'numerical': {
-                'columns': ['col3'],
-                'transformer': StandardScaler()
-            }
-        }
-    encoding_overrides : Optional[Dict[str, Dict]], default=None
-        Optional override configuration that will be merged with encoding_defaults.
-        For column conflicts, the override configuration takes precedence.
-        If None, only encoding_defaults will be used.
-    verbose : bool, default=False
-        If True, log detailed information about config composition and conflicts.
-
-    Returns
-    -------
-    tuple[np.ndarray, List[str]]
-        A tuple containing:
-        - encoded_array : np.ndarray
-            Transformed numpy array with encoded features. The number of columns
-            may differ from the input due to transformations like OneHotEncoder.
-        - feature_names : List[str]
-            List of feature names corresponding to the columns in encoded_array.
-            Names follow sklearn's convention: 'transform_name__column_name'.
-
-    Raises
-    ------
-    ValueError
-        If encoding configurations are invalid, have column conflicts, or if
-        required columns are missing from the input DataFrame.
-    KeyError
-        If the input DataFrame is missing columns specified in the encoding config.
-
-    Examples
-    --------
-    >>> import pandas as pd
-    >>> from sklearn.preprocessing import OneHotEncoder, StandardScaler
-    >>>
-    >>> # Sample data
-    >>> df = pd.DataFrame({
-    ...     'category': ['A', 'B', 'A', 'C'],
-    ...     'value': [1.0, 2.0, 3.0, 4.0]
-    ... })
-    >>>
-    >>> # Encoding configuration
-    >>> defaults = {
-    ...     'categorical': {
-    ...         'columns': ['category'],
-    ...         'transformer': OneHotEncoder(sparse_output=False)
-    ...     },
-    ...     'numerical': {
-    ...         'columns': ['value'],
-    ...         'transformer': StandardScaler()
-    ...     }
-    ... }
-    >>>
-    >>> # Encode the DataFrame
-    >>> encoded_array, feature_names = encode_dataframe(df, defaults)
-    >>> print(f"Encoded shape: {encoded_array.shape}")
-    >>> print(f"Feature names: {feature_names}")
-    """
-
-    if isinstance(encoding_defaults, dict):
-        encoding_defaults = EncodingManager(encoding_defaults)
-    if isinstance(encoding_overrides, dict):
-        encoding_overrides = EncodingManager(encoding_overrides)
-
-    if encoding_overrides is None:
-        config = encoding_defaults
-    else:
-        config = encoding_defaults.compose(encoding_overrides, verbose=verbose)
-
-    if verbose:
-        config.log_summary()
-
-    preprocessor = config_to_column_transformer(config)
-
-    # Check for missing columns before fitting
-    required_columns = set()
-    for transform_config in config.values():
-        required_columns.update(transform_config.get("columns", []))
-
-    missing_columns = required_columns - set(df.columns)
-    if missing_columns:
-        raise KeyError(
-            f"Missing columns in DataFrame: {list(missing_columns)}. Available columns: {list(df.columns)}"
-        )
-
-    # Check for empty DataFrame
-    if len(df) == 0:
-        raise ValueError(
-            "Cannot encode empty DataFrame. DataFrame must contain at least one row."
-        )
-
-    encoded_array = preprocessor.fit_transform(df)
-    feature_names = _get_feature_names(preprocessor)
-
-    # Return numpy array directly for PyTorch compatibility
-    return encoded_array, feature_names
+    # If neither format is valid, provide helpful error
+    raise ValueError(
+        f"Config does not match simple or complex format. "
+        f"Simple format: Dict[str, List[str]] (transform -> columns). "
+        f"Complex format: Dict[str, Dict] with 'columns' and 'transformer' keys. "
+        f"Got: {config}"
+    )
 
 
-# private
+# private utils
 
 
 def _find_cross_config_conflicts(
@@ -598,52 +673,25 @@ def _find_cross_config_conflicts(
     if base_table.empty or override_table.empty:
         return {}
 
-    base_columns = set(base_table[TRANSFORM_TABLE.COLUMN])
-    override_columns = set(override_table[TRANSFORM_TABLE.COLUMN])
+    base_columns = set(base_table[ENCODING_MANAGER_TABLE.COLUMN])
+    override_columns = set(override_table[ENCODING_MANAGER_TABLE.COLUMN])
     conflicted_columns = base_columns & override_columns
 
     conflicts = {}
     for column in conflicted_columns:
-        base_transforms = base_table[base_table[TRANSFORM_TABLE.COLUMN] == column][
-            TRANSFORM_TABLE.TRANSFORM_NAME
-        ].tolist()
+        base_transforms = base_table[
+            base_table[ENCODING_MANAGER_TABLE.COLUMN] == column
+        ][ENCODING_MANAGER_TABLE.TRANSFORM_NAME].tolist()
         override_transforms = override_table[
-            override_table[TRANSFORM_TABLE.COLUMN] == column
-        ][TRANSFORM_TABLE.TRANSFORM_NAME].tolist()
+            override_table[ENCODING_MANAGER_TABLE.COLUMN] == column
+        ][ENCODING_MANAGER_TABLE.TRANSFORM_NAME].tolist()
 
         conflicts[column] = {
-            TRANSFORMATION.BASE: base_transforms,
-            TRANSFORMATION.OVERRIDE: override_transforms,
+            ENCODING_MANAGER.BASE: base_transforms,
+            ENCODING_MANAGER.OVERRIDE: override_transforms,
         }
 
     return conflicts
-
-
-def _get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
-    """Get feature names from fitted ColumnTransformer using sklearn's standard method.
-
-    Parameters
-    ----------
-    preprocessor : ColumnTransformer
-        Fitted ColumnTransformer instance.
-
-    Returns
-    -------
-    List[str]
-        List of feature names in the same order as transform output columns.
-
-    Examples
-    --------
-    >>> preprocessor = config_to_column_transformer(config)
-    >>> preprocessor.fit(data)  # Must fit first!
-    >>> feature_names = _get_feature_names(preprocessor)
-    >>> # ['cat__node_type_A', 'cat__node_type_B', 'num__weight']
-    """
-    if not hasattr(preprocessor, "transformers_"):
-        raise ValueError("ColumnTransformer must be fitted first")
-
-    # Use sklearn's built-in method (available since sklearn 1.0+)
-    return preprocessor.get_feature_names_out().tolist()
 
 
 def _merge_configs(
@@ -656,17 +704,17 @@ def _merge_configs(
     for transform_name, transform_config in override_config.items():
         if transform_name in composed:
             # Merge column lists
-            base_columns = set(composed[transform_name][TRANSFORMATION.COLUMNS])
-            override_columns = set(transform_config[TRANSFORMATION.COLUMNS])
+            base_columns = set(composed[transform_name][ENCODING_MANAGER.COLUMNS])
+            override_columns = set(transform_config[ENCODING_MANAGER.COLUMNS])
 
             # Remove conflicts from base (override wins)
             base_columns -= conflicted_columns
             merged_columns = list(base_columns | override_columns)
 
             composed[transform_name] = {
-                TRANSFORMATION.COLUMNS: merged_columns,
-                TRANSFORMATION.TRANSFORMER: transform_config[
-                    TRANSFORMATION.TRANSFORMER
+                ENCODING_MANAGER.COLUMNS: merged_columns,
+                ENCODING_MANAGER.TRANSFORMER: transform_config[
+                    ENCODING_MANAGER.TRANSFORMER
                 ],
             }
         else:
