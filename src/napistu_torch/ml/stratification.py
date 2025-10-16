@@ -98,21 +98,26 @@ def train_test_val_split(
     )
 
     # Second split: split remaining data into test and val
-    # Adjust test_size to be relative to the remaining data
-    relative_test_size = test_size / (test_size + val_size)
+    if val_size == 0:
+        # If no validation set needed, all remaining data goes to test
+        test_df = temp_df
+        val_df = pd.DataFrame(columns=df.columns)  # Empty DataFrame with same columns
+    else:
+        # Adjust test_size to be relative to the remaining data
+        relative_test_size = test_size / (test_size + val_size)
 
-    # Handle stratification for second split
-    stratify_temp = None
-    if stratify is not None:
-        stratify_temp = stratify.loc[temp_df.index]
+        # Handle stratification for second split
+        stratify_temp = None
+        if stratify is not None:
+            stratify_temp = stratify.loc[temp_df.index]
 
-    test_df, val_df = train_test_split(
-        temp_df,
-        train_size=relative_test_size,
-        random_state=random_state,
-        shuffle=shuffle,
-        stratify=stratify_temp,
-    )
+        test_df, val_df = train_test_split(
+            temp_df,
+            train_size=relative_test_size,
+            random_state=random_state,
+            shuffle=shuffle,
+            stratify=stratify_temp,
+        )
 
     if return_dict:
         return {
@@ -147,7 +152,7 @@ def create_split_masks(
 
     for split_name in [TRAINING.TRAIN, TRAINING.TEST, TRAINING.VALIDATION]:
         mask = torch.zeros(n, dtype=torch.bool)
-        if split_name in splits_dict:
+        if split_name in splits_dict and not splits_dict[split_name].empty:
             mask[splits_dict[split_name].index] = True
         masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=split_name)] = mask
 

@@ -1,3 +1,5 @@
+import inspect
+import logging
 from typing import Any, Callable, Dict, Optional, Union
 
 import pandas as pd
@@ -22,6 +24,9 @@ from napistu_torch.load.encoding import EncodingManager
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
+
+# Set up logger
+logger = logging.getLogger(__name__)
 
 
 def augment_napistu_graph(
@@ -124,9 +129,9 @@ def napistu_graph_to_pyg(
         If True, log detailed information about config composition and encoding.
     **strategy_kwargs : Any
         Strategy-specific arguments:
-        - For 'edge_mask': train_ratio=0.8, val_ratio=0.1, test_ratio=0.1
-        - For 'vertex_mask': train_ratio=0.8, val_ratio=0.1, test_ratio=0.1
-        - For 'inductive': num_hops=2, train_ratio=0.8, etc.
+        - For 'edge_mask': train_size=0.8, val_size=0.1, test_size=0.1
+        - For 'vertex_mask': train_size=0.8, val_size=0.1, test_size=0.1
+        - For 'inductive': num_hops=2, train_size=0.8, etc.
 
     Returns
     -------
@@ -157,9 +162,9 @@ def napistu_graph_to_pyg(
     >>> data = napistu_graph_to_pyg_data(
     ...     ng,
     ...     splitting_strategy='edge_mask',
-    ...     train_ratio=0.7,
-    ...     val_ratio=0.15,
-    ...     test_ratio=0.15
+    ...     train_size=0.7,
+    ...     val_size=0.15,
+    ...     test_size=0.15
     ... )
 
     >>> # Vertex masking with default splits
@@ -170,7 +175,7 @@ def napistu_graph_to_pyg(
     ...     ng,
     ...     splitting_strategy='inductive',
     ...     num_hops=3,
-    ...     train_ratio=0.8
+    ...     train_size=0.8
     ... )
     """
 
@@ -186,7 +191,24 @@ def napistu_graph_to_pyg(
     # Get the strategy function
     strategy_func = SPLITTING_STRATEGY_FUNCTIONS[splitting_strategy]
 
-    # Call with all standard arguments plus any strategy-specific kwargs
+    # Filter strategy_kwargs to only include parameters that the strategy function accepts
+    strategy_sig = inspect.signature(strategy_func)
+    strategy_params = set(strategy_sig.parameters.keys())
+
+    # Identify ignored parameters and warn about them
+    ignored_params = set(strategy_kwargs.keys()) - strategy_params
+    if ignored_params:
+        logger.warning(
+            f"The following parameters were ignored by '{splitting_strategy}' strategy: {sorted(ignored_params)}. "
+            f"Only parameters accepted by this strategy will be used."
+        )
+
+    # Only include kwargs that are valid parameters for this strategy function
+    filtered_kwargs = {
+        key: value for key, value in strategy_kwargs.items() if key in strategy_params
+    }
+
+    # Call with all standard arguments plus filtered strategy-specific kwargs
     return strategy_func(
         napistu_graph=napistu_graph,
         vertex_default_transforms=vertex_default_transforms,
@@ -196,7 +218,7 @@ def napistu_graph_to_pyg(
         auto_encode=auto_encode,
         encoders=encoders,
         verbose=verbose,
-        **strategy_kwargs,
+        **filtered_kwargs,
     )
 
 
@@ -211,6 +233,9 @@ def _napistu_graph_to_pyg_edge_mask(
     edge_transforms: Dict[str, Dict] = None,
     auto_encode: bool = True,
     encoders: Dict = DEFAULT_ENCODERS,
+    train_size: float = 0.7,
+    test_size: float = 0.15,
+    val_size: float = 0.15,
     verbose: bool = True,
 ) -> dict[str, NapistuData]:
     """NapistuGraph to PyG Data object with edge masks split across train, test, and validation edge sets."""
@@ -234,7 +259,13 @@ def _napistu_graph_to_pyg_edge_mask(
     )
 
     # 3. Split vertices into train/test/val
-    edge_splits = train_test_val_split(edge_df, return_dict=True)
+    edge_splits = train_test_val_split(
+        edge_df,
+        train_size=train_size,
+        test_size=test_size,
+        val_size=val_size,
+        return_dict=True,
+    )
 
     # 4. Create masks (one mask per split, all same length as vertex_df)
     masks = create_split_masks(edge_df, edge_splits)
@@ -275,6 +306,9 @@ def _napistu_graph_to_pyg_inductive(
     edge_transforms=None,
     encoders=DEFAULT_ENCODERS,
     auto_encode=True,
+    train_size: float = 0.7,
+    test_size: float = 0.15,
+    val_size: float = 0.15,
     verbose=True,
 ):
     """
@@ -300,7 +334,13 @@ def _napistu_graph_to_pyg_inductive(
     )
 
     # 3. split edges into train/test/val
-    edge_splits = train_test_val_split(edge_df, return_dict=True)
+    edge_splits = train_test_val_split(
+        edge_df,
+        train_size=train_size,
+        test_size=test_size,
+        val_size=val_size,
+        return_dict=True,
+    )
 
     # 4. fit encoders to the training edges
     edge_encoder = encoding.fit_encoders(
@@ -386,6 +426,9 @@ def _napistu_graph_to_pyg_vertex_mask(
     edge_transforms: Dict[str, Dict] = None,
     auto_encode: bool = True,
     encoders: Dict = DEFAULT_ENCODERS,
+    train_size: float = 0.7,
+    test_size: float = 0.15,
+    val_size: float = 0.15,
     verbose: bool = True,
 ) -> dict[str, NapistuData]:
     """
@@ -411,14 +454,20 @@ def _napistu_graph_to_pyg_vertex_mask(
     )
 
     # 3. Split vertices into train/test/val
-    vertex_splits = train_test_val_split(vertex_df, return_dict=True)
+    vertex_splits = train_test_val_split(
+        vertex_df,
+        train_size=train_size,
+        test_size=test_size,
+        val_size=val_size,
+        return_dict=True,
+    )
 
     # 4. Create masks (one mask per split, all same length as vertex_df)
     masks = create_split_masks(vertex_df, vertex_splits)
 
     # 5. Fit encoders on just the training split
     fitted_vertex_encoders = encoding.fit_encoders(
-        vertex_splits["train"],  # Fit on train only!
+        vertex_splits[TRAINING.TRAIN],  # Fit on train only!
         vertex_encoding_manager,
         verbose=verbose,
     )

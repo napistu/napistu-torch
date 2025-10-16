@@ -122,12 +122,18 @@ def simple_raw_graph_df():
 
 
 @pytest.fixture
-def napistu_data(napistu_graph, sbml_dfs):
-    """Create a NapistuData object using the no_mask split strategy."""
+def augmented_napistu_graph(napistu_graph, sbml_dfs):
+    """Create a NapistuGraph that has been augmented with SBML_dfs information."""
     # Augment the graph with SBML_dfs information
     augment_napistu_graph(sbml_dfs, napistu_graph, inplace=True)
 
+    return napistu_graph
+
+
+@pytest.fixture
+def napistu_data(augmented_napistu_graph):
+    """Create a NapistuData object using the no_mask split strategy."""
     # Convert to NapistuData using no_mask strategy
     return napistu_graph_to_pyg(
-        napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
+        augmented_napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
     )
