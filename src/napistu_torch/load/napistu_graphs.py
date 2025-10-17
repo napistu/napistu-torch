@@ -8,6 +8,7 @@ from napistu.constants import SBML_DFS
 from napistu.network.constants import (
     ADDING_ENTITY_DATA_DEFS,
     IGRAPH_DEFS,
+    VALID_VERTEX_SBML_DFS_SUMMARIES,
 )
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
@@ -30,7 +31,10 @@ logger = logging.getLogger(__name__)
 
 
 def augment_napistu_graph(
-    sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph, inplace: bool = False
+    sbml_dfs: SBML_dfs,
+    napistu_graph: NapistuGraph,
+    sbml_dfs_summary_types: list = VALID_VERTEX_SBML_DFS_SUMMARIES,
+    inplace: bool = False,
 ) -> None:
     """
     Augment the NapistuGraph with information from the SBML_dfs.
@@ -44,6 +48,8 @@ def augment_napistu_graph(
         The SBML_dfs to augment the NapistuGraph with.
     napistu_graph : NapistuGraph
         The NapistuGraph to augment.
+    sbml_dfs_summary_types : list, optional
+        Types of summaries to include. Defaults to all valid summary types.
     inplace : bool, default=False
         If True, modify the NapistuGraph in place.
         If False, return a new NapistuGraph with the augmentations.
@@ -58,9 +64,20 @@ def augment_napistu_graph(
         napistu_graph = napistu_graph.copy()
 
     # augment napistu graph with infomration from the sbml_dfs
-    napistu_graph.add_sbml_dfs_summaries(
-        sbml_dfs, stratify_by_bqb=False, add_name_prefixes=True
-    )
+    if len(sbml_dfs_summary_types) > 0:
+        logger.info(
+            f"Augmenting `NapistuGraph` with `SBML_dfs`' summaries: {sbml_dfs_summary_types}"
+        )
+        napistu_graph.add_sbml_dfs_summaries(
+            sbml_dfs,
+            summary_types=sbml_dfs_summary_types,
+            stratify_by_bqb=False,
+            add_name_prefixes=True,
+        )
+    else:
+        logger.info(
+            "Skipping augmentation of `NapistuGraph` with `SBML_dfs` summaries since `sbml_dfs_summary_types` is empty"
+        )
 
     # add reactions_data to edges
     napistu_graph.add_all_entity_data(
@@ -77,18 +94,63 @@ def augment_napistu_graph(
     return None if inplace else napistu_graph
 
 
+def construct_unsupervised_pyg_data(
+    sbml_dfs: SBML_dfs,
+    napistu_graph: NapistuGraph,
+    splitting_strategy: str = SPLITTING_STRATEGIES.NO_MASK,
+    **kwargs,
+) -> NapistuData:
+    """
+    Construct a PyG data object from an SBML_dfs and NapistuGraph.
+
+    This function augments the NapistuGraph with SBML_dfs summaries and reaction data,
+    and then encodes the graph into a PyTorch Geometric data object.
+
+    Parameters
+    ----------
+    sbml_dfs : SBML_dfs
+        The SBML_dfs to augment the NapistuGraph with.
+    napistu_graph : NapistuGraph
+        The NapistuGraph to augment.
+    splitting_strategy : str, optional
+        The splitting strategy to use for the PyG data object.
+        Defaults to SPLITTING_STRATEGIES.NO_MASK.
+    **kwargs:
+        Additional keyword arguments to pass to napistu_graph_to_pyg.
+
+    Returns
+    -------
+    NapistuData
+        A PyTorch Geometric data object containing the augmented NapistuGraph.
+    """
+
+    working_napistu_graph = augment_napistu_graph(
+        sbml_dfs, napistu_graph, inplace=False
+    )
+
+    napistu_data = napistu_graph_to_pyg(
+        working_napistu_graph, splitting_strategy=splitting_strategy, **kwargs
+    )
+
+    return napistu_data
+
+
 def napistu_graph_to_pyg(
     napistu_graph: NapistuGraph,
     splitting_strategy: str,
-    vertex_default_transforms: Dict[str, Dict] = VERTEX_DEFAULT_TRANSFORMS,
-    vertex_transforms: Dict[str, Dict] = None,
-    edge_default_transforms: Dict[str, Dict] = EDGE_DEFAULT_TRANSFORMS,
-    edge_transforms: Dict[str, Dict] = None,
+    vertex_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = VERTEX_DEFAULT_TRANSFORMS,
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    edge_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = EDGE_DEFAULT_TRANSFORMS,
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     auto_encode: bool = True,
-    encoders: Dict = DEFAULT_ENCODERS,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     verbose: bool = True,
     **strategy_kwargs: Any,
-) -> Union[NapistuData, dict[str, NapistuData]]:
+) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
     Convert a NapistuGraph to PyTorch Geometric Data object(s) with specified splitting strategy.
 
@@ -105,23 +167,23 @@ def napistu_graph_to_pyg(
     napistu_graph : NapistuGraph
         The NapistuGraph object containing the biological network data.
         Must have vertices (nodes) and edges with associated attributes.
-    vertex_transforms : Optional[Dict[str, Dict]], default=None
+    vertex_transforms : Optional[Union[Dict[str, Dict], EncodingManager]], default=None
         Optional override configuration for vertex (node) feature encoding.
         If provided, will be merged with vertex_default_transforms using the
         merge strategy from compose_configs.
-    edge_transforms : Optional[Dict[str, Dict]], default=None
+    edge_transforms : Optional[Union[Dict[str, Dict], EncodingManager]], default=None
         Optional override configuration for edge feature encoding.
         If provided, will be merged with edge_default_transforms using the
         merge strategy from compose_configs.
-    vertex_default_transforms : Optional[Dict[str, Dict]], default=VERTEX_DEFAULT_TRANSFORMS
+    vertex_default_transforms : Union[Dict[str, Dict], EncodingManager], default=VERTEX_DEFAULT_TRANSFORMS
         Default encoding configuration for vertex features. By default, encodes:
         - node_type and species_type as categorical features using OneHotEncoder
-    edge_default_transforms : Optional[Dict[str, Dict]], default=EDGE_DEFAULT_TRANSFORMS
+    edge_default_transforms : Union[Dict[str, Dict], EncodingManager], default=EDGE_DEFAULT_TRANSFORMS
         Default encoding configuration for edge features. By default, encodes:
         - direction and sbo_term as categorical features using OneHotEncoder
         - stoichiometry, weight, and upstream_weight as numerical features using StandardScaler
         - r_isreversible as boolean features using passthrough
-    encoders : Dict, default=DEFAULT_ENCODERS
+    encoders : Dict[str, Any], default=DEFAULT_ENCODERS
         Dictionary of encoders to use for encoding. This is passed to the encoding.compose_encoding_configs function and auto_encode function.
     auto_encode : bool, default=True
         If True, autoencode attributes that are not explicitly encoded (and which are not part of NEVER_ENCODE).
@@ -135,7 +197,7 @@ def napistu_graph_to_pyg(
 
     Returns
     -------
-    NapistuData
+    Union[NapistuData, Dict[str, NapistuData]]
         NapistuData object (subclass of PyTorch Geometric Data) containing:
         - x : torch.Tensor
             Node features tensor of shape (num_nodes, num_node_features)
@@ -143,9 +205,11 @@ def napistu_graph_to_pyg(
             Edge connectivity tensor of shape (2, num_edges) with source and target indices
         - edge_attr : torch.Tensor
             Edge features tensor of shape (num_edges, num_edge_features)
-        - vertex_feature_names : list[str]
+        - edge_weight : torch.Tensor, optional
+            1D tensor of original edge weights for scalar weight-based models
+        - vertex_feature_names : List[str]
             List of vertex feature names
-        - edge_feature_names : list[str]
+        - edge_feature_names : List[str]
             List of edge feature names
         - optional, train_mask : torch.Tensor
             Mask tensor for train split
@@ -154,7 +218,8 @@ def napistu_graph_to_pyg(
         - optional, val_mask : torch.Tensor
             Mask tensor for validation split
 
-    Or, if splitting_strategy is 'inductive', a dictionary of NapistuData objects
+        If splitting_strategy is 'inductive', returns Dict[str, NapistuData] with keys
+        'train', 'test', 'val' (or subset thereof).
 
     Examples
     --------
@@ -225,19 +290,47 @@ def napistu_graph_to_pyg(
 # private utils
 
 
+def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
+    """
+    Extract original edge weights from edge DataFrame.
+
+    Parameters
+    ----------
+    edge_df : pd.DataFrame
+        Edge DataFrame containing weight information
+
+    Returns
+    -------
+    Optional[torch.Tensor]
+        1D tensor of original edge weights, or None if no weights found
+    """
+    from napistu.network.constants import NAPISTU_GRAPH_EDGES
+
+    if NAPISTU_GRAPH_EDGES.WEIGHT in edge_df.columns:
+        weights = edge_df[NAPISTU_GRAPH_EDGES.WEIGHT].values
+        return torch.tensor(weights, dtype=torch.float)
+    else:
+        logger.warning("No edge weights found in edge DataFrame")
+    return None
+
+
 def _napistu_graph_to_pyg_edge_mask(
     napistu_graph: NapistuGraph,
-    vertex_default_transforms: Dict[str, Dict] = VERTEX_DEFAULT_TRANSFORMS,
-    vertex_transforms: Dict[str, Dict] = None,
-    edge_default_transforms: Dict[str, Dict] = EDGE_DEFAULT_TRANSFORMS,
-    edge_transforms: Dict[str, Dict] = None,
+    vertex_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = VERTEX_DEFAULT_TRANSFORMS,
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    edge_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = EDGE_DEFAULT_TRANSFORMS,
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     auto_encode: bool = True,
-    encoders: Dict = DEFAULT_ENCODERS,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     train_size: float = 0.7,
     test_size: float = 0.15,
     val_size: float = 0.15,
     verbose: bool = True,
-) -> dict[str, NapistuData]:
+) -> Dict[str, NapistuData]:
     """NapistuGraph to PyG Data object with edge masks split across train, test, and validation edge sets."""
 
     # 1. extract vertex and edge DataFrames and set encodings
@@ -287,11 +380,15 @@ def _napistu_graph_to_pyg_edge_mask(
         edge_df[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
     )
 
-    # 8. Create NapistuData object
+    # 8. Extract original edge weights
+    edge_weights = _extract_edge_weights(edge_df)
+
+    # 9. Create NapistuData object
     return NapistuData(
         x=torch.tensor(encoded_vertices, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(encoded_edges, dtype=torch.float),
+        edge_weight=edge_weights,
         vertex_feature_names=vertex_feature_names,
         edge_feature_names=edge_feature_names,
         **masks,  # Unpack train_mask, test_mask, val_mask
@@ -300,17 +397,21 @@ def _napistu_graph_to_pyg_edge_mask(
 
 def _napistu_graph_to_pyg_inductive(
     napistu_graph: NapistuGraph,
-    vertex_default_transforms=VERTEX_DEFAULT_TRANSFORMS,
-    vertex_transforms=None,
-    edge_default_transforms=EDGE_DEFAULT_TRANSFORMS,
-    edge_transforms=None,
-    encoders=DEFAULT_ENCODERS,
-    auto_encode=True,
+    vertex_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = VERTEX_DEFAULT_TRANSFORMS,
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    edge_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = EDGE_DEFAULT_TRANSFORMS,
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
+    auto_encode: bool = True,
     train_size: float = 0.7,
     test_size: float = 0.15,
     val_size: float = 0.15,
-    verbose=True,
-):
+    verbose: bool = True,
+) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with an inductive split into train, test, and validation sets.
     """
@@ -353,15 +454,19 @@ def _napistu_graph_to_pyg_inductive(
         edge_features, _ = encoding.transform_dataframe(edges, edge_encoder)
 
         # 5. Reformat the NapistuGraph's edgelist as from-to indices
-        edge_index = edge_index = torch.tensor(
+        edge_index = torch.tensor(
             edges[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
         )
 
-        # 6. Create NapistuData
+        # 6. Extract original edge weights for this split
+        edge_weights = _extract_edge_weights(edges)
+
+        # 7. Create NapistuData
         pyg_data[k] = NapistuData(
             x=torch.tensor(vertex_features, dtype=torch.float),
             edge_index=edge_index,
             edge_attr=torch.tensor(edge_features, dtype=torch.float),
+            edge_weight=edge_weights,
             num_nodes=vertex_df.shape[0],
         )
 
@@ -370,11 +475,15 @@ def _napistu_graph_to_pyg_inductive(
 
 def _napistu_graph_to_pyg_no_mask(
     napistu_graph: NapistuGraph,
-    vertex_transforms: Optional[Dict[str, Dict]] = None,
-    edge_transforms: Optional[Dict[str, Dict]] = None,
-    vertex_default_transforms: Optional[Dict[str, Dict]] = VERTEX_DEFAULT_TRANSFORMS,
-    edge_default_transforms: Optional[Dict[str, Dict]] = EDGE_DEFAULT_TRANSFORMS,
-    encoders: Dict = DEFAULT_ENCODERS,
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    vertex_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = VERTEX_DEFAULT_TRANSFORMS,
+    edge_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = EDGE_DEFAULT_TRANSFORMS,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     auto_encode: bool = True,
     verbose: bool = False,
 ) -> NapistuData:
@@ -406,11 +515,15 @@ def _napistu_graph_to_pyg_no_mask(
         [[e.source, e.target] for e in napistu_graph.es], dtype=torch.long
     ).T
 
-    # 4. Create NapistuData
+    # 4. Extract original edge weights
+    edge_weights = _extract_edge_weights(edge_df)
+
+    # 5. Create NapistuData
     data = NapistuData(
         x=torch.tensor(vertex_features, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(edge_features, dtype=torch.float),
+        edge_weight=edge_weights,
         vertex_feature_names=vertex_feature_names,
         edge_feature_names=edge_feature_names,
     )
@@ -420,17 +533,21 @@ def _napistu_graph_to_pyg_no_mask(
 
 def _napistu_graph_to_pyg_vertex_mask(
     napistu_graph: NapistuGraph,
-    vertex_default_transforms: Dict[str, Dict] = VERTEX_DEFAULT_TRANSFORMS,
-    vertex_transforms: Dict[str, Dict] = None,
-    edge_default_transforms: Dict[str, Dict] = EDGE_DEFAULT_TRANSFORMS,
-    edge_transforms: Dict[str, Dict] = None,
+    vertex_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = VERTEX_DEFAULT_TRANSFORMS,
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
+    edge_default_transforms: Union[
+        Dict[str, Dict], EncodingManager
+    ] = EDGE_DEFAULT_TRANSFORMS,
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     auto_encode: bool = True,
-    encoders: Dict = DEFAULT_ENCODERS,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     train_size: float = 0.7,
     test_size: float = 0.15,
     val_size: float = 0.15,
     verbose: bool = True,
-) -> dict[str, NapistuData]:
+) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with vertex masks split across train, test, and validation vertex sets.
     """
@@ -482,11 +599,15 @@ def _napistu_graph_to_pyg_vertex_mask(
         edge_df[[IGRAPH_DEFS.SOURCE, IGRAPH_DEFS.TARGET]].values.T, dtype=torch.long
     )
 
-    # 8. Create NapistuData object
+    # 8. Extract original edge weights
+    edge_weights = _extract_edge_weights(edge_df)
+
+    # 9. Create NapistuData object
     return NapistuData(
         x=torch.tensor(vertex_features, dtype=torch.float),
         edge_index=edge_index,
         edge_attr=torch.tensor(encoded_edges, dtype=torch.float),
+        edge_weight=edge_weights,
         vertex_feature_names=vertex_feature_names,
         edge_feature_names=edge_feature_names,
         **masks,  # Unpack train_mask, test_mask, val_mask
@@ -495,12 +616,12 @@ def _napistu_graph_to_pyg_vertex_mask(
 
 def _standardize_graph_dfs_and_encodings(
     napistu_graph: NapistuGraph,
-    vertex_default_transforms: Dict[str, Dict],
-    vertex_transforms: Dict[str, Dict],
-    edge_default_transforms: Dict[str, Dict],
-    edge_transforms: Dict[str, Dict],
+    vertex_default_transforms: Union[Dict[str, Dict], EncodingManager],
+    vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]],
+    edge_default_transforms: Union[Dict[str, Dict], EncodingManager],
+    edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]],
     auto_encode: bool,
-    encoders: Dict = DEFAULT_ENCODERS,
+    encoders: Dict[str, Any] = DEFAULT_ENCODERS,
 ) -> tuple[pd.DataFrame, pd.DataFrame, EncodingManager, EncodingManager]:
     """
     Standardize the node and edge DataFrames and encoding managers for a NapistuGraph.

@@ -56,11 +56,18 @@ class NapistuData(Data):
         x: Optional[torch.Tensor] = None,
         edge_index: Optional[torch.Tensor] = None,
         edge_attr: Optional[torch.Tensor] = None,
+        edge_weight: Optional[torch.Tensor] = None,
         vertex_feature_names: Optional[List[str]] = None,
         edge_feature_names: Optional[List[str]] = None,
         **kwargs,
     ):
-        super().__init__(x=x, edge_index=edge_index, edge_attr=edge_attr, **kwargs)
+        super().__init__(
+            x=x,
+            edge_index=edge_index,
+            edge_attr=edge_attr,
+            edge_weight=edge_weight,
+            **kwargs,
+        )
 
         # Store feature names for interpretability
         if vertex_feature_names is not None:
@@ -182,6 +189,28 @@ class NapistuData(Data):
         """
         return getattr(self, "edge_feature_names", None)
 
+    def get_edge_weights(self) -> Optional[torch.Tensor]:
+        """
+        Get edge weights as a 1D tensor.
+
+        This method provides access to the original edge weights stored in the
+        edge_weight attribute, which is the standard PyG convention for scalar
+        edge weights.
+
+        Returns
+        -------
+        Optional[torch.Tensor]
+            1D tensor of edge weights, or None if not available
+
+        Examples
+        --------
+        >>> weights = data.get_edge_weights()
+        >>> if weights is not None:
+        ...     print(f"Edge weights shape: {weights.shape}")
+        ...     print(f"Mean weight: {weights.mean():.3f}")
+        """
+        return getattr(self, "edge_weight", None)
+
     def summary(self) -> Dict[str, Any]:
         """
         Get a summary of the NapistuData object.
@@ -198,6 +227,7 @@ class NapistuData(Data):
             "num_edge_features": self.num_edge_features,
             "has_vertex_feature_names": hasattr(self, "vertex_feature_names"),
             "has_edge_feature_names": hasattr(self, "edge_feature_names"),
+            "has_edge_weights": hasattr(self, "edge_weight"),
         }
 
         if hasattr(self, "vertex_feature_names"):
