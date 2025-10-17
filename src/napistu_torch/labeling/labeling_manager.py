@@ -1,6 +1,6 @@
-"""Labeling strategy configuration and validation for napistu-torch."""
+"""Labeling manager configuration and validation for napistu-torch."""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from napistu_torch.labeling.constants import LABEL_TYPE
 
 
-class LabelingStrategy(BaseModel):
+class LabelingManager(BaseModel):
     """Configuration for label-specific featurization strategies.
 
     This class organizes and validates the attributes needed for different
@@ -27,11 +27,15 @@ class LabelingStrategy(BaseModel):
     augment_summary_types : List[str]
         SBML DFS summary types to add during graph augmentation.
         Used by augment_napistu_graph when calling add_sbml_dfs_summaries.
+    label_names : Optional[Dict[int, Any]]
+        Optional lookup table mapping label integers to their original names.
+        Used to track the mapping between encoded integers and original label values.
     """
 
     label_attribute: str
     exclude_vertex_attributes: List[str] = Field(default_factory=list)
     augment_summary_types: List[str] = Field(default_factory=list)
+    label_names: Optional[Dict[int, Any]] = Field(default=None)
 
     @field_validator("label_attribute")
     @classmethod
@@ -78,19 +82,19 @@ class LabelingStrategy(BaseModel):
         return self.model_dump()
 
     @classmethod
-    def from_dict(cls, config: Dict[str, Any]) -> "LabelingStrategy":
-        """Create a LabelingStrategy from a dictionary configuration."""
+    def from_dict(cls, config: Dict[str, Any]) -> "LabelingManager":
+        """Create a LabelingManager from a dictionary configuration."""
         return cls.model_validate(config)
 
 
 # Predefined labeling strategies
-LABEL_INFORMED_FEATURIZATION = {
-    LABEL_TYPE.SPECIES_TYPE: LabelingStrategy(
+LABELING_MANAGERS = {
+    LABEL_TYPE.SPECIES_TYPE: LabelingManager(
         label_attribute=NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,
         exclude_vertex_attributes=[NAPISTU_GRAPH_VERTICES.SPECIES_TYPE],
         augment_summary_types=[VERTEX_SBML_DFS_SUMMARIES.SOURCES],
     ),
-    LABEL_TYPE.NODE_TYPE: LabelingStrategy(
+    LABEL_TYPE.NODE_TYPE: LabelingManager(
         label_attribute=NAPISTU_GRAPH_VERTICES.NODE_TYPE,
         exclude_vertex_attributes=[
             NAPISTU_GRAPH_VERTICES.NODE_TYPE,

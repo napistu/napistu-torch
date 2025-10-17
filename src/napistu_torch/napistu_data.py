@@ -8,8 +8,11 @@ including safe save/load methods and additional utilities.
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import pandas as pd
 import torch
 from torch_geometric.data import Data
+
+from napistu_torch.constants import NAPISTU_DATA
 
 
 class NapistuData(Data):
@@ -28,10 +31,22 @@ class NapistuData(Data):
         Graph connectivity in COO format with shape [2, num_edges]
     edge_attr : torch.Tensor, optional
         Edge feature matrix with shape [num_edges, num_edge_features]
+    edge_weight : torch.Tensor, optional
+        Edge weights tensor with shape [num_edges]
+    y : torch.Tensor, optional
+        Node labels tensor with shape [num_nodes] for supervised learning tasks
     vertex_feature_names : List[str], optional
         Names of vertex features for interpretability
     edge_feature_names : List[str], optional
         Names of edge features for interpretability
+    ng_vertex_names : pd.Series, optional
+        Minimal vertex names from the original NapistuGraph. Series aligned with
+        the vertex tensor (x) - each element corresponds to a vertex in the same
+        order as the tensor rows. Used for debugging and validation of tensor alignment.
+    ng_edge_names : pd.DataFrame, optional
+        Minimal edge names from the original NapistuGraph. DataFrame with 'from' and 'to'
+        columns aligned with the edge tensor (edge_index, edge_attr) - each row corresponds
+        to an edge in the same order as the tensor columns. Used for debugging and validation.
     **kwargs
         Additional attributes to store in the data object
 
@@ -42,8 +57,11 @@ class NapistuData(Data):
     ...     x=torch.randn(100, 10),
     ...     edge_index=torch.randint(0, 100, (2, 200)),
     ...     edge_attr=torch.randn(200, 5),
+    ...     y=torch.randint(0, 3, (100,)),  # Node labels
     ...     vertex_feature_names=['feature_1', 'feature_2', ...],
-    ...     edge_feature_names=['weight', 'direction', ...]
+    ...     edge_feature_names=['weight', 'direction', ...],
+    ...     ng_vertex_names=vertex_names_series,  # Optional: minimal vertex names
+    ...     ng_edge_names=edge_names_df,          # Optional: minimal edge names
     ... )
     >>>
     >>> # Save and load
@@ -57,23 +75,41 @@ class NapistuData(Data):
         edge_index: Optional[torch.Tensor] = None,
         edge_attr: Optional[torch.Tensor] = None,
         edge_weight: Optional[torch.Tensor] = None,
+        y: Optional[torch.Tensor] = None,
         vertex_feature_names: Optional[List[str]] = None,
         edge_feature_names: Optional[List[str]] = None,
+        ng_vertex_names: Optional[pd.Series] = None,
+        ng_edge_names: Optional[pd.DataFrame] = None,
         **kwargs,
     ):
-        super().__init__(
-            x=x,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-            edge_weight=edge_weight,
-            **kwargs,
-        )
+        # Build parameters dict, only including non-None values
+        params = {
+            NAPISTU_DATA.X: x,
+            NAPISTU_DATA.EDGE_INDEX: edge_index,
+            NAPISTU_DATA.EDGE_ATTR: edge_attr,
+            NAPISTU_DATA.EDGE_WEIGHT: edge_weight,
+        }
+
+        # Only add y if it's not None
+        if y is not None:
+            params[NAPISTU_DATA.Y] = y
+
+        # Add any non-None kwargs
+        params.update({k: v for k, v in kwargs.items() if v is not None})
+
+        super().__init__(**params)
 
         # Store feature names for interpretability
         if vertex_feature_names is not None:
             self.vertex_feature_names = vertex_feature_names
         if edge_feature_names is not None:
             self.edge_feature_names = edge_feature_names
+
+        # Store minimal NapistuGraph attributes for debugging and validation
+        if ng_vertex_names is not None:
+            self.ng_vertex_names = ng_vertex_names
+        if ng_edge_names is not None:
+            self.ng_edge_names = ng_edge_names
 
     def save(self, filepath: Union[str, Path]) -> None:
         """
@@ -176,7 +212,7 @@ class NapistuData(Data):
         Optional[List[str]]
             List of vertex feature names, or None if not available
         """
-        return getattr(self, "vertex_feature_names", None)
+        return getattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES, None)
 
     def get_edge_feature_names(self) -> Optional[List[str]]:
         """
@@ -187,7 +223,7 @@ class NapistuData(Data):
         Optional[List[str]]
             List of edge feature names, or None if not available
         """
-        return getattr(self, "edge_feature_names", None)
+        return getattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES, None)
 
     def get_edge_weights(self) -> Optional[torch.Tensor]:
         """
@@ -209,7 +245,7 @@ class NapistuData(Data):
         ...     print(f"Edge weights shape: {weights.shape}")
         ...     print(f"Mean weight: {weights.mean():.3f}")
         """
-        return getattr(self, "edge_weight", None)
+        return getattr(self, NAPISTU_DATA.EDGE_WEIGHT, None)
 
     def summary(self) -> Dict[str, Any]:
         """
@@ -225,15 +261,17 @@ class NapistuData(Data):
             "num_edges": self.num_edges,
             "num_node_features": self.num_node_features,
             "num_edge_features": self.num_edge_features,
-            "has_vertex_feature_names": hasattr(self, "vertex_feature_names"),
-            "has_edge_feature_names": hasattr(self, "edge_feature_names"),
-            "has_edge_weights": hasattr(self, "edge_weight"),
+            "has_vertex_feature_names": hasattr(
+                self, NAPISTU_DATA.VERTEX_FEATURE_NAMES
+            ),
+            "has_edge_feature_names": hasattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES),
+            "has_edge_weights": hasattr(self, NAPISTU_DATA.EDGE_WEIGHT),
         }
 
-        if hasattr(self, "vertex_feature_names"):
-            summary_dict["vertex_feature_names"] = self.vertex_feature_names
-        if hasattr(self, "edge_feature_names"):
-            summary_dict["edge_feature_names"] = self.edge_feature_names
+        if hasattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES):
+            summary_dict[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = self.vertex_feature_names
+        if hasattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES):
+            summary_dict[NAPISTU_DATA.EDGE_FEATURE_NAMES] = self.edge_feature_names
 
         # Add any additional attributes
         for key, value in self.__dict__.items():

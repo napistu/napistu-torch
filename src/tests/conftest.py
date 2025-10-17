@@ -16,6 +16,8 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.napistu_graphs import (
     augment_napistu_graph,
+    construct_supervised_pyg_data,
+    construct_unsupervised_pyg_data,
     napistu_graph_to_pyg,
 )
 
@@ -137,3 +139,19 @@ def napistu_data(augmented_napistu_graph):
     return napistu_graph_to_pyg(
         augmented_napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
     )
+
+
+@pytest.fixture
+def supervised_napistu_data_package(sbml_dfs, napistu_graph):
+    """Create a supervised NapistuData object using default settings.
+
+    Returns:
+        tuple: (napistu_data, labeling_manager) - The NapistuData object and its labeling manager
+    """
+    return construct_supervised_pyg_data(sbml_dfs, napistu_graph)
+
+
+@pytest.fixture
+def unsupervised_napistu_data(sbml_dfs, napistu_graph):
+    """Create an unsupervised NapistuData object using default settings."""
+    return construct_unsupervised_pyg_data(sbml_dfs, napistu_graph)

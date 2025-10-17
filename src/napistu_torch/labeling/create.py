@@ -10,18 +10,17 @@ from napistu_torch.labeling.constants import (
     VALID_LABEL_TYPES,
     VALID_TASK_TYPES,
 )
-from napistu_torch.labeling.labeling_strategy import (
-    LABEL_INFORMED_FEATURIZATION,
-    LabelingStrategy,
+from napistu_torch.labeling.labeling_manager import (
+    LABELING_MANAGERS,
+    LabelingManager,
 )
 
 
 def create_vertex_labels(
     napistu_graph: NapistuGraph,
-    label_type: Union[str, LabelingStrategy] = LABEL_TYPE.SPECIES_TYPE,
-    label_informed_featurization: Dict[
-        str, LabelingStrategy
-    ] = LABEL_INFORMED_FEATURIZATION,
+    label_type: Union[str, LabelingManager] = LABEL_TYPE.SPECIES_TYPE,
+    task_type: str = TASK_TYPES.CLASSIFICATION,
+    labeling_managers: Dict[str, LabelingManager] = LABELING_MANAGERS,
 ):
     """
     Create vertex labels for single-label predictions tasks
@@ -30,23 +29,22 @@ def create_vertex_labels(
     ----------
     napistu_graph: NapistuGraph
         A network-based representation of the SBML_dfs
-    label_type: Union[str, LabelingStrategy]
-        Either a string indicating the type of labels to generate (which will lookup a strategy from LABEL_INFORMED_FEATURIZATION) or a LabelingStrategy
+    label_type: Union[str, LabelingManager]
+        Either a string indicating the type of labels to generate (which will lookup a strategy from LABELING_MANAGERS) or a LabelingManager
 
         THe supported strings with pre-configured strategies are:
         - species_type: protein, metabolite, drug, etc.
         - node_type: protein, metabolite, drug, etc.
 
-    label_informed_featurization: Dict[str, LabelingStrategy]
-        A dictionary of LabelingStrategy objects for each label type.
+    labeling_managers: Dict[str, LabelingManager]
+        A dictionary of LabelingManager objects for each label type. Ignored if label_type is a LabelingManager.
 
     Returns
     -------
     labels: pd.Series
         A Series with labels as values and vertex names as an index
-    featurization_behavior: Dict
-        Changes to the featurization to ensure that label-based attributes are not
-        trivially included in the vertex features
+    labeling_manager: LabelingManager
+        The LabelingManager for the label type
 
     """
 
@@ -56,17 +54,28 @@ def create_vertex_labels(
         raise ValueError(
             f"label_type was {label_type} and must be one of {', '.join(VALID_LABEL_TYPES)}"
         )
-    if label_type not in label_informed_featurization.keys():
+    if label_type not in labeling_managers.keys():
         raise ValueError(
-            f"The `label_type`, {label_type} is missing from the keys in `label_informed_featurization`"
+            f"The `label_type`, {label_type} is missing from the keys in `labeling_managers`"
+        )
+    if task_type not in VALID_TASK_TYPES:
+        raise ValueError(
+            f"task_type was {task_type} and must be one of {', '.join(VALID_TASK_TYPES)}"
         )
 
-    labels = napistu_graph.get_vertex_series(label_type)
+    label_series = napistu_graph.get_vertex_series(label_type)
+    label_data = encode_labels(label_series, task_type)
 
     # extract the label attribute
-    featurization_behavior = label_informed_featurization[label_type]
+    labeling_manager = labeling_managers[label_type]
 
-    return labels, featurization_behavior
+    if task_type == TASK_TYPES.CLASSIFICATION:
+        labels, lookup = label_data
+        labeling_manager.label_names = lookup
+    else:
+        labels = label_data
+
+    return labels, labeling_manager
 
 
 def encode_labels(
