@@ -10,11 +10,16 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import torch
-from napistu.network.constants import NAPISTU_GRAPH
+from napistu.network.constants import (
+    NAPISTU_GRAPH,
+    NAPISTU_GRAPH_EDGES,
+    NAPISTU_GRAPH_VERTICES,
+)
 from napistu.network.ng_core import NapistuGraph
 from torch_geometric.data import Data
 
 from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.labeling.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
@@ -531,6 +536,267 @@ class NapistuData(Data):
                 f"Found {mismatches.sum()} mismatches out of {len(matches)} valid comparisons:\n"
                 + "\n".join(mismatch_details)
             )
+
+        return True
+
+    def _validate_edge_encoding(
+        self,
+        napistu_graph: NapistuGraph,
+        edge_attribute: str,
+        encoding_manager: Optional[EncodingManager] = None,
+    ) -> bool:
+        """
+        Validate consistency between encoded values and original NapistuGraph edge values.
+
+        This method compares the edge values recovered from encoding
+        in the NapistuData object with the original edge values stored in
+        the NapistuGraph object to ensure data consistency.
+
+        Parameters
+        ----------
+        napistu_graph : NapistuGraph
+            The NapistuGraph object containing the original edge values
+        edge_attribute : str
+            The name of the edge attribute to validate (e.g., 'r_irreversible')
+        encoding_manager : Optional[EncodingManager]
+            The encoding manager to use to unencode the features.
+            If this is not provided then the default encoding managers will be used.
+
+        Returns
+        -------
+        bool
+            True if the encoding is consistent, False otherwise
+
+        Raises
+        ------
+        ValueError
+            If the edge attribute is not found in the NapistuGraph,
+            if edge names don't match between NapistuData and NapistuGraph,
+            or if there are encoding inconsistencies.
+
+        Examples
+        --------
+        >>> # Validate r_irreversible encoding consistency
+        >>> is_consistent = napistu_data._validate_edge_encoding(napistu_graph, 'r_irreversible')
+        >>> print(f"Encoding is consistent: {is_consistent}")
+        True
+
+        >>> # Validate a different edge attribute
+        >>> is_consistent = napistu_data._validate_edge_encoding(napistu_graph, 'weight')
+        >>> print(f"Weight encoding is consistent: {is_consistent}")
+        True
+        """
+        # Get the edge values from NapistuGraph
+        graph_values = napistu_graph.get_edge_series(edge_attribute)
+
+        # Get the recovered values from encoding in NapistuData using unencode_features
+        data_values = self.unencode_features(
+            napistu_graph=napistu_graph,
+            attribute_type=NAPISTU_GRAPH.EDGES,
+            attribute=edge_attribute,
+            encoding_manager=encoding_manager,
+        )
+
+        # Get edge names for alignment
+        if (
+            not hasattr(self, NAPISTU_DATA.NG_EDGE_NAMES)
+            or getattr(self, NAPISTU_DATA.NG_EDGE_NAMES) is None
+        ):
+            raise ValueError(
+                f"Validation not available - the `{NAPISTU_DATA.NG_EDGE_NAMES}` attribute is required for this method."
+            )
+        data_edge_names = getattr(self, NAPISTU_DATA.NG_EDGE_NAMES)
+
+        # Align the graph values with the NapistuData edge ordering
+        # Convert the Series with MultiIndex to DataFrame
+        graph_df = graph_values.to_frame("graph_edge_value").reset_index()
+
+        # Merge with NapistuData edge names to get aligned graph values
+        # Convert data_edge_names DataFrame for merging
+        aligned_graph = data_edge_names.merge(
+            graph_df, on=[NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO], how="left"
+        )
+        graph_values_aligned = aligned_graph["graph_edge_value"]
+
+        # Debug: Check if we have any matches
+        matches_found = aligned_graph["graph_edge_value"].notna().sum()
+        if matches_found == 0:
+            raise ValueError(
+                f"No matching edge names found between NapistuData and NapistuGraph. "
+                f"NapistuData edge names: {data_edge_names.head().to_dict()}... "
+                f"NapistuGraph edge names: {graph_values.index.tolist()[:5]}..."
+            )
+
+        # Create masks for valid (non-null) values in both series
+        graph_valid_mask = ~graph_values_aligned.isna()
+        data_valid_mask = ~data_values.isna()
+
+        # Check if the non-null masks are identical
+        if not graph_valid_mask.equals(data_valid_mask):
+            graph_null_count = (~graph_valid_mask).sum()
+            data_null_count = (~data_valid_mask).sum()
+            raise ValueError(
+                "Non-null masks don't match between graph and data values. "
+                f"Graph values non-null count: {graph_valid_mask.sum()}, "
+                f"Data values non-null count: {data_valid_mask.sum()}, "
+                f"Graph values null count: {graph_null_count}, "
+                f"Data values null count: {data_null_count}"
+            )
+
+        # Compare only valid values (since masks are identical, we can use either)
+        graph_valid = graph_values_aligned[graph_valid_mask]
+        data_valid = data_values[graph_valid_mask]
+
+        # Check for exact matches
+        matches = graph_valid == data_valid
+
+        if not matches.all():
+            # Find mismatches for detailed error reporting
+            mismatches = ~matches
+            mismatch_indices = matches.index[mismatches]
+
+            mismatch_details = []
+            for idx in mismatch_indices:
+                graph_val = graph_valid[idx]
+                data_val = data_valid[idx]
+                edge_info = data_edge_names.iloc[data_edge_names.index.get_loc(idx)]
+                mismatch_details.append(
+                    f"Edge '{edge_info['from']} -> {edge_info['to']}': graph='{graph_val}', data='{data_val}'"
+                )
+
+            raise ValueError(
+                f"Encoding validation failed for {edge_attribute}. "
+                f"Found {mismatches.sum()} mismatches out of {len(matches)} valid comparisons:\n"
+                + "\n".join(mismatch_details)
+            )
+
+        return True
+
+    def _validate_labels(
+        self,
+        napistu_graph: NapistuGraph,
+        labeling_manager: LabelingManager,
+    ) -> bool:
+        """
+        Validate consistency between encoded labels and original NapistuGraph vertex labels.
+
+        This method compares the labels recovered from encoding
+        in the NapistuData object with the original labels stored in
+        the NapistuGraph object to ensure data consistency.
+
+        Parameters
+        ----------
+        napistu_graph : NapistuGraph
+            The NapistuGraph object containing the original vertex labels
+        labeling_manager: LabelingManager
+            The labeling manager used to decode the encoded labels
+
+        Returns
+        -------
+        bool
+            True if the label encoding is consistent, False otherwise
+
+        Raises
+        ------
+        ValueError
+            If the NapistuData object doesn't have encoded labels (y attribute),
+            if vertex names don't match between NapistuData and NapistuGraph,
+            or if there are label encoding inconsistencies.
+
+        Examples
+        --------
+        >>> # Validate label encoding consistency
+        >>> is_consistent = napistu_data._validate_labels(napistu_graph, labeling_manager)
+        >>> print(f"Label encoding is consistent: {is_consistent}")
+        True
+        """
+        from napistu_torch.labeling.apply import decode_labels
+
+        # Check if NapistuData has encoded labels
+        if not hasattr(self, NAPISTU_DATA.Y) or getattr(self, NAPISTU_DATA.Y) is None:
+            raise ValueError(
+                "NapistuData object does not have encoded labels (y attribute)"
+            )
+
+        # Get the encoded labels and vertex names from NapistuData
+        encoded_labels = getattr(self, NAPISTU_DATA.Y)
+        vertex_names = getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES, None)
+
+        if vertex_names is None:
+            raise ValueError(
+                f"Validation not available - the `{NAPISTU_DATA.NG_VERTEX_NAMES}` attribute is required for this method."
+            )
+
+        # Verify dimensions match
+        if len(encoded_labels) != len(vertex_names):
+            raise ValueError(
+                f"Label count ({len(encoded_labels)}) should match vertex count ({len(vertex_names)})"
+            )
+        if len(encoded_labels) != self.num_nodes:
+            raise ValueError(
+                f"Label count ({len(encoded_labels)}) should match node count ({self.num_nodes})"
+            )
+
+        # Decode the labels using the utility function
+        decoded_labels = pd.Series(decode_labels(encoded_labels, labeling_manager))
+
+        # Get the corresponding labels from the NapistuGraph using merge
+        vertex_df = napistu_graph.get_vertex_dataframe()
+        vertex_names_df = pd.DataFrame({NAPISTU_GRAPH_VERTICES.NAME: vertex_names})
+
+        # Merge vertex names with the vertex DataFrame to get labels
+        merged_df = vertex_names_df.merge(
+            vertex_df[[NAPISTU_GRAPH_VERTICES.NAME, labeling_manager.label_attribute]],
+            on=NAPISTU_GRAPH_VERTICES.NAME,
+            how="left",
+        )
+        graph_labels = merged_df[labeling_manager.label_attribute]
+
+        # Create mask for valid (non-null) values in both decoded and graph labels
+        decoded_valid_mask = decoded_labels.notna()
+        graph_valid_mask = graph_labels.notna()
+        valid_mask = decoded_valid_mask & graph_valid_mask
+
+        # Compare only valid values
+        decoded_valid = decoded_labels[valid_mask]
+        graph_valid = graph_labels[valid_mask]
+
+        if len(decoded_valid) != len(graph_valid):
+            raise ValueError("Valid label counts should match")
+
+        # Check for exact matches
+        matches = decoded_valid == graph_valid
+
+        if not matches.all():
+            # Find mismatches for detailed error reporting
+            mismatches = ~matches
+            mismatch_indices = matches.index[mismatches]
+
+            mismatch_details = []
+            for idx in mismatch_indices:
+                decoded_val = decoded_valid[idx]
+                graph_val = graph_valid[idx]
+                vertex_name = vertex_names.iloc[vertex_names.index.get_loc(idx)]
+                mismatch_details.append(
+                    f"Vertex '{vertex_name}': decoded='{decoded_val}', graph='{graph_val}'"
+                )
+
+            raise ValueError(
+                f"Label encoding validation failed. "
+                f"Found {mismatches.sum()} mismatches out of {len(matches)} valid comparisons:\n"
+                + "\n".join(mismatch_details)
+            )
+
+        # Additional verification: check that we have some non-null labels
+        non_null_decoded = decoded_labels[decoded_labels.notna()]
+        non_null_graph = graph_labels[graph_labels.notna()]
+
+        if len(non_null_decoded) == 0:
+            raise ValueError("Should have some non-null decoded labels")
+        if len(non_null_graph) == 0:
+            raise ValueError("Should have some non-null graph labels")
+        if len(non_null_decoded) != len(non_null_graph):
+            raise ValueError("Non-null label counts should match")
 
         return True
 

@@ -10,11 +10,11 @@ import pytest
 import torch
 from napistu.network.constants import (
     NAPISTU_GRAPH,
+    NAPISTU_GRAPH_EDGES,
     NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
 
-from napistu_torch.labeling.apply import decode_labels
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.load.napistu_graphs import napistu_graph_to_pyg
 from napistu_torch.napistu_data import NapistuData
@@ -148,65 +148,8 @@ def test_supervised_data_ordering_consistency(
     # Unpack the supervised fixture
     napistu_data, labeling_manager = supervised_napistu_data_package
 
-    # Get the encoded labels and vertex names from NapistuData
-    encoded_labels = napistu_data.y
-    vertex_names = napistu_data.ng_vertex_names
-
-    # Verify dimensions match
-    assert len(encoded_labels) == len(
-        vertex_names
-    ), "Label count should match vertex count"
-    assert (
-        len(encoded_labels) == napistu_data.num_nodes
-    ), "Label count should match node count"
-
-    # Decode the labels using the utility function
-    decoded_labels = decode_labels(encoded_labels, labeling_manager)
-
-    # Get the corresponding labels from the NapistuGraph using merge
-    vertex_df = napistu_graph.get_vertex_dataframe()
-    vertex_names_df = pd.DataFrame({"name": vertex_names})
-
-    # Merge vertex names with the vertex DataFrame to get labels
-    merged_df = vertex_names_df.merge(
-        vertex_df[["name", labeling_manager.label_attribute]], on="name", how="left"
-    )
-    graph_labels = merged_df[labeling_manager.label_attribute].tolist()
-
-    # Compare the decoded labels with the graph labels, masking on valid values
-    # Convert graph_labels to pandas Series for easier handling
-    graph_labels_series = pd.Series(graph_labels)
-
-    # Create mask for valid (non-null) values in both decoded and graph labels
-    decoded_valid_mask = pd.Series(decoded_labels).notna()
-    graph_valid_mask = graph_labels_series.notna()
-    valid_mask = decoded_valid_mask & graph_valid_mask
-
-    # Compare only valid values
-    decoded_valid = pd.Series(decoded_labels)[valid_mask]
-    graph_valid = graph_labels_series[valid_mask]
-
-    assert len(decoded_valid) == len(graph_valid), "Valid label counts should match"
-
-    for i, (decoded, graph) in enumerate(zip(decoded_valid, graph_valid)):
-        assert decoded == graph, (
-            f"Label mismatch at valid position {i}: "
-            f"decoded={decoded}, graph={graph}"
-        )
-
-    # Additional verification: check that we have some non-null labels
-    # Use pd.isna() to properly handle both None and np.NaN values
-    decoded_series = pd.Series(decoded_labels)
-    graph_series = pd.Series(graph_labels)
-
-    non_null_decoded = decoded_series[decoded_series.notna()]
-    non_null_graph = graph_series[graph_series.notna()]
-
-    assert len(non_null_decoded) > 0, "Should have some non-null decoded labels"
-    assert len(non_null_graph) > 0, "Should have some non-null graph labels"
-    assert len(non_null_decoded) == len(
-        non_null_graph
-    ), "Non-null label counts should match"
+    # Use the new _validate_labels method to test consistency
+    napistu_data._validate_labels(napistu_graph, labeling_manager)
 
 
 @pytest.fixture
@@ -239,77 +182,14 @@ def test_vertex_feature_ordering_consistency(edge_masked_napistu_data, napistu_g
 def test_edge_feature_ordering_consistency(edge_masked_napistu_data, napistu_graph):
     """Test that edge features are properly ordered between NapistuGraph and NapistuData.
 
-    This test verifies that the binary encoded r_irreversible features in NapistuData
+    This test verifies that the encoded edge features in NapistuData
     correspond to the correct edges in the NapistuGraph based on the edge ordering
     preserved in the NapistuData.ng_edge_names attribute.
     """
-    napistu_data = edge_masked_napistu_data
 
-    # Get edge features and names from NapistuData
-    edge_features = napistu_data.edge_attr  # Shape: [num_edges, num_edge_features]
-    edge_names = napistu_data.ng_edge_names
-
-    # Get edge DataFrame from NapistuGraph
-    edge_df = napistu_graph.get_edge_dataframe()
-
-    # Get the edge feature names first
-    edge_feature_names = napistu_data.get_edge_feature_names()
-
-    # Check what columns are actually available in the edge DataFrame
-    available_columns = list(edge_df.columns)
-
-    # Try to find r_irreversible or similar columns
-    r_irreversible_candidates = [
-        col
-        for col in available_columns
-        if "irreversible" in col.lower() or "reversible" in col.lower()
-    ]
-
-    # For now, let's use the first available column that might be relevant
-    if r_irreversible_candidates:
-        target_column = r_irreversible_candidates[0]
-    else:
-        # Let's just use the first available column for testing
-        target_column = available_columns[0] if available_columns else None
-
-    # Merge edge names with the edge DataFrame to get the target column
-    if target_column:
-        merged_df = edge_names.merge(
-            edge_df[["from", "to", target_column]], on=["from", "to"], how="left"
-        )
-        graph_values = merged_df[target_column].tolist()
-    else:
-        return
-
-    # Get the feature column index from feature names
-    # Edge features likely follow similar naming pattern: 'binary__r_irreversible' etc.
-    feature_index = None
-    for i, name in enumerate(edge_feature_names):
-        if target_column in name:
-            feature_index = i
-            break
-
-    if feature_index is None:
-        return
-
-    # Verify that the feature encoding matches the original values
-    for i, (features, graph_value) in enumerate(zip(edge_features, graph_values)):
-        if pd.notna(graph_value):
-            # Get the feature value
-            feature_value = features[feature_index].item()
-
-            # For boolean values, convert to expected float (0.0 or 1.0)
-            if isinstance(graph_value, bool):
-                expected_value = 1.0 if graph_value else 0.0
-                assert abs(feature_value - expected_value) < 0.1, (
-                    f"Feature mismatch for edge {i}: "
-                    f"expected {expected_value}, got {feature_value}"
-                )
-            else:
-                # For other numeric values, just verify they're accessible
-                assert isinstance(
-                    feature_value, (int, float)
-                ), f"Feature value should be numeric, got {type(feature_value)}"
+    edge_masked_napistu_data._validate_edge_encoding(
+        napistu_graph, NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE
+    )
 
 
 def test_unencode_features_node_type(napistu_data, napistu_graph):
