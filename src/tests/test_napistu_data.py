@@ -8,6 +8,11 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
+from napistu.network.constants import (
+    NAPISTU_GRAPH,
+    NAPISTU_GRAPH_NODE_TYPES,
+    NAPISTU_GRAPH_VERTICES,
+)
 
 from napistu_torch.labeling.apply import decode_labels
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
@@ -225,80 +230,10 @@ def test_vertex_feature_ordering_consistency(edge_masked_napistu_data, napistu_g
     correspond to the correct vertices in the NapistuGraph based on the vertex ordering
     preserved in the NapistuData.ng_vertex_names attribute.
     """
-    napistu_data = edge_masked_napistu_data
 
-    # Get vertex features and names from NapistuData
-    vertex_features = napistu_data.x  # Shape: [num_nodes, num_node_features]
-    vertex_names = napistu_data.ng_vertex_names
-
-    # Get vertex DataFrame from NapistuGraph
-    vertex_df = napistu_graph.get_vertex_dataframe()
-
-    # Merge vertex names with the vertex DataFrame to get node_type
-    vertex_names_df = pd.DataFrame({"name": vertex_names})
-    merged_df = vertex_names_df.merge(
-        vertex_df[["name", "node_type"]], on="name", how="left"
+    edge_masked_napistu_data._validate_vertex_encoding(
+        napistu_graph, NAPISTU_GRAPH_VERTICES.NODE_TYPE
     )
-    graph_node_types = merged_df["node_type"].tolist()
-
-    # Get the node_type feature column indices from feature names
-    # The feature names have format: 'categorical__node_type_species'
-    vertex_feature_names = napistu_data.get_vertex_feature_names()
-    node_type_indices = [
-        i for i, name in enumerate(vertex_feature_names) if "node_type_" in name
-    ]
-
-    assert (
-        len(node_type_indices) > 0
-    ), f"Should have node_type one-hot encoded features. Available features: {vertex_feature_names}"
-
-    # Verify that the one-hot encoding matches the original node_type values
-    for i, (features, node_type) in enumerate(zip(vertex_features, graph_node_types)):
-        if pd.notna(node_type):
-            # Find which node_type feature is active (should be 1.0)
-            active_features = features[node_type_indices]
-            active_indices = torch.where(active_features > 0.5)[0]
-
-            # Debug problematic cases and fail appropriately
-            if len(active_indices) == 0:
-                feature_values = [features[j].item() for j in node_type_indices]
-                feature_names_subset = [
-                    vertex_feature_names[j] for j in node_type_indices
-                ]
-                expected_feature_name = f"categorical__node_type_{node_type}"
-
-                # Check if the expected feature name exists
-                if expected_feature_name not in vertex_feature_names:
-                    raise AssertionError(
-                        f"Data alignment issue: Vertex {i} (name={vertex_names.iloc[i]}) has "
-                        f"node_type='{node_type}' but expected feature '{expected_feature_name}' "
-                        f"not found in feature names: {feature_names_subset}"
-                    )
-                else:
-                    # Feature exists but no active values - this is a real encoding issue
-                    raise AssertionError(
-                        f"Encoding issue: Vertex {i} (name={vertex_names.iloc[i]}) has "
-                        f"node_type='{node_type}' and expected feature '{expected_feature_name}' exists, "
-                        f"but no active features found. Feature values: {feature_values}"
-                    )
-
-            # Verify exactly one feature is active
-            assert len(active_indices) == 1, (
-                f"Exactly one node_type feature should be active for vertex {i}, "
-                f"but found {len(active_indices)} active features. "
-                f"Node type: {node_type}, Feature values: {[features[j].item() for j in node_type_indices]}"
-            )
-
-            # Get the feature name for the active index and verify it matches
-            active_feature_name = vertex_feature_names[
-                node_type_indices[active_indices[0]]
-            ]
-            expected_feature_name = f"categorical__node_type_{node_type}"
-
-            assert active_feature_name == expected_feature_name, (
-                f"Node type mismatch for vertex {i}: "
-                f"expected {expected_feature_name}, got {active_feature_name}"
-            )
 
 
 def test_edge_feature_ordering_consistency(edge_masked_napistu_data, napistu_graph):
@@ -375,3 +310,36 @@ def test_edge_feature_ordering_consistency(edge_masked_napistu_data, napistu_gra
                 assert isinstance(
                     feature_value, (int, float)
                 ), f"Feature value should be numeric, got {type(feature_value)}"
+
+
+def test_unencode_features_node_type(napistu_data, napistu_graph):
+    """Test unencode_features method for node_type attribute.
+
+    This test verifies that the unencode_features method can successfully
+    unencode the node_type attribute and that the output contains both
+    species and reactions nodes.
+    """
+
+    # Unencode the node_type attribute from vertices
+    unencoded_node_types = napistu_data.unencode_features(
+        napistu_graph=napistu_graph,
+        attribute_type=NAPISTU_GRAPH.VERTICES,
+        attribute=NAPISTU_GRAPH_VERTICES.NODE_TYPE,
+    )
+
+    # Verify the output is a pandas Series
+    assert isinstance(unencoded_node_types, pd.Series)
+    assert unencoded_node_types.name == NAPISTU_GRAPH_VERTICES.NODE_TYPE
+
+    # Verify the output contains both species and reactions
+    unique_types = set(unencoded_node_types.dropna().unique())
+    assert (
+        NAPISTU_GRAPH_NODE_TYPES.SPECIES in unique_types
+    ), "Output should contain species nodes"
+    assert (
+        NAPISTU_GRAPH_NODE_TYPES.REACTION in unique_types
+    ), "Output should contain reaction nodes"
+
+    # Verify we have a reasonable number of nodes
+    assert len(unencoded_node_types) > 0, "Should have unencoded node types"
+    assert len(unencoded_node_types.dropna()) > 0, "Should have non-null node types"

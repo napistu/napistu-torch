@@ -170,7 +170,7 @@ def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[s
 
         # Check if values are only 0 and 1 but has missing (treat as categorical)
         if has_missing and n_unique <= 2 and set(unique_values).issubset({0, 1}):
-            return ENCODINGS.CATEGORICAL
+            return ENCODINGS.SPARSE_CATEGORICAL
 
         # Numeric continuous values
         if has_missing:
@@ -184,7 +184,7 @@ def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[s
         if not has_missing and n_unique <= 2:
             str_values = set(str(v).lower() for v in unique_values)
             if str_values.issubset({"true", "false", "0", "1"}):
-                return ENCODINGS.BINARY
+                return ENCODINGS.CATEGORICAL
 
         # Categorical
         if n_unique > max_categories:
@@ -193,7 +193,10 @@ def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[s
             )
             return None
 
-        return ENCODINGS.CATEGORICAL
+        if has_missing:
+            return ENCODINGS.SPARSE_CATEGORICAL
+        else:
+            return ENCODINGS.CATEGORICAL
 
 
 def config_to_column_transformer(
@@ -296,7 +299,10 @@ def encode_dataframe(
         For column conflicts, the override configuration takes precedence.
         If None, only encoding_defaults will be used.
     encoders : Dict, default=ENCODERS
-        The encoders to use. If encoding_defaults or encoding_overrides are dicts, then these will be used to map from column encoding classes to the encoders themselves. If existing_encodings is a dict, then it must be passed in the 'simple' format which is a lookup from encoder keys to the columns using that encoder.
+        The encoders to use. If encoding_defaults or encoding_overrides are dicts,
+        then these will be used to map from column encoding classes to the encoders themselves.
+        If existing_encodings is a dict, then it must be passed in the 'simple' format
+        which is a lookup from encoder keys to the columns using that encoder.
     verbose : bool, default=False
         If True, log detailed information about config composition and conflicts.
 

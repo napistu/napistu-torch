@@ -257,10 +257,10 @@ def test_auto_encode_mixed_types():
     # Define expected column -> encoding mappings
     expected_encodings = {
         "binary_col": ENCODINGS.BINARY,
-        "binary_with_nan_col": ENCODINGS.CATEGORICAL,
+        "binary_with_nan_col": ENCODINGS.SPARSE_CATEGORICAL,
         "boolean_col": ENCODINGS.BINARY,
         "categorical_col": ENCODINGS.CATEGORICAL,
-        "categorical_with_nan_col": ENCODINGS.CATEGORICAL,
+        "categorical_with_nan_col": ENCODINGS.SPARSE_CATEGORICAL,
         "numeric_col": ENCODINGS.NUMERIC,
         "sparse_numeric_col": ENCODINGS.SPARSE_NUMERIC,
         "preencoded_col": ENCODINGS.NUMERIC,

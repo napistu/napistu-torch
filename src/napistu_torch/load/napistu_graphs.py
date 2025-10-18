@@ -527,7 +527,7 @@ def _napistu_graph_to_pyg_inductive(
     )
 
     # 2. encode features for all vertices
-    vertex_features, _ = encoding.encode_dataframe(
+    vertex_features, vertex_feature_names = encoding.encode_dataframe(
         vertex_df, vertex_encoding_manager, verbose=verbose
     )
 
@@ -548,7 +548,9 @@ def _napistu_graph_to_pyg_inductive(
     pyg_data = dict()
     for k, edges in edge_splits.items():
         # encode each strata using the train encoder
-        edge_features, _ = encoding.transform_dataframe(edges, edge_encoder)
+        edge_features, edge_feature_names = encoding.transform_dataframe(
+            edges, edge_encoder
+        )
 
         # 5. Reformat the NapistuGraph's edgelist as from-to indices
         edge_index = torch.tensor(
@@ -567,10 +569,11 @@ def _napistu_graph_to_pyg_inductive(
             edge_index=edge_index,
             edge_attr=torch.tensor(edge_features, dtype=torch.float),
             edge_weight=edge_weights,
-            num_nodes=vertex_df.shape[0],
             ng_vertex_names=ng_vertex_names,
             ng_edge_names=ng_edge_names,
-            y=labels,  # NapistuData will handle None gracefully
+            vertex_feature_names=vertex_feature_names,
+            edge_feature_names=edge_feature_names,
+            y=labels,
         )
 
     return pyg_data

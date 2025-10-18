@@ -10,9 +10,19 @@ from typing import Any, Dict, List, Optional, Union
 
 import pandas as pd
 import torch
+from napistu.network.constants import NAPISTU_GRAPH
+from napistu.network.ng_core import NapistuGraph
 from torch_geometric.data import Data
 
 from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.load.constants import (
+    EDGE_DEFAULT_TRANSFORMS,
+    ENCODING_MANAGER,
+    VERTEX_DEFAULT_TRANSFORMS,
+)
+from napistu_torch.load.encoders import DEFAULT_ENCODERS
+from napistu_torch.load.encoding import fit_encoders, transform_dataframe
+from napistu_torch.load.encoding_manager import EncodingManager
 
 
 class NapistuData(Data):
@@ -282,6 +292,247 @@ class NapistuData(Data):
                     summary_dict[key] = str(value)[:100]  # Truncate long strings
 
         return summary_dict
+
+    def unencode_features(
+        self,
+        napistu_graph: NapistuGraph,
+        attribute_type: str,
+        attribute: str,
+        encoding_manager: Optional[EncodingManager] = None,
+    ) -> pd.Series:
+        """
+        Unencode features from the NapistuData object back to the original values.
+
+        This only categorical and passthrough encoding and is useful for validation purposes
+        to ensure that encoded features are proprely aligned with their values in their original NapistuGraph.
+
+        Parameters
+        ----------
+        napistu_graph : NapistuGraph
+            The NapistuGraph object containing the original values
+        attribute_type : str
+            The type of attribute to unencode ("vertices" or "edges")
+        attribute : str
+            An attribute to unencode (e.g., "node_type" or "species_type")
+        encoding_manager : Optional[EncodingManager]
+            The encoding manager to use to unencode the features.
+            If this is not provided then the default encoding managers will be used.
+
+        Returns
+        -------
+        pd.DataFrame
+            A DataFrame with the unencoded features
+        """
+
+        if attribute_type == NAPISTU_GRAPH.VERTICES:
+            attribute_values = napistu_graph.get_vertex_series(attribute)
+            encoded_features = self.x
+            feature_names = self.vertex_feature_names
+        elif attribute_type == NAPISTU_GRAPH.EDGES:
+            attribute_values = napistu_graph.get_edge_series(attribute)
+            encoded_features = self.edge_attr
+            feature_names = self.edge_feature_names
+        else:
+            raise ValueError(f"Invalid attribute type: {attribute_type}")
+
+        if encoding_manager is None:
+            if attribute_type == NAPISTU_GRAPH.VERTICES:
+                encoding_manager = EncodingManager(
+                    VERTEX_DEFAULT_TRANSFORMS, encoders=DEFAULT_ENCODERS
+                )
+            elif attribute_type == NAPISTU_GRAPH.EDGES:
+                encoding_manager = EncodingManager(
+                    EDGE_DEFAULT_TRANSFORMS, encoders=DEFAULT_ENCODERS
+                )
+        elif not isinstance(encoding_manager, EncodingManager):
+            ValueError(
+                f"Invalid value for `encoding_manager` it shoudl be either None or an EncodingManager object but was given a {type(encoding_manager)}: {encoding_manager}"
+            )
+
+        # Filter encoding manager to only include the attribute of interest
+        filtered_config = {}
+        for transform_name, transform_config in encoding_manager.config_.items():
+            if attribute in transform_config[ENCODING_MANAGER.COLUMNS]:
+                # Create new config with only this attribute
+                filtered_config[transform_name] = {
+                    ENCODING_MANAGER.COLUMNS: [attribute],
+                    ENCODING_MANAGER.TRANSFORMER: transform_config[
+                        ENCODING_MANAGER.TRANSFORMER
+                    ],
+                }
+
+        if not filtered_config:
+            raise ValueError(f"Attribute '{attribute}' not found in encoding manager")
+
+        # Create filtered encoding manager for just this attribute
+        filtered_manager = EncodingManager(filtered_config)
+
+        # Fit the encoder on the single-column DataFrame
+        fitted_encoder = fit_encoders(attribute_values.to_frame(), filtered_manager)
+        _, actual_transformer, _ = fitted_encoder.transformers_[0]
+
+        # Get feature names for this specific attribute to find column indices
+        _, fitted_feature_names = transform_dataframe(
+            attribute_values.to_frame(), fitted_encoder
+        )
+
+        # Find which columns in encoded_features correspond to this attribute
+        col_indices = [feature_names.index(fname) for fname in fitted_feature_names]
+
+        # Extract relevant columns from encoded features
+        if isinstance(encoded_features, torch.Tensor):
+            relevant_features = encoded_features[:, col_indices].cpu().numpy()
+        else:
+            relevant_features = encoded_features[:, col_indices]
+
+        # Inverse transform using the actual transformer
+        if actual_transformer == ENCODING_MANAGER.PASSTHROUGH:
+            # For passthrough, just extract the column directly
+            decoded_values = relevant_features.flatten()
+        else:
+            # For OneHotEncoder and other transformers with inverse_transform
+            decoded = actual_transformer.inverse_transform(relevant_features)
+            decoded_values = decoded.flatten()
+
+        return pd.Series(decoded_values, name=attribute)
+
+    def _validate_vertex_encoding(
+        self,
+        napistu_graph: NapistuGraph,
+        vertex_attribute: str,
+        encoding_manager: Optional[EncodingManager] = None,
+    ) -> bool:
+        """
+        Validate consistency between encoded values and original NapistuGraph vertex values.
+
+        This method compares the vertex values recovered from encoding
+        in the NapistuData object with the original vertex values stored in
+        the NapistuGraph object to ensure data consistency.
+
+        Parameters
+        ----------
+        napistu_graph : NapistuGraph
+            The NapistuGraph object containing the original categorical values
+        categorical_vertex_attribute : str
+            The name of the categorical vertex attribute to validate (e.g., 'node_type')
+
+        Returns
+        -------
+        bool
+            True if the encoding is consistent, False otherwise
+
+        Raises
+        ------
+        ValueError
+            If the categorical attribute is not found in the NapistuGraph,
+            if vertex names don't match between NapistuData and NapistuGraph,
+            or if there are encoding inconsistencies.
+
+        Examples
+        --------
+        >>> # Validate node_type encoding consistency
+        >>> is_consistent = napistu_data._validate_vertex_encoding(napistu_graph, 'node_type')
+        >>> print(f"Encoding is consistent: {is_consistent}")
+        True
+
+        >>> # Validate a different categorical attribute
+        >>> is_consistent = napistu_data._validate_vertex_encoding(napistu_graph, 'species_type')
+        >>> print(f"Species type encoding is consistent: {is_consistent}")
+        True
+        """
+        # Get the categorical values from NapistuGraph
+        graph_values = napistu_graph.get_vertex_series(vertex_attribute)
+
+        # Get the recovered values from encoding in NapistuData using unencode_features
+        data_values = self.unencode_features(
+            napistu_graph=napistu_graph,
+            attribute_type=NAPISTU_GRAPH.VERTICES,
+            attribute=vertex_attribute,
+            encoding_manager=encoding_manager,
+        )
+
+        # Get vertex names for alignment
+        if (
+            not hasattr(self, NAPISTU_DATA.NG_VERTEX_NAMES)
+            or getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES) is None
+        ):
+            raise ValueError(
+                f"Validation not available - the `{NAPISTU_DATA.NG_VERTEX_NAMES}` attribute is required for this method."
+            )
+        data_vertex_names = getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES)
+
+        # Align the graph values with the NapistuData vertex ordering
+        # Create a DataFrame for easier merging
+        graph_df = pd.DataFrame(
+            {
+                "graph_vertex_name": graph_values.index,
+                "graph_vertex_value": graph_values.values,
+            }
+        )
+
+        # Merge with NapistuData vertex names to get aligned graph values
+        # Convert data_vertex_names Series to DataFrame for merging
+        data_vertex_names_df = data_vertex_names.to_frame("graph_vertex_name")
+        aligned_graph = data_vertex_names_df.merge(
+            graph_df, on="graph_vertex_name", how="left"
+        )
+        graph_values_aligned = aligned_graph["graph_vertex_value"]
+
+        # Debug: Check if we have any matches
+        matches_found = aligned_graph["graph_vertex_value"].notna().sum()
+        if matches_found == 0:
+            raise ValueError(
+                f"No matching vertex names found between NapistuData and NapistuGraph. "
+                f"NapistuData vertex names: {data_vertex_names.tolist()[:5]}... "
+                f"NapistuGraph vertex names: {graph_values.index.tolist()[:5]}..."
+            )
+
+        # Create masks for valid (non-null) values in both series
+        graph_valid_mask = ~graph_values_aligned.isna()
+        data_valid_mask = ~data_values.isna()
+
+        # Check if the non-null masks are identical
+        if not graph_valid_mask.equals(data_valid_mask):
+            graph_null_count = (~graph_valid_mask).sum()
+            data_null_count = (~data_valid_mask).sum()
+            raise ValueError(
+                f"Non-null masks don't match between graph and data values. "
+                f"Graph values non-null count: {graph_valid_mask.sum()}, "
+                f"Data values non-null count: {data_valid_mask.sum()}, "
+                f"Graph values null count: {graph_null_count}, "
+                f"Data values null count: {data_null_count}"
+            )
+
+        # Compare only valid values (since masks are identical, we can use either)
+        graph_valid = graph_values_aligned[graph_valid_mask]
+        data_valid = data_values[graph_valid_mask]
+
+        # Check for exact matches
+        matches = graph_valid == data_valid
+
+        if not matches.all():
+            # Find mismatches for detailed error reporting
+            mismatches = ~matches
+            mismatch_indices = matches.index[mismatches]
+
+            mismatch_details = []
+            for idx in mismatch_indices:
+                graph_val = graph_valid[idx]
+                data_val = data_valid[idx]
+                vertex_name = data_vertex_names.iloc[
+                    data_vertex_names.index.get_loc(idx)
+                ]
+                mismatch_details.append(
+                    f"Vertex '{vertex_name}': graph='{graph_val}', data='{data_val}'"
+                )
+
+            raise ValueError(
+                f"Encoding validation failed for {vertex_attribute}. "
+                f"Found {mismatches.sum()} mismatches out of {len(matches)} valid comparisons:\n"
+                + "\n".join(mismatch_details)
+            )
+
+        return True
 
     def __repr__(self) -> str:
         """String representation of the NapistuData object."""
