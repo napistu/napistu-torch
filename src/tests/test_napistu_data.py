@@ -16,7 +16,10 @@ from napistu.network.constants import (
 )
 
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
-from napistu_torch.load.napistu_graphs import napistu_graph_to_pyg
+from napistu_torch.load.napistu_graphs import (
+    augment_napistu_graph,
+    napistu_graph_to_pyg,
+)
 from napistu_torch.napistu_data import NapistuData
 
 
@@ -156,7 +159,6 @@ def test_supervised_data_ordering_consistency(
 def edge_masked_napistu_data(sbml_dfs, napistu_graph):
     """Create a NapistuData object using edge masking for better test coverage."""
     # Augment the graph with SBML_dfs information
-    from napistu_torch.load.napistu_graphs import augment_napistu_graph
 
     augmented_graph = augment_napistu_graph(sbml_dfs, napistu_graph, inplace=False)
 

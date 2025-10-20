@@ -625,7 +625,10 @@ def _napistu_graph_to_pyg_no_mask(
     # 4. Extract original edge weights
     edge_weights = _extract_edge_weights(edge_df)
 
-    # 5. Create NapistuData
+    # 5. Extract minimal NapistuGraph attributes for debugging/validation
+    ng_vertex_names, ng_edge_names = _get_napistu_graph_names(vertex_df, edge_df)
+
+    # 6. Create NapistuData
     return NapistuData(
         x=torch.tensor(vertex_features, dtype=torch.float),
         edge_index=edge_index,
@@ -634,6 +637,8 @@ def _napistu_graph_to_pyg_no_mask(
         vertex_feature_names=vertex_feature_names,
         edge_feature_names=edge_feature_names,
         y=labels,
+        ng_vertex_names=ng_vertex_names,
+        ng_edge_names=ng_edge_names,
     )
 
 
@@ -727,6 +732,60 @@ def _napistu_graph_to_pyg_vertex_mask(
     )
 
 
+# Strategy registry
+SPLITTING_STRATEGY_FUNCTIONS: Dict[str, Callable] = {
+    SPLITTING_STRATEGIES.EDGE_MASK: _napistu_graph_to_pyg_edge_mask,
+    SPLITTING_STRATEGIES.VERTEX_MASK: _napistu_graph_to_pyg_vertex_mask,
+    SPLITTING_STRATEGIES.NO_MASK: _napistu_graph_to_pyg_no_mask,
+    SPLITTING_STRATEGIES.INDUCTIVE: _napistu_graph_to_pyg_inductive,
+}
+
+
+def _get_napistu_graph_names(
+    vertex_df: pd.DataFrame, edge_df: pd.DataFrame
+) -> tuple[pd.Series, pd.DataFrame]:
+    """
+    Extract minimal NapistuGraph attributes for NapistuData storage.
+
+    This function extracts only the essential attributes needed for debugging
+    and validation, keeping file sizes small while preserving the ability to
+    look up the full NapistuGraph when needed.
+
+    Parameters
+    ----------
+    vertex_df : pd.DataFrame
+        Full vertex DataFrame from NapistuGraph
+    edge_df : pd.DataFrame
+        Full edge DataFrame from NapistuGraph
+
+    Returns
+    -------
+    tuple[pd.Series, pd.DataFrame]
+        - vertex_names: Series of vertex names aligned with tensor rows
+        - edge_names: DataFrame with 'from' and 'to' columns aligned with tensor columns
+
+
+    """
+    # Extract vertex names as a Series (aligned with tensor rows)
+    if NAPISTU_GRAPH_VERTICES.NAME not in vertex_df.columns:
+        raise ValueError("Vertex DataFrame must contain 'name' column")
+    vertex_names = vertex_df[NAPISTU_GRAPH_VERTICES.NAME].copy()
+
+    # Extract edge from/to names as a DataFrame (aligned with tensor columns)
+    if (
+        NAPISTU_GRAPH_EDGES.FROM not in edge_df.columns
+        or NAPISTU_GRAPH_EDGES.TO not in edge_df.columns
+    ):
+        raise ValueError("Edge DataFrame must contain 'from' and 'to' columns")
+    edge_names = edge_df[[NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO]].copy()
+
+    logger.debug(
+        f"Extracted {len(vertex_names)} vertex names and {len(edge_names)} edge name pairs"
+    )
+
+    return vertex_names, edge_names
+
+
 def _standardize_graph_dfs_and_encodings(
     napistu_graph: NapistuGraph,
     vertex_default_transforms: Union[Dict[str, Dict], EncodingManager],
@@ -791,57 +850,3 @@ def _standardize_graph_dfs_and_encodings(
         edge_encoding_manager = encoding.auto_encode(edge_df, edge_encoding_manager)
 
     return vertex_df, edge_df, vertex_encoding_manager, edge_encoding_manager
-
-
-# Strategy registry
-SPLITTING_STRATEGY_FUNCTIONS: Dict[str, Callable] = {
-    SPLITTING_STRATEGIES.EDGE_MASK: _napistu_graph_to_pyg_edge_mask,
-    SPLITTING_STRATEGIES.VERTEX_MASK: _napistu_graph_to_pyg_vertex_mask,
-    SPLITTING_STRATEGIES.NO_MASK: _napistu_graph_to_pyg_no_mask,
-    SPLITTING_STRATEGIES.INDUCTIVE: _napistu_graph_to_pyg_inductive,
-}
-
-
-def _get_napistu_graph_names(
-    vertex_df: pd.DataFrame, edge_df: pd.DataFrame
-) -> tuple[pd.Series, pd.DataFrame]:
-    """
-    Extract minimal NapistuGraph attributes for NapistuData storage.
-
-    This function extracts only the essential attributes needed for debugging
-    and validation, keeping file sizes small while preserving the ability to
-    look up the full NapistuGraph when needed.
-
-    Parameters
-    ----------
-    vertex_df : pd.DataFrame
-        Full vertex DataFrame from NapistuGraph
-    edge_df : pd.DataFrame
-        Full edge DataFrame from NapistuGraph
-
-    Returns
-    -------
-    tuple[pd.Series, pd.DataFrame]
-        - vertex_names: Series of vertex names aligned with tensor rows
-        - edge_names: DataFrame with 'from' and 'to' columns aligned with tensor columns
-
-
-    """
-    # Extract vertex names as a Series (aligned with tensor rows)
-    if NAPISTU_GRAPH_VERTICES.NAME not in vertex_df.columns:
-        raise ValueError("Vertex DataFrame must contain 'name' column")
-    vertex_names = vertex_df[NAPISTU_GRAPH_VERTICES.NAME].copy()
-
-    # Extract edge from/to names as a DataFrame (aligned with tensor columns)
-    if (
-        NAPISTU_GRAPH_EDGES.FROM not in edge_df.columns
-        or NAPISTU_GRAPH_EDGES.TO not in edge_df.columns
-    ):
-        raise ValueError("Edge DataFrame must contain 'from' and 'to' columns")
-    edge_names = edge_df[[NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO]].copy()
-
-    logger.debug(
-        f"Extracted {len(vertex_names)} vertex names and {len(edge_names)} edge name pairs"
-    )
-
-    return vertex_names, edge_names
