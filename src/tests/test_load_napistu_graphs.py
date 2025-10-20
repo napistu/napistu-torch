@@ -1,6 +1,9 @@
 """Test napistu_graph_to_pyg with all splitting strategies."""
 
+import logging
+
 import pytest
+import torch
 from torch_geometric.data import Data
 
 from napistu_torch.load.constants import (
@@ -8,6 +11,7 @@ from napistu_torch.load.constants import (
     VALID_SPLITTING_STRATEGIES,
 )
 from napistu_torch.load.napistu_graphs import napistu_graph_to_pyg
+from napistu_torch.ml.constants import TRAINING
 
 
 @pytest.mark.parametrize("strategy", VALID_SPLITTING_STRATEGIES)
@@ -47,3 +51,80 @@ def test_napistu_graph_to_pyg_invalid_strategy(napistu_graph):
         napistu_graph_to_pyg(
             napistu_graph, splitting_strategy="invalid_strategy", verbose=False
         )
+
+
+def test_vertex_mask_with_zero_val_size(augmented_napistu_graph):
+    """Test vertex masking with val_size=0 runs without error and creates blank val_mask."""
+    # Create PyG data with vertex masking and val_size=0
+    data = napistu_graph_to_pyg(
+        augmented_napistu_graph,
+        splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
+        train_size=0.8,
+        test_size=0.2,
+        val_size=0.0,
+        verbose=False,
+    )
+
+    # Verify we get a Data object with masks
+    assert isinstance(data, Data)
+    for mask_type in [TRAINING.TRAIN, TRAINING.TEST, TRAINING.VALIDATION]:
+        mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=mask_type)
+        assert hasattr(data, mask_name)
+
+    # Verify val_mask is all zeros (blank mask)
+    val_mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.VALIDATION)
+    val_mask = getattr(data, val_mask_name)
+    assert torch.all(~val_mask)
+    assert val_mask.sum().item() == 0
+
+
+def test_no_mask_ignores_unused_params_with_warnings(napistu_graph, caplog):
+    """Test that no_mask strategy ignores unused parameters and warns about them."""
+    # Set up logging to capture warnings
+    caplog.set_level(logging.WARNING)
+
+    # Test with both splitting parameters and completely unexpected parameters
+    data = napistu_graph_to_pyg(
+        napistu_graph,
+        splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
+        train_size=0.8,  # Splitting param - should be ignored
+        test_size=0.1,  # Splitting param - should be ignored
+        val_size=0.1,  # Splitting param - should be ignored
+        unexpected_param="should_be_ignored",  # Unexpected param - should be ignored
+        another_unexpected_param=42,  # Another unexpected param - should be ignored
+        verbose=False,
+    )
+
+    # Verify we get a Data object
+    assert isinstance(data, Data)
+    assert data.num_nodes > 0
+    assert data.num_edges > 0
+
+    # Verify no masks are present (no_mask strategy doesn't create masks)
+    for mask_type in [TRAINING.TRAIN, TRAINING.TEST, TRAINING.VALIDATION]:
+        mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=mask_type)
+        assert not hasattr(data, mask_name)
+
+    # Verify warning was logged about ignored parameters
+    assert len(caplog.records) > 0
+    warning_messages = [record.message for record in caplog.records]
+
+    # Check that we got a warning about ignored parameters
+    ignored_params_warning = any(
+        "parameters were ignored" in msg and "no_mask" in msg
+        for msg in warning_messages
+    )
+    assert (
+        ignored_params_warning
+    ), f"Expected warning about ignored parameters, got: {warning_messages}"
+
+    # Verify the warning mentions the ignored parameters
+    warning_msg = next(
+        msg for msg in warning_messages if "parameters were ignored" in msg
+    )
+    assert (
+        "train_size" in warning_msg
+        or "test_size" in warning_msg
+        or "val_size" in warning_msg
+    )
+    assert "unexpected_param" in warning_msg

@@ -221,10 +221,11 @@ class SparseContScaler(BaseEstimator, TransformerMixin):
 
 
 DEFAULT_ENCODERS = {
-    ENCODINGS.CATEGORICAL: OneHotEncoder(
+    ENCODINGS.CATEGORICAL: OneHotEncoder(sparse_output=False, drop="if_binary"),
+    ENCODINGS.NUMERIC: StandardScaler(),
+    ENCODINGS.SPARSE_CATEGORICAL: OneHotEncoder(
         handle_unknown="ignore", drop="first", sparse_output=False
     ),
-    ENCODINGS.NUMERIC: StandardScaler(),
     ENCODINGS.SPARSE_NUMERIC: SparseContScaler(),
     ENCODINGS.BINARY: ENCODING_MANAGER.PASSTHROUGH,
 }

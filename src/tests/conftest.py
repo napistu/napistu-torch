@@ -9,7 +9,17 @@ from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from napistu_torch.load.constants import ENCODING_MANAGER, ENCODINGS
+from napistu_torch.load.constants import (
+    ENCODING_MANAGER,
+    ENCODINGS,
+    SPLITTING_STRATEGIES,
+)
+from napistu_torch.load.napistu_graphs import (
+    augment_napistu_graph,
+    construct_supervised_pyg_data,
+    construct_unsupervised_pyg_data,
+    napistu_graph_to_pyg,
+)
 
 
 @pytest.fixture
@@ -111,3 +121,37 @@ def simple_raw_graph_df():
             "source_col": ["src1", "src2", "src3", "src4"],
         }
     )
+
+
+@pytest.fixture
+def augmented_napistu_graph(napistu_graph, sbml_dfs):
+    """Create a NapistuGraph that has been augmented with SBML_dfs information."""
+    # Augment the graph with SBML_dfs information
+    augment_napistu_graph(sbml_dfs, napistu_graph, inplace=True)
+
+    return napistu_graph
+
+
+@pytest.fixture
+def napistu_data(augmented_napistu_graph):
+    """Create a NapistuData object using the no_mask split strategy."""
+    # Convert to NapistuData using no_mask strategy
+    return napistu_graph_to_pyg(
+        augmented_napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
+    )
+
+
+@pytest.fixture
+def supervised_napistu_data_package(sbml_dfs, napistu_graph):
+    """Create a supervised NapistuData object using default settings.
+
+    Returns:
+        tuple: (napistu_data, labeling_manager) - The NapistuData object and its labeling manager
+    """
+    return construct_supervised_pyg_data(sbml_dfs, napistu_graph)
+
+
+@pytest.fixture
+def unsupervised_napistu_data(sbml_dfs, napistu_graph):
+    """Create an unsupervised NapistuData object using default settings."""
+    return construct_unsupervised_pyg_data(sbml_dfs, napistu_graph)

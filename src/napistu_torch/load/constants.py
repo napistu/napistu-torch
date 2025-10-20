@@ -32,6 +32,7 @@ ENCODING_MANAGER_TABLE = SimpleNamespace(
 ENCODINGS = SimpleNamespace(
     CATEGORICAL="categorical",
     NUMERIC="numeric",
+    SPARSE_CATEGORICAL="sparse_categorical",
     SPARSE_NUMERIC="sparse_numeric",
     BINARY="binary",
 )
@@ -54,8 +55,10 @@ NEVER_ENCODE = {
 VERTEX_DEFAULT_TRANSFORMS = {
     ENCODINGS.CATEGORICAL: {
         NAPISTU_GRAPH_VERTICES.NODE_TYPE,
+    },
+    ENCODINGS.SPARSE_CATEGORICAL: {
         NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,
-    }
+    },
 }
 
 # Edge configuration
