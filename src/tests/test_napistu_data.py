@@ -116,12 +116,22 @@ def test_load_invalid_file():
         # Write some invalid data
         tmpfile.write(b"invalid pickle data")
         tmpfile.flush()
+        tmpfile_path = tmpfile.name
 
+    # Ensure the file handle is closed before trying to load
+    try:
         with pytest.raises(RuntimeError):
-            NapistuData.load(tmpfile.name)
+            NapistuData.load(tmpfile_path)
+    finally:
+        # Clean up with retry logic for Windows
+        try:
+            Path(tmpfile_path).unlink()
+        except PermissionError:
+            # On Windows, sometimes we need to wait a bit for the file to be released
+            import time
 
-        # Clean up
-        Path(tmpfile.name).unlink()
+            time.sleep(0.1)
+            Path(tmpfile_path).unlink()
 
 
 def test_directory_creation(napistu_data):
