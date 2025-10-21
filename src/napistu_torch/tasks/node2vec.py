@@ -9,7 +9,7 @@ from napistu_torch.ml.torch_utils import select_device
 from napistu_torch.napistu_data import NapistuData
 
 
-def get_node2vec_model(napistu_data: NapistuData) -> Node2Vec:
+def get_node2vec_model(napistu_data: NapistuData, device: torch.device) -> Node2Vec:
 
     device = select_device(mps_valid=False)
 
@@ -37,10 +37,8 @@ def get_node2vec_training_regime(model: Node2Vec) -> tuple[DataLoader, Optimizer
 
 
 def get_node2vec_training_loop(
-    model: Node2Vec, loader: DataLoader, optimizer: Optimizer
+    model: Node2Vec, loader: DataLoader, optimizer: Optimizer, device: torch.device
 ) -> float:
-
-    device = select_device(mps_valid=False)
 
     model.train()
     total_loss = 0
@@ -50,4 +48,5 @@ def get_node2vec_training_loop(
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+
     return total_loss / len(loader)

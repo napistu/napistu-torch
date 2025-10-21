@@ -10,7 +10,7 @@ from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_STORE, VERTEX_TEN
 from napistu_torch.napistu_data_store import NapistuDataStore
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="function")
 def temp_napistu_data_store():
     """Create a temporary NapistuDataStore for testing.
 
