@@ -6,3 +6,11 @@ TRAINING = SimpleNamespace(
     VALIDATION="validation",
     SPLIT_MASK_TEMPLATE="{split_name}_mask",
 )
+
+DEVICE = SimpleNamespace(
+    CPU="cpu",
+    GPU="gpu",
+    MPS="mps",
+)
+
+VALID_DEVICES = list(DEVICE.__dict__.values())

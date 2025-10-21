@@ -13,3 +13,42 @@ NAPISTU_DATA = SimpleNamespace(
     X="x",
     Y="y",
 )
+
+VERTEX_TENSOR = SimpleNamespace(
+    DATA="data",
+    FEATURE_NAMES="feature_names",
+    VERTEX_NAMES="vertex_names",
+    TENSOR_NAME="tensor_name",
+    DESCRIPTION="description",
+)
+
+# defs in the json/config
+NAPISTU_DATA_STORE = SimpleNamespace(
+    # top-level categories
+    NAPISTU_RAW="napistu_raw",
+    NAPISTU_DATA="napistu_data",
+    VERTEX_TENSORS="vertex_tensors",
+    # attributes
+    SBML_DFS="sbml_dfs",
+    NAPISTU_GRAPH="napistu_graph",
+    OVERWRITE="overwrite",
+    # metadata
+    LAST_MODIFIED="last_modified",
+    CREATED="created",
+    LABELS="labels",
+    MASKING_STRATEGY="masking_strategy",
+    LABELING_MANAGER="labeling_manager",
+    FILENAME="filename",
+    PT_TEMPLATE="{name}.pt",
+    TENSOR_NAME=VERTEX_TENSOR.TENSOR_NAME,
+    DESCRIPTION=VERTEX_TENSOR.DESCRIPTION,
+)
+
+
+NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
+    REGISTRY_FILE="registry.json",
+    # file directories
+    NAPISTU_RAW=NAPISTU_DATA_STORE.NAPISTU_RAW,
+    NAPISTU_DATA=NAPISTU_DATA_STORE.NAPISTU_DATA,
+    VERTEX_TENSORS=NAPISTU_DATA_STORE.VERTEX_TENSORS,
+)
