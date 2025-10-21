@@ -27,6 +27,13 @@ class VertexTensor:
         Name/identifier for this tensor (e.g., "pathway_memberships")
     description : Optional[str]
         Human-readable description of what this tensor represents
+
+    Public Methods
+    --------------
+    save(filepath)
+        Save the VertexTensor to disk
+    load(filepath, map_location="cpu")
+        Load a VertexTensor from disk
     """
 
     def __init__(

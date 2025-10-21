@@ -82,6 +82,8 @@ class EncodingManager:
     ensure(config, encoders=None)
         Class method to ensure config is an EncodingManager instance.
         Supports both simple and complex dict formats via encoders parameter.
+    get_config()
+        Get the encoding configuration dictionary.
     get_encoding_table()
         Get a summary table of all configured transformations.
     log_summary()
@@ -309,6 +311,16 @@ class EncodingManager:
             raise ValueError(
                 f"config must be a dict or an EncodingManager object, got {type(config)}"
             )
+
+    def get_config(self) -> Dict[str, Dict]:
+        """Get the encoding configuration dictionary.
+
+        Returns
+        -------
+        Dict[str, Dict]
+            The validated configuration dictionary in complex format.
+        """
+        return self.config_
 
     def get_encoding_table(self) -> pd.DataFrame:
         """Get a summary table of all configured transformations.

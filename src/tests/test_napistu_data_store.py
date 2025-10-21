@@ -229,3 +229,65 @@ def test_load_nonexistent_vertex_tensor(temp_napistu_data_store):
     """Test loading a VertexTensor that doesn't exist in registry."""
     with pytest.raises(KeyError, match="not found in registry"):
         temp_napistu_data_store.load_vertex_tensor("nonexistent_tensor")
+
+
+def test_list_napistu_datas(
+    temp_napistu_data_store, supervised_napistu_data, unsupervised_napistu_data
+):
+    """Test listing NapistuData objects in the store."""
+    # Initially empty
+    assert temp_napistu_data_store.list_napistu_datas() == []
+
+    # Save supervised data
+    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    assert supervised_napistu_data.name in temp_napistu_data_store.list_napistu_datas()
+
+    # Save unsupervised data
+    temp_napistu_data_store.save_napistu_data(unsupervised_napistu_data, overwrite=True)
+    napistu_data_names = temp_napistu_data_store.list_napistu_datas()
+    assert supervised_napistu_data.name in napistu_data_names
+    assert unsupervised_napistu_data.name in napistu_data_names
+    assert len(napistu_data_names) == 2
+
+
+def test_list_vertex_tensors(temp_napistu_data_store, comprehensive_source_membership):
+    """Test listing VertexTensor objects in the store."""
+    # Initially empty
+    assert temp_napistu_data_store.list_vertex_tensors() == []
+
+    # Save vertex tensor
+    tensor_name = "test_membership"
+    temp_napistu_data_store.save_vertex_tensor(
+        comprehensive_source_membership, name=tensor_name, overwrite=True
+    )
+
+    vertex_tensor_names = temp_napistu_data_store.list_vertex_tensors()
+    assert tensor_name in vertex_tensor_names
+    assert len(vertex_tensor_names) == 1
+
+
+def test_summary(
+    temp_napistu_data_store, supervised_napistu_data, comprehensive_source_membership
+):
+    """Test store summary method."""
+    # Initially empty
+    summary = temp_napistu_data_store.summary()
+    assert summary["napistu_data_count"] == 0
+    assert summary["vertex_tensors_count"] == 0
+    assert summary["napistu_data_names"] == []
+    assert summary["vertex_tensor_names"] == []
+    assert "store_dir" in summary
+    assert "last_modified" in summary
+
+    # Add some data
+    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_vertex_tensor(
+        comprehensive_source_membership, name="test_tensor", overwrite=True
+    )
+
+    # Check updated summary
+    summary = temp_napistu_data_store.summary()
+    assert summary["napistu_data_count"] == 1
+    assert summary["vertex_tensors_count"] == 1
+    assert supervised_napistu_data.name in summary["napistu_data_names"]
+    assert "test_tensor" in summary["vertex_tensor_names"]

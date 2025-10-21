@@ -79,6 +79,21 @@ class NapistuData(Data):
     **kwargs
         Additional attributes to store in the data object
 
+    Public Methods
+    --------------
+    save(filepath)
+        Save the NapistuData object to disk
+    load(filepath, map_location="cpu")
+        Load a NapistuData object from disk
+    get_vertex_feature_names()
+        Get the names of vertex features
+    get_edge_feature_names()
+        Get the names of edge features
+    get_vertex_names()
+        Get the vertex names from the original NapistuGraph
+    get_edge_names()
+        Get the edge names from the original NapistuGraph
+
     Examples
     --------
     >>> # Create a NapistuData object (x, edge_index, and edge_attr are required)
