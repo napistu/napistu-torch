@@ -31,6 +31,7 @@ from napistu_torch.load.encoding import EncodingManager
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.tasks.constants import SUPERVISION
 
 # Set up logger
 logger = logging.getLogger(__name__)
@@ -107,6 +108,7 @@ def construct_supervised_pyg_data(
     label_type: Union[str, LabelingManager] = LABEL_TYPE.SPECIES_TYPE,
     task_type: str = TASK_TYPES.CLASSIFICATION,
     labeling_managers: Optional[Dict[str, LabelingManager]] = LABELING_MANAGERS,
+    name: Optional[str] = None,
     **kwargs,
 ) -> NapistuData:
     """
@@ -126,15 +128,16 @@ def construct_supervised_pyg_data(
         The type of task to use for the supervised task (classification or regression)
     labeling_managers : Optional[Dict[str, LabelingManager]]
         A dictionary of LabelingManager objects for each label type. If label_type is a LabelingManager, this is ignored.
+    name : Optional[str], default=None
+        Name for the NapistuData object. If None, uses the default name.
     **kwargs : dict
         Additional keyword arguments to pass to the NapistuData constructor.
 
     Returns
     -------
-    napistu_data : NapistuData
+    NapistuData
         A PyG data object containing the augmented NapistuGraph and labels.
-    labeling_manager : LabelingManager
-        The labeling manager used to create the labels. This also tracks the mapping between label integer values and label strings.
+        The labeling manager is embedded in the NapistuData object.
 
     """
 
@@ -167,20 +170,23 @@ def construct_supervised_pyg_data(
         }
 
     napistu_data = napistu_graph_to_pyg(
-        napistu_graph,
+        napistu_graph,  # note - use the original napistu graph since the working one was just to scrub attributes from the default encoding manager
         splitting_strategy=splitting_strategy,
         vertex_default_transforms=vertex_default_transforms,
         labels=labels,
+        name=name,
+        labeling_manager=labeling_manager,
         **kwargs,
     )
 
-    return napistu_data, labeling_manager
+    return napistu_data
 
 
 def construct_unsupervised_pyg_data(
     sbml_dfs: SBML_dfs,
     napistu_graph: NapistuGraph,
     splitting_strategy: str = SPLITTING_STRATEGIES.NO_MASK,
+    name: Optional[str] = None,
     **kwargs,
 ) -> NapistuData:
     """
@@ -198,6 +204,8 @@ def construct_unsupervised_pyg_data(
     splitting_strategy : str, optional
         The splitting strategy to use for the PyG data object.
         Defaults to SPLITTING_STRATEGIES.NO_MASK.
+    name : Optional[str], default=None
+        Name for the NapistuData object. If None, uses the default name.
     **kwargs:
         Additional keyword arguments to pass to napistu_graph_to_pyg.
 
@@ -212,7 +220,10 @@ def construct_unsupervised_pyg_data(
     )
 
     napistu_data = napistu_graph_to_pyg(
-        working_napistu_graph, splitting_strategy=splitting_strategy, **kwargs
+        working_napistu_graph,
+        splitting_strategy=splitting_strategy,
+        name=name,
+        **kwargs,
     )
 
     return napistu_data
@@ -233,6 +244,8 @@ def napistu_graph_to_pyg(
     encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
+    name: Optional[str] = None,
+    labeling_manager: Optional[LabelingManager] = None,
     **strategy_kwargs: Any,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -275,6 +288,10 @@ def napistu_graph_to_pyg(
         If True, log detailed information about config composition and encoding.
     labels : Optional[torch.Tensor], default=None
         Optional labels tensor to set as 'y' attribute in the resulting NapistuData object(s).
+    name : Optional[str], default=None
+        Name for the NapistuData object(s). If None, uses the default name.
+    labeling_manager : Optional[LabelingManager], default=None
+        Labeling manager used to encode the labels. Should be provided when labels are present.
     **strategy_kwargs : Any
         Strategy-specific arguments:
         - For 'edge_mask': train_size=0.8, val_size=0.1, test_size=0.1
@@ -361,9 +378,18 @@ def napistu_graph_to_pyg(
         key: value for key, value in strategy_kwargs.items() if key in strategy_params
     }
 
+    # Generate descriptive name if not provided
+    if name is None:
+        name = _name_napistu_data(
+            splitting_strategy=splitting_strategy,
+            labels=labels,
+            labeling_manager=labeling_manager,
+        )
+
     # Call with all standard arguments plus filtered strategy-specific kwargs
     return strategy_func(
         napistu_graph=napistu_graph,
+        name=name,
         vertex_default_transforms=vertex_default_transforms,
         vertex_transforms=vertex_transforms,
         edge_default_transforms=edge_default_transforms,
@@ -372,6 +398,7 @@ def napistu_graph_to_pyg(
         encoders=encoders,
         verbose=verbose,
         labels=labels,
+        labeling_manager=labeling_manager,
         **filtered_kwargs,
     )
 
@@ -405,6 +432,7 @@ def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
 
 def _napistu_graph_to_pyg_edge_mask(
     napistu_graph: NapistuGraph,
+    name: str,
     vertex_default_transforms: Union[
         Dict[str, Dict], EncodingManager
     ] = VERTEX_DEFAULT_TRANSFORMS,
@@ -420,6 +448,7 @@ def _napistu_graph_to_pyg_edge_mask(
     val_size: float = 0.15,
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
+    labeling_manager: Optional[LabelingManager] = None,
 ) -> Dict[str, NapistuData]:
     """NapistuGraph to PyG Data object with edge masks split across train, test, and validation edge sets."""
 
@@ -487,12 +516,16 @@ def _napistu_graph_to_pyg_edge_mask(
         ng_vertex_names=ng_vertex_names,
         ng_edge_names=ng_edge_names,
         y=labels,
+        name=name,
+        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
+        labeling_manager=labeling_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 
 
 def _napistu_graph_to_pyg_inductive(
     napistu_graph: NapistuGraph,
+    name: str,
     vertex_default_transforms: Union[
         Dict[str, Dict], EncodingManager
     ] = VERTEX_DEFAULT_TRANSFORMS,
@@ -508,6 +541,7 @@ def _napistu_graph_to_pyg_inductive(
     val_size: float = 0.15,
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
+    labeling_manager: Optional[LabelingManager] = None,
 ) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with an inductive split into train, test, and validation sets.
@@ -574,6 +608,9 @@ def _napistu_graph_to_pyg_inductive(
             vertex_feature_names=vertex_feature_names,
             edge_feature_names=edge_feature_names,
             y=labels,
+            name=f"{name}_{k}",
+            splitting_strategy=SPLITTING_STRATEGIES.INDUCTIVE,
+            labeling_manager=labeling_manager,
         )
 
     return pyg_data
@@ -581,6 +618,7 @@ def _napistu_graph_to_pyg_inductive(
 
 def _napistu_graph_to_pyg_no_mask(
     napistu_graph: NapistuGraph,
+    name: str,
     vertex_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     edge_transforms: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     vertex_default_transforms: Union[
@@ -593,6 +631,7 @@ def _napistu_graph_to_pyg_no_mask(
     auto_encode: bool = True,
     verbose: bool = False,
     labels: Optional[torch.Tensor] = None,
+    labeling_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """Create a PyTorch Geometric Data object from a NapistuGraph without any splitting/masking of vertices or edges"""
 
@@ -639,11 +678,15 @@ def _napistu_graph_to_pyg_no_mask(
         y=labels,
         ng_vertex_names=ng_vertex_names,
         ng_edge_names=ng_edge_names,
+        name=name,
+        splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
+        labeling_manager=labeling_manager,
     )
 
 
 def _napistu_graph_to_pyg_vertex_mask(
     napistu_graph: NapistuGraph,
+    name: str,
     vertex_default_transforms: Union[
         Dict[str, Dict], EncodingManager
     ] = VERTEX_DEFAULT_TRANSFORMS,
@@ -659,6 +702,7 @@ def _napistu_graph_to_pyg_vertex_mask(
     val_size: float = 0.15,
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
+    labeling_manager: Optional[LabelingManager] = None,
 ) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with vertex masks split across train, test, and validation vertex sets.
@@ -728,17 +772,64 @@ def _napistu_graph_to_pyg_vertex_mask(
         ng_vertex_names=ng_vertex_names,
         ng_edge_names=ng_edge_names,
         y=labels,  # NapistuData will handle None gracefully
+        name=name,
+        splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
+        labeling_manager=labeling_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 
 
-# Strategy registry
-SPLITTING_STRATEGY_FUNCTIONS: Dict[str, Callable] = {
-    SPLITTING_STRATEGIES.EDGE_MASK: _napistu_graph_to_pyg_edge_mask,
-    SPLITTING_STRATEGIES.VERTEX_MASK: _napistu_graph_to_pyg_vertex_mask,
-    SPLITTING_STRATEGIES.NO_MASK: _napistu_graph_to_pyg_no_mask,
-    SPLITTING_STRATEGIES.INDUCTIVE: _napistu_graph_to_pyg_inductive,
-}
+def _name_napistu_data(
+    splitting_strategy: str,
+    labels: Optional[torch.Tensor] = None,
+    labeling_manager: Optional[LabelingManager] = None,
+) -> str:
+    """
+    Generate a descriptive name for NapistuData objects based on labeling and splitting strategy.
+
+    This function creates a filename-friendly name that includes information about:
+    - The labeling strategy (if supervised)
+    - The splitting strategy used
+
+    Parameters
+    ----------
+    splitting_strategy : Optional[str], default=None
+        The splitting strategy used (e.g., 'vertex_mask', 'edge_mask', 'no_mask', 'inductive').
+    labels: Optional[torch.Tensor], default=None
+        The labels for the data. If None, indicates unsupervised data.
+    labeling_manager : Optional[LabelingManager], default=None
+        The labeling manager used for supervised tasks. If provided, this can improve the labels of data objects supporting supervised learning.
+
+    Returns
+    -------
+    str
+        A descriptive name suitable for use as a filename.
+
+    Examples
+    --------
+    >>> # Supervised data with vertex masking
+    >>> name = _name_napistu_data(splitting_strategy="vertex_mask", labels=labels, labeling_manager=labeling_manager)
+    >>> print(name)  # "supervised_species_type_vertex_mask"
+
+    >>> # Unsupervised data with no masking
+    >>> name = _name_napistu_data(splitting_strategy="no_mask")
+    >>> print(name)  # "unsupervised"
+    """
+    name_parts = []
+
+    # Determine if supervised or unsupervised
+    if labels is not None:
+        name_parts.append(SUPERVISION.SUPERVISED)
+        if labeling_manager is not None:
+            name_parts.append(labeling_manager.label_attribute)
+    else:
+        name_parts.append(SUPERVISION.UNSUPERVISED)
+
+    # Add splitting strategy
+    if splitting_strategy != SPLITTING_STRATEGIES.NO_MASK:
+        name_parts.append(splitting_strategy)
+
+    return "_".join(name_parts)
 
 
 def _get_napistu_graph_names(
@@ -850,3 +941,12 @@ def _standardize_graph_dfs_and_encodings(
         edge_encoding_manager = encoding.auto_encode(edge_df, edge_encoding_manager)
 
     return vertex_df, edge_df, vertex_encoding_manager, edge_encoding_manager
+
+
+# Strategy registry
+SPLITTING_STRATEGY_FUNCTIONS: Dict[str, Callable] = {
+    SPLITTING_STRATEGIES.EDGE_MASK: _napistu_graph_to_pyg_edge_mask,
+    SPLITTING_STRATEGIES.VERTEX_MASK: _napistu_graph_to_pyg_vertex_mask,
+    SPLITTING_STRATEGIES.NO_MASK: _napistu_graph_to_pyg_no_mask,
+    SPLITTING_STRATEGIES.INDUCTIVE: _napistu_graph_to_pyg_inductive,
+}

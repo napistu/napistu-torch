@@ -5,6 +5,7 @@ This class extends PyG's Data class with Napistu-specific functionality
 including safe save/load methods and additional utilities.
 """
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -18,17 +19,23 @@ from napistu.network.constants import (
 from napistu.network.ng_core import NapistuGraph
 from torch_geometric.data import Data
 
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import (
+    NAPISTU_DATA,
+    NAPISTU_DATA_DEFAULT_NAME,
+)
 from napistu_torch.labeling.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
+    VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
 )
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import fit_encoders, transform_dataframe
 from napistu_torch.load.encoding_manager import EncodingManager
 from napistu_torch.ml.constants import DEVICE
+
+logger = logging.getLogger(__name__)
 
 
 class NapistuData(Data):
@@ -41,11 +48,11 @@ class NapistuData(Data):
 
     Parameters
     ----------
-    x : torch.Tensor, optional
+    x : torch.Tensor
         Node feature matrix with shape [num_nodes, num_node_features]
-    edge_index : torch.Tensor, optional
+    edge_index : torch.Tensor
         Graph connectivity in COO format with shape [2, num_edges]
-    edge_attr : torch.Tensor, optional
+    edge_attr : torch.Tensor
         Edge feature matrix with shape [num_edges, num_edge_features]
     edge_weight : torch.Tensor, optional
         Edge weights tensor with shape [num_edges]
@@ -63,21 +70,42 @@ class NapistuData(Data):
         Minimal edge names from the original NapistuGraph. DataFrame with 'from' and 'to'
         columns aligned with the edge tensor (edge_index, edge_attr) - each row corresponds
         to an edge in the same order as the tensor columns. Used for debugging and validation.
+    name: str = NAPISTU_DATA_DEFAULT_NAME,
+        Name of the NapistuData object. Used for summaries and for organizing objects in the NapistuDataStore.
+    splitting_strategy: Optional[str] = None,
+        Strategy used to split the data into train/test/val sets. This occurs upstream but the approach is tracked as a reference here.
+    labeling_manager: Optional[LabelingManager] = None,
+        Labeling manager used to encode the labels. This is used to decode the labels back to the original values for validation purposes.
     **kwargs
         Additional attributes to store in the data object
 
+    Public Methods
+    --------------
+    save(filepath)
+        Save the NapistuData object to disk
+    load(filepath, map_location="cpu")
+        Load a NapistuData object from disk
+    get_vertex_feature_names()
+        Get the names of vertex features
+    get_edge_feature_names()
+        Get the names of edge features
+    get_vertex_names()
+        Get the vertex names from the original NapistuGraph
+    get_edge_names()
+        Get the edge names from the original NapistuGraph
+
     Examples
     --------
-    >>> # Create a NapistuData object
+    >>> # Create a NapistuData object (x, edge_index, and edge_attr are required)
     >>> data = NapistuData(
-    ...     x=torch.randn(100, 10),
-    ...     edge_index=torch.randint(0, 100, (2, 200)),
-    ...     edge_attr=torch.randn(200, 5),
-    ...     y=torch.randint(0, 3, (100,)),  # Node labels
-    ...     vertex_feature_names=['feature_1', 'feature_2', ...],
-    ...     edge_feature_names=['weight', 'direction', ...],
-    ...     ng_vertex_names=vertex_names_series,  # Optional: minimal vertex names
-    ...     ng_edge_names=edge_names_df,          # Optional: minimal edge names
+    ...     x=torch.randn(100, 10),                    # Required: node features
+    ...     edge_index=torch.randint(0, 100, (2, 200)), # Required: graph connectivity
+    ...     edge_attr=torch.randn(200, 5),             # Required: edge features
+    ...     y=torch.randint(0, 3, (100,)),             # Optional: node labels
+    ...     vertex_feature_names=['feature_1', 'feature_2', ...],  # Optional
+    ...     edge_feature_names=['weight', 'direction', ...],       # Optional
+    ...     ng_vertex_names=vertex_names_series,        # Optional: minimal vertex names
+    ...     ng_edge_names=edge_names_df,                # Optional: minimal edge names
     ... )
     >>>
     >>> # Save and load
@@ -87,45 +115,119 @@ class NapistuData(Data):
 
     def __init__(
         self,
-        x: Optional[torch.Tensor] = None,
-        edge_index: Optional[torch.Tensor] = None,
-        edge_attr: Optional[torch.Tensor] = None,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_attr: torch.Tensor,
         edge_weight: Optional[torch.Tensor] = None,
         y: Optional[torch.Tensor] = None,
         vertex_feature_names: Optional[List[str]] = None,
         edge_feature_names: Optional[List[str]] = None,
         ng_vertex_names: Optional[pd.Series] = None,
         ng_edge_names: Optional[pd.DataFrame] = None,
+        name: str = NAPISTU_DATA_DEFAULT_NAME,
+        splitting_strategy: Optional[str] = None,
+        labeling_manager: Optional[LabelingManager] = None,
         **kwargs,
     ):
+        # Validate required parameters
+        if x is None:
+            raise ValueError("x (node feature matrix) is required and cannot be None")
+        if edge_index is None:
+            raise ValueError(
+                "edge_index (graph connectivity) is required and cannot be None"
+            )
+        if edge_attr is None:
+            raise ValueError(
+                "edge_attr (edge feature matrix) is required and cannot be None"
+            )
+        if name is None or not isinstance(name, str):
+            raise ValueError(
+                "name (name of the NapistuData object) is required and must be a string"
+            )
+
         # Build parameters dict, only including non-None values
         params = {
             NAPISTU_DATA.X: x,
             NAPISTU_DATA.EDGE_INDEX: edge_index,
             NAPISTU_DATA.EDGE_ATTR: edge_attr,
             NAPISTU_DATA.EDGE_WEIGHT: edge_weight,
+            NAPISTU_DATA.NAME: name,
         }
 
-        # Only add y if it's not None
+        # Add optional parameters if they are not None
         if y is not None:
+            if not isinstance(y, torch.Tensor):
+                raise ValueError("if provided, y (node labels) must be a torch.Tensor")
             params[NAPISTU_DATA.Y] = y
+
+        if vertex_feature_names is not None:
+            if not isinstance(vertex_feature_names, list):
+                raise ValueError(
+                    "if provided, vertex_feature_names must be a list of strings"
+                )
+            if len(vertex_feature_names) != x.shape[1]:
+                raise ValueError(
+                    "if provided, vertex_feature_names must be a list of strings with the same length as the number of columns in x"
+                )
+            params[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
+
+        if edge_feature_names is not None:
+            if not isinstance(edge_feature_names, list):
+                raise ValueError(
+                    "if provided, edge_feature_names must be a list of strings"
+                )
+            if len(edge_feature_names) != edge_attr.shape[1]:
+                raise ValueError(
+                    "if provided, edge_feature_names must be a list of strings with the same length as the number of columns in edge_attr"
+                )
+            params[NAPISTU_DATA.EDGE_FEATURE_NAMES] = edge_feature_names
+
+        if ng_vertex_names is not None:
+            if not isinstance(ng_vertex_names, pd.Series):
+                raise ValueError("if provided, ng_vertex_names must be a pd.Series")
+            if ng_vertex_names.name != NAPISTU_GRAPH_VERTICES.NAME:
+                raise ValueError(
+                    "if provided, ng_vertex_names must have a name attribute of 'name'"
+                )
+            params[NAPISTU_DATA.NG_VERTEX_NAMES] = ng_vertex_names
+
+        if ng_edge_names is not None:
+            if not isinstance(ng_edge_names, pd.DataFrame):
+                raise ValueError("if provided, ng_edge_names must be a pd.DataFrame")
+            if ng_edge_names.shape[1] != 2:
+                raise ValueError("if provided, ng_edge_names must have 2 columns")
+            EXPECTED_EDGE_NAMES = [NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO]
+            if not all(col in ng_edge_names.columns for col in EXPECTED_EDGE_NAMES):
+                raise ValueError(
+                    f"if provided, ng_edge_names must have columns '{EXPECTED_EDGE_NAMES}'"
+                )
+            params[NAPISTU_DATA.NG_EDGE_NAMES] = ng_edge_names
+
+        if splitting_strategy is not None:
+            if not isinstance(splitting_strategy, str):
+                raise ValueError("if provided, splitting_strategy must be a string")
+            if splitting_strategy not in VALID_SPLITTING_STRATEGIES:
+                raise ValueError(
+                    f"if provided, splitting_strategy must be one of {VALID_SPLITTING_STRATEGIES}"
+                )
+            params[NAPISTU_DATA.SPLITTING_STRATEGY] = splitting_strategy
+
+        if labeling_manager is not None:
+            if not isinstance(labeling_manager, LabelingManager):
+                raise ValueError(
+                    "if provided, labeling_manager must be a LabelingManager object"
+                )
+            if y is None:
+                logger.warning(
+                    "Labeling manager provided but no labels are present in the data. The labeling manager will be ignored."
+                )
+            else:
+                params[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
 
         # Add any non-None kwargs
         params.update({k: v for k, v in kwargs.items() if v is not None})
 
         super().__init__(**params)
-
-        # Store feature names for interpretability
-        if vertex_feature_names is not None:
-            self.vertex_feature_names = vertex_feature_names
-        if edge_feature_names is not None:
-            self.edge_feature_names = edge_feature_names
-
-        # Store minimal NapistuGraph attributes for debugging and validation
-        if ng_vertex_names is not None:
-            self.ng_vertex_names = ng_vertex_names
-        if ng_edge_names is not None:
-            self.ng_edge_names = ng_edge_names
 
     def save(self, filepath: Union[str, Path]) -> None:
         """
@@ -202,15 +304,11 @@ class NapistuData(Data):
             data = torch.load(filepath, weights_only=False, map_location=map_location)
 
             # Convert to NapistuData if it's a regular Data object
-            if isinstance(data, Data) and not isinstance(data, NapistuData):
-                napistu_data = NapistuData()
-                napistu_data.__dict__.update(data.__dict__)
-                return napistu_data
-            elif isinstance(data, NapistuData):
+            if isinstance(data, NapistuData):
                 return data
             else:
                 raise TypeError(
-                    f"Loaded object is not a NapistuData or Data object, got {type(data)}. "
+                    f"Loaded object is not a NapistuData object, got {type(data)}. "
                     "This may indicate a corrupted file or incorrect file type."
                 )
 
@@ -273,6 +371,7 @@ class NapistuData(Data):
             Dictionary containing summary information about the data object
         """
         summary_dict = {
+            NAPISTU_DATA.NAME: self.name,
             "num_nodes": self.num_nodes,
             "num_edges": self.num_edges,
             "num_node_features": self.num_node_features,
@@ -282,20 +381,11 @@ class NapistuData(Data):
             ),
             "has_edge_feature_names": hasattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES),
             "has_edge_weights": hasattr(self, NAPISTU_DATA.EDGE_WEIGHT),
+            "has_ng_vertex_names": hasattr(self, NAPISTU_DATA.NG_VERTEX_NAMES),
+            "has_ng_edge_names": hasattr(self, NAPISTU_DATA.NG_EDGE_NAMES),
+            "has_splitting_strategy": hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY),
+            "has_labeling_manager": hasattr(self, NAPISTU_DATA.LABELING_MANAGER),
         }
-
-        if hasattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES):
-            summary_dict[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = self.vertex_feature_names
-        if hasattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES):
-            summary_dict[NAPISTU_DATA.EDGE_FEATURE_NAMES] = self.edge_feature_names
-
-        # Add any additional attributes
-        for key, value in self.__dict__.items():
-            if key not in summary_dict and not key.startswith("_"):
-                if isinstance(value, torch.Tensor):
-                    summary_dict[key] = f"Tensor{list(value.shape)}"
-                else:
-                    summary_dict[key] = str(value)[:100]  # Truncate long strings
 
         return summary_dict
 

@@ -12,13 +12,18 @@ NAPISTU_DATA = SimpleNamespace(
     VERTEX_FEATURE_NAMES="vertex_feature_names",
     X="x",
     Y="y",
+    NAME="name",
+    SPLITTING_STRATEGY="splitting_strategy",
+    LABELING_MANAGER="labeling_manager",
 )
+
+NAPISTU_DATA_DEFAULT_NAME = "default"
 
 VERTEX_TENSOR = SimpleNamespace(
     DATA="data",
     FEATURE_NAMES="feature_names",
     VERTEX_NAMES="vertex_names",
-    TENSOR_NAME="tensor_name",
+    NAME="name",
     DESCRIPTION="description",
 )
 
@@ -35,15 +40,9 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     # metadata
     LAST_MODIFIED="last_modified",
     CREATED="created",
-    LABELS="labels",
-    MASKING_STRATEGY="masking_strategy",
-    LABELING_MANAGER="labeling_manager",
     FILENAME="filename",
     PT_TEMPLATE="{name}.pt",
-    TENSOR_NAME=VERTEX_TENSOR.TENSOR_NAME,
-    DESCRIPTION=VERTEX_TENSOR.DESCRIPTION,
 )
-
 
 NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     REGISTRY_FILE="registry.json",

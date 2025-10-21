@@ -30,6 +30,15 @@ class LabelingManager(BaseModel):
     label_names : Optional[Dict[int, Any]]
         Optional lookup table mapping label integers to their original names.
         Used to track the mapping between encoded integers and original label values.
+
+    Public Methods
+    --------------
+    get_label_names()
+        Get the label names mapping, returning empty dict if None
+    to_dict()
+        Convert the labeling strategy to a dictionary
+    from_dict(config)
+        Create a LabelingManager from a dictionary configuration
     """
 
     label_attribute: str
@@ -76,6 +85,10 @@ class LabelingManager(BaseModel):
                     f"Must be one of: {valid_summary_types}"
                 )
         return v
+
+    def get_label_names(self) -> Dict[int, Any]:
+        """Get the label names mapping, returning empty dict if None."""
+        return self.label_names if self.label_names is not None else {}
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert the labeling strategy to a dictionary."""

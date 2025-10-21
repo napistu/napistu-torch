@@ -6,12 +6,15 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
+from napistu_torch.labeling.constants import LABEL_TYPE
+from napistu_torch.labeling.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
 )
-from napistu_torch.load.napistu_graphs import napistu_graph_to_pyg
+from napistu_torch.load.napistu_graphs import _name_napistu_data, napistu_graph_to_pyg
 from napistu_torch.ml.constants import TRAINING
+from napistu_torch.tasks.constants import SUPERVISION
 
 
 @pytest.mark.parametrize("strategy", VALID_SPLITTING_STRATEGIES)
@@ -128,3 +131,40 @@ def test_no_mask_ignores_unused_params_with_warnings(napistu_graph, caplog):
         or "val_size" in warning_msg
     )
     assert "unexpected_param" in warning_msg
+
+
+def test_name_napistu_data():
+    """Test _name_napistu_data validates docstring examples."""
+
+    # Create a mock labeling manager
+    labeling_manager = LabelingManager(
+        label_attribute=LABEL_TYPE.SPECIES_TYPE,
+        exclude_vertex_attributes=[LABEL_TYPE.SPECIES_TYPE],
+        augment_summary_types=[],
+    )
+
+    # Test supervised data with vertex masking (from docstring example)
+    supervised_name = _name_napistu_data(
+        splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
+        labels=torch.tensor([0, 1, 2]),  # Mock labels for supervised case
+        labeling_manager=labeling_manager,
+    )
+    # LABEL_TYPE.SPECIES_TYPE = "species_type", SPLITTING_STRATEGIES.VERTEX_MASK = "vertex_mask"
+    expected_supervised = "_".join(
+        [
+            SUPERVISION.SUPERVISED,
+            LABEL_TYPE.SPECIES_TYPE,
+            SPLITTING_STRATEGIES.VERTEX_MASK,
+        ]
+    )
+    assert supervised_name == expected_supervised
+
+    # Test unsupervised data with no masking (from docstring example)
+    unsupervised_name = _name_napistu_data(
+        splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
+        labels=None,  # No labels for unsupervised case
+        labeling_manager=None,
+    )
+    # "no_mask" is dropped from the name
+    expected_unsupervised = SUPERVISION.UNSUPERVISED
+    assert unsupervised_name == expected_unsupervised

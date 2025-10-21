@@ -8,12 +8,13 @@ from typing import Optional, Union
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
-from napistu_torch.constants import NAPISTU_DATA_STORE, NAPISTU_DATA_STORE_STRUCTURE
-from napistu_torch.labeling.labeling_manager import LabelingManager
-from napistu_torch.load.constants import (
-    SPLITTING_STRATEGIES,
-    VALID_SPLITTING_STRATEGIES,
+from napistu_torch.constants import (
+    NAPISTU_DATA,
+    NAPISTU_DATA_STORE,
+    NAPISTU_DATA_STORE_STRUCTURE,
+    VERTEX_TENSOR,
 )
+from napistu_torch.load.constants import VALID_SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.vertex_tensor import VertexTensor
@@ -32,11 +33,41 @@ class NapistuDataStore:
     │   ├── sbml_dfs.pkl        # (optional copy)
     │   └── napistu_graph.pkl   # (optional copy)
     ├── napistu_data/           # organizes NapistuData objects
-    |    └── (NapistuData .pt files)
+    |   └── (NapistuData .pt files)
     └── vertex_tensors/          # organizes VertexTensor objects
         └── (VertexTensor .pt files)
 
     Each store manages objects for a single biological network.
+
+    Public Methods
+    --------------
+    create(store_dir, sbml_dfs_path, napistu_graph_path, copy_to_store=False, overwrite=False)
+        Create a new NapistuDataStore
+    list_napistu_datas()
+        List all NapistuData names in the store
+    list_vertex_tensors()
+        List all VertexTensor names in the store
+    load_sbml_dfs()
+        Load the SBML_dfs from disk
+    load_napistu_data(name, map_location="cpu")
+        Load a NapistuData object from the store
+    load_napistu_graph()
+        Load the NapistuGraph from disk
+    load_vertex_tensor(name, map_location="cpu")
+        Load a VertexTensor from the store
+    save_napistu_data(napistu_data, name=None, overwrite=False)
+        Save a NapistuData object to the store
+    save_vertex_tensor(vertex_tensor, name=None, overwrite=False)
+        Save a VertexTensor to the store
+    summary()
+        Get a summary of the store contents
+
+    Private Methods
+    ---------------
+    _load_registry()
+        Load the registry from disk
+    _save_registry()
+        Save the registry to disk
     """
 
     def __init__(self, store_dir: Union[str, Path]):
@@ -199,6 +230,28 @@ class NapistuDataStore:
         # Return new instance
         return cls(store_dir)
 
+    def list_napistu_datas(self) -> list[str]:
+        """
+        List all NapistuData names in the store.
+
+        Returns
+        -------
+        list[str]
+            List of NapistuData names in the store
+        """
+        return list(self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA].keys())
+
+    def list_vertex_tensors(self) -> list[str]:
+        """
+        List all VertexTensor names in the store.
+
+        Returns
+        -------
+        list[str]
+            List of VertexTensor names in the store
+        """
+        return list(self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS].keys())
+
     def load_sbml_dfs(self) -> SBML_dfs:
         """Load the SBML_dfs from disk."""
         if self.sbml_dfs_path.is_file():
@@ -303,9 +356,7 @@ class NapistuDataStore:
     def save_napistu_data(
         self,
         napistu_data: NapistuData,
-        name: str,
-        masking_strategy: Optional[str] = SPLITTING_STRATEGIES.NO_MASK,
-        labeling_manager: Optional[LabelingManager] = None,
+        name: Optional[str] = None,
         overwrite: bool = False,
     ) -> None:
         """
@@ -314,15 +365,11 @@ class NapistuDataStore:
         Parameters
         ----------
         napistu_data : NapistuData
-            The NapistuData object to save
-        name : str
-            Name for this NapistuData (e.g., "default", "node_classification")
-            Used as registry key and filename stem (saved as "{name}.pt")
-        masking_strategy : Optional[str], default=SPLITTING_STRATEGIES.NO_MASK
-            Description of the masking strategy used
-        labeling_manager : Optional[LabelingManager]
-            The labeling manager used to create the labels. Will be serialized
-            to the registry using its to_dict() method.
+            The NapistuData object to save. The method will extract the
+            splitting_strategy and labeling_manager from the object's attributes.
+        name : str, optional
+            Name to use for the registry entry and filename. If not provided,
+            uses the napistu_data.name attribute.
         overwrite : bool, default=False
             If True, overwrite existing entry with same name
             If False, raise FileExistsError if name already exists
@@ -331,16 +378,27 @@ class NapistuDataStore:
         ------
         FileExistsError
             If name already exists in registry and overwrite=False
+        ValueError
+            If the splitting_strategy from the NapistuData object is invalid
         """
+        # Use provided name or fall back to object's name
+        if name is None:
+            name = napistu_data.name
+        splitting_strategy = napistu_data.splitting_strategy
+        labeling_manager = getattr(napistu_data, NAPISTU_DATA.LABELING_MANAGER, None)
+
         # Check if name already exists
         if name in self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA] and not overwrite:
             raise FileExistsError(
                 f"NapistuData '{name}' already exists in registry. "
                 f"Use overwrite=True to replace it."
             )
-        if masking_strategy not in VALID_SPLITTING_STRATEGIES:
+        if (
+            splitting_strategy is not None
+            and splitting_strategy not in VALID_SPLITTING_STRATEGIES
+        ):
             raise ValueError(
-                f"Invalid masking strategy: {masking_strategy}. Must be one of {VALID_SPLITTING_STRATEGIES}"
+                f"Invalid splitting strategy: {splitting_strategy}. Must be one of {VALID_SPLITTING_STRATEGIES}"
             )
 
         # Save the NapistuData object
@@ -355,12 +413,12 @@ class NapistuDataStore:
         entry = {
             NAPISTU_DATA_STORE.FILENAME: filename,
             NAPISTU_DATA_STORE.CREATED: datetime.now().isoformat(),
-            NAPISTU_DATA_STORE.MASKING_STRATEGY: masking_strategy,
+            NAPISTU_DATA.NAME: name,
+            NAPISTU_DATA.LABELING_MANAGER: (
+                labeling_manager.to_dict() if labeling_manager is not None else None
+            ),
+            NAPISTU_DATA.SPLITTING_STRATEGY: splitting_strategy,
         }
-
-        # Add labeling_manager if provided
-        if labeling_manager is not None:
-            entry[NAPISTU_DATA_STORE.LABELING_MANAGER] = labeling_manager.to_dict()
 
         # Update registry
         self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA][name] = entry
@@ -369,7 +427,7 @@ class NapistuDataStore:
     def save_vertex_tensor(
         self,
         vertex_tensor: VertexTensor,
-        name: str,
+        name: Optional[str] = None,
         overwrite: bool = False,
     ) -> None:
         """
@@ -379,8 +437,9 @@ class NapistuDataStore:
         ----------
         vertex_tensor : VertexTensor
             The VertexTensor object to save
-        name : str
-            Name for storage (registry key and filename stem)
+        name : str, optional
+            Name for storage (registry key and filename stem). If not provided,
+            uses the vertex_tensor.name attribute.
         overwrite : bool, default=False
             If True, overwrite existing entry with same name
             If False, raise FileExistsError if name already exists
@@ -390,6 +449,10 @@ class NapistuDataStore:
         FileExistsError
             If name already exists in registry and overwrite=False
         """
+        # Use provided name or fall back to object's name
+        if name is None:
+            name = vertex_tensor.name
+
         # Check if name already exists
         if name in self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS] and not overwrite:
             raise FileExistsError(
@@ -412,13 +475,33 @@ class NapistuDataStore:
         entry = {
             NAPISTU_DATA_STORE.FILENAME: filename,
             NAPISTU_DATA_STORE.CREATED: datetime.now().isoformat(),
-            NAPISTU_DATA_STORE.TENSOR_NAME: vertex_tensor.tensor_name,
-            NAPISTU_DATA_STORE.DESCRIPTION: vertex_tensor.description,
+            VERTEX_TENSOR.NAME: vertex_tensor.name,
+            VERTEX_TENSOR.DESCRIPTION: vertex_tensor.description,
         }
 
         # Update registry
         self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS][name] = entry
         self._save_registry()
+
+    def summary(self) -> dict:
+        """
+        Get a summary of the store contents.
+
+        Returns
+        -------
+        dict
+            Dictionary containing summary information about the store
+        """
+        return {
+            "store_dir": str(self.store_dir),
+            "napistu_data_count": len(self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA]),
+            "vertex_tensors_count": len(
+                self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS]
+            ),
+            "napistu_data_names": self.list_napistu_datas(),
+            "vertex_tensor_names": self.list_vertex_tensors(),
+            "last_modified": self.registry.get(NAPISTU_DATA_STORE.LAST_MODIFIED),
+        }
 
     def _load_registry(self) -> dict:
         """Load the registry from disk."""
@@ -431,6 +514,9 @@ class NapistuDataStore:
 
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=2)
+
+
+# private functions
 
 
 def _validate_create_inputs(
