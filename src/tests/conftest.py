@@ -9,6 +9,7 @@ from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.load.constants import (
     ENCODING_MANAGER,
     ENCODINGS,
@@ -142,12 +143,8 @@ def napistu_data(augmented_napistu_graph):
 
 
 @pytest.fixture
-def supervised_napistu_data_package(sbml_dfs, napistu_graph):
-    """Create a supervised NapistuData object using default settings.
-
-    Returns:
-        tuple: (napistu_data, labeling_manager) - The NapistuData object and its labeling manager
-    """
+def supervised_napistu_data(sbml_dfs, napistu_graph):
+    """Create a supervised NapistuData object using default settings."""
     return construct_supervised_pyg_data(sbml_dfs, napistu_graph)
 
 
@@ -155,3 +152,9 @@ def supervised_napistu_data_package(sbml_dfs, napistu_graph):
 def unsupervised_napistu_data(sbml_dfs, napistu_graph):
     """Create an unsupervised NapistuData object using default settings."""
     return construct_unsupervised_pyg_data(sbml_dfs, napistu_graph)
+
+
+@pytest.fixture
+def comprehensive_source_membership(sbml_dfs, napistu_graph):
+    """Create a comprehensive source membership VertexTensor."""
+    return get_comprehensive_source_membership(napistu_graph, sbml_dfs)

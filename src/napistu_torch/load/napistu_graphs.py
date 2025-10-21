@@ -135,10 +135,9 @@ def construct_supervised_pyg_data(
 
     Returns
     -------
-    napistu_data : NapistuData
+    NapistuData
         A PyG data object containing the augmented NapistuGraph and labels.
-    labeling_manager : LabelingManager
-        The labeling manager used to create the labels. This also tracks the mapping between label integer values and label strings.
+        The labeling manager is embedded in the NapistuData object.
 
     """
 
@@ -180,7 +179,7 @@ def construct_supervised_pyg_data(
         **kwargs,
     )
 
-    return napistu_data, labeling_manager
+    return napistu_data
 
 
 def construct_unsupervised_pyg_data(

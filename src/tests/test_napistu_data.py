@@ -149,20 +149,17 @@ def test_directory_creation(napistu_data):
         assert isinstance(loaded_data, NapistuData)
 
 
-def test_supervised_data_ordering_consistency(
-    supervised_napistu_data_package, napistu_graph
-):
+def test_supervised_data_ordering_consistency(supervised_napistu_data, napistu_graph):
     """Test that data ordering is consistent between NapistuGraph and NapistuData objects.
 
     This test verifies that when labels are decoded from the NapistuData object,
     they correspond to the correct vertices in the NapistuGraph based on the
     vertex ordering preserved in the NapistuData.ng_vertex_names attribute.
     """
-    # Unpack the supervised fixture
-    napistu_data, labeling_manager = supervised_napistu_data_package
-
     # Use the new _validate_labels method to test consistency
-    napistu_data._validate_labels(napistu_graph, labeling_manager)
+    supervised_napistu_data._validate_labels(
+        napistu_graph, supervised_napistu_data.labeling_manager
+    )
 
 
 @pytest.fixture

@@ -3,17 +3,18 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Union
 
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
-from napistu_torch.constants import NAPISTU_DATA_STORE, NAPISTU_DATA_STORE_STRUCTURE
-from napistu_torch.labeling.labeling_manager import LabelingManager
-from napistu_torch.load.constants import (
-    SPLITTING_STRATEGIES,
-    VALID_SPLITTING_STRATEGIES,
+from napistu_torch.constants import (
+    NAPISTU_DATA,
+    NAPISTU_DATA_STORE,
+    NAPISTU_DATA_STORE_STRUCTURE,
+    VERTEX_TENSOR,
 )
+from napistu_torch.load.constants import VALID_SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.vertex_tensor import VertexTensor
@@ -303,9 +304,6 @@ class NapistuDataStore:
     def save_napistu_data(
         self,
         napistu_data: NapistuData,
-        name: str,
-        masking_strategy: Optional[str] = SPLITTING_STRATEGIES.NO_MASK,
-        labeling_manager: Optional[LabelingManager] = None,
         overwrite: bool = False,
     ) -> None:
         """
@@ -314,15 +312,8 @@ class NapistuDataStore:
         Parameters
         ----------
         napistu_data : NapistuData
-            The NapistuData object to save
-        name : str
-            Name for this NapistuData (e.g., "default", "node_classification")
-            Used as registry key and filename stem (saved as "{name}.pt")
-        masking_strategy : Optional[str], default=SPLITTING_STRATEGIES.NO_MASK
-            Description of the masking strategy used
-        labeling_manager : Optional[LabelingManager]
-            The labeling manager used to create the labels. Will be serialized
-            to the registry using its to_dict() method.
+            The NapistuData object to save. The method will extract the name,
+            splitting_strategy, and labeling_manager from the object's attributes.
         overwrite : bool, default=False
             If True, overwrite existing entry with same name
             If False, raise FileExistsError if name already exists
@@ -331,16 +322,26 @@ class NapistuDataStore:
         ------
         FileExistsError
             If name already exists in registry and overwrite=False
+        ValueError
+            If the splitting_strategy from the NapistuData object is invalid
         """
+        # Extract attributes from the NapistuData object
+        name = napistu_data.name
+        splitting_strategy = napistu_data.splitting_strategy
+        labeling_manager = getattr(napistu_data, NAPISTU_DATA.LABELING_MANAGER, None)
+
         # Check if name already exists
         if name in self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA] and not overwrite:
             raise FileExistsError(
                 f"NapistuData '{name}' already exists in registry. "
                 f"Use overwrite=True to replace it."
             )
-        if masking_strategy not in VALID_SPLITTING_STRATEGIES:
+        if (
+            splitting_strategy is not None
+            and splitting_strategy not in VALID_SPLITTING_STRATEGIES
+        ):
             raise ValueError(
-                f"Invalid masking strategy: {masking_strategy}. Must be one of {VALID_SPLITTING_STRATEGIES}"
+                f"Invalid splitting strategy: {splitting_strategy}. Must be one of {VALID_SPLITTING_STRATEGIES}"
             )
 
         # Save the NapistuData object
@@ -355,12 +356,12 @@ class NapistuDataStore:
         entry = {
             NAPISTU_DATA_STORE.FILENAME: filename,
             NAPISTU_DATA_STORE.CREATED: datetime.now().isoformat(),
-            NAPISTU_DATA_STORE.MASKING_STRATEGY: masking_strategy,
+            NAPISTU_DATA.NAME: name,
+            NAPISTU_DATA.LABELING_MANAGER: (
+                labeling_manager.to_dict() if labeling_manager is not None else None
+            ),
+            NAPISTU_DATA.SPLITTING_STRATEGY: splitting_strategy,
         }
-
-        # Add labeling_manager if provided
-        if labeling_manager is not None:
-            entry[NAPISTU_DATA_STORE.LABELING_MANAGER] = labeling_manager.to_dict()
 
         # Update registry
         self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA][name] = entry
@@ -412,8 +413,8 @@ class NapistuDataStore:
         entry = {
             NAPISTU_DATA_STORE.FILENAME: filename,
             NAPISTU_DATA_STORE.CREATED: datetime.now().isoformat(),
-            NAPISTU_DATA_STORE.TENSOR_NAME: vertex_tensor.tensor_name,
-            NAPISTU_DATA_STORE.DESCRIPTION: vertex_tensor.description,
+            VERTEX_TENSOR.NAME: vertex_tensor.name,
+            VERTEX_TENSOR.DESCRIPTION: vertex_tensor.description,
         }
 
         # Update registry

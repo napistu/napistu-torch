@@ -23,7 +23,7 @@ VERTEX_TENSOR = SimpleNamespace(
     DATA="data",
     FEATURE_NAMES="feature_names",
     VERTEX_NAMES="vertex_names",
-    TENSOR_NAME="tensor_name",
+    NAME="name",
     DESCRIPTION="description",
 )
 
@@ -40,13 +40,8 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     # metadata
     LAST_MODIFIED="last_modified",
     CREATED="created",
-    LABELS="labels",
-    SPLITTING_STRATEGY=NAPISTU_DATA.SPLITTING_STRATEGY,
-    LABELING_MANAGER=NAPISTU_DATA.LABELING_MANAGER,
     FILENAME="filename",
     PT_TEMPLATE="{name}.pt",
-    TENSOR_NAME=VERTEX_TENSOR.TENSOR_NAME,
-    DESCRIPTION=VERTEX_TENSOR.DESCRIPTION,
 )
 
 NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(

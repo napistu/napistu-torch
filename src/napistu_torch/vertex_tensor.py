@@ -23,7 +23,7 @@ class VertexTensor:
         Names of features (columns)
     vertex_names : pd.Series
         Vertex names aligned with tensor rows
-    tensor_name : str
+    name : str
         Name/identifier for this tensor (e.g., "pathway_memberships")
     description : Optional[str]
         Human-readable description of what this tensor represents
@@ -34,13 +34,13 @@ class VertexTensor:
         data: torch.Tensor,
         feature_names: List[str],
         vertex_names: pd.Series,
-        tensor_name: str,
+        name: str,
         description: Optional[str] = None,
     ):
         self.data = data
         self.feature_names = feature_names
         self.vertex_names = vertex_names
-        self.tensor_name = tensor_name
+        self.name = name
         self.description = description
 
     def save(self, filepath: Union[str, Path]) -> None:
@@ -50,7 +50,7 @@ class VertexTensor:
                 VERTEX_TENSOR.DATA: self.data,
                 VERTEX_TENSOR.FEATURE_NAMES: self.feature_names,
                 VERTEX_TENSOR.VERTEX_NAMES: self.vertex_names,
-                VERTEX_TENSOR.TENSOR_NAME: self.tensor_name,
+                VERTEX_TENSOR.NAME: self.name,
                 VERTEX_TENSOR.DESCRIPTION: self.description,
             },
             filepath,

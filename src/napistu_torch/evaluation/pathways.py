@@ -57,7 +57,7 @@ def get_comprehensive_source_membership(
         data=torch.Tensor(vertex_pathway_memberships.values),
         feature_names=feature_names,
         vertex_names=ng_vertex_names,
-        tensor_name=EVALUATION_TENSORS.COMPREHENSIVE_PATHWAY_MEMBERSHIPS,
+        name=EVALUATION_TENSORS.COMPREHENSIVE_PATHWAY_MEMBERSHIPS,
         description=EVALUATION_TENSOR_DESCRIPTIONS[
             EVALUATION_TENSORS.COMPREHENSIVE_PATHWAY_MEMBERSHIPS
         ],
