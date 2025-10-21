@@ -28,6 +28,7 @@ from napistu_torch.load.constants import (
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import fit_encoders, transform_dataframe
 from napistu_torch.load.encoding_manager import EncodingManager
+from napistu_torch.ml.constants import DEVICE
 
 
 class NapistuData(Data):
@@ -149,7 +150,7 @@ class NapistuData(Data):
 
     @classmethod
     def load(
-        cls, filepath: Union[str, Path], map_location: str = "cpu"
+        cls, filepath: Union[str, Path], map_location: str = DEVICE.CPU
     ) -> "NapistuData":
         """
         Load a NapistuData object from disk.

@@ -8,13 +8,15 @@ from contextlib import contextmanager
 
 import torch
 
+from napistu_torch.ml.constants import DEVICE
+
 logger = logging.getLogger(__name__)
 
 # memory management utilities
 
 
 @contextmanager
-def memory_manager(device: torch.device = torch.device("cpu")):
+def memory_manager(device: torch.device = torch.device(DEVICE.CPU)):
     """
     Context manager for general memory management.
 
@@ -87,8 +89,8 @@ def select_device(mps_valid: bool = True):
     """
 
     if mps_valid and torch.backends.mps.is_available():
-        return torch.device("mps")
+        return torch.device(DEVICE.MPS)
     elif torch.cuda.is_available():
-        return torch.device("cuda")
+        return torch.device(DEVICE.GPU)
     else:
-        return torch.device("cpu")
+        return torch.device(DEVICE.CPU)

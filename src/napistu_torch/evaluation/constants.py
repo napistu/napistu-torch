@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 
-EVALUATION_DATA = SimpleNamespace(
-    VERTEX_PATHWAY_MEMBERSHIPS="vertex_pathway_memberships",
-    DATA="data",
-    VERTEX_NAMES="ng_vertex_names",
-    FEATURE_NAMES="feature_names",
+EVALUATION_TENSORS = SimpleNamespace(
+    COMPREHENSIVE_PATHWAY_MEMBERSHIPS="comprehensive_pathway_memberships",
 )
+
+EVALUATION_TENSOR_DESCRIPTIONS = {
+    EVALUATION_TENSORS.COMPREHENSIVE_PATHWAY_MEMBERSHIPS: "Comprehensive source membership from SBML_dfs",
+}
