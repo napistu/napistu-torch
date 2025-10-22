@@ -6,8 +6,9 @@ including safe save/load methods and additional utilities.
 """
 
 import logging
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 import torch
@@ -85,14 +86,18 @@ class NapistuData(Data):
         Save the NapistuData object to disk
     load(filepath, map_location="cpu")
         Load a NapistuData object from disk
-    get_vertex_feature_names()
-        Get the names of vertex features
     get_edge_feature_names()
         Get the names of edge features
-    get_vertex_names()
-        Get the vertex names from the original NapistuGraph
     get_edge_names()
         Get the edge names from the original NapistuGraph
+    get_edge_weights()
+        Get edge weights as a 1D tensor
+    get_feature_by_name(feature_name)
+        Get a feature by name from the NapistuData object
+    get_vertex_feature_names()
+        Get the names of vertex features
+    get_vertex_names()
+        Get the vertex names from the original NapistuGraph
 
     Examples
     --------
@@ -317,17 +322,6 @@ class NapistuData(Data):
                 f"Failed to load NapistuData object from {filepath}: {e}"
             ) from e
 
-    def get_vertex_feature_names(self) -> Optional[List[str]]:
-        """
-        Get the names of vertex features.
-
-        Returns
-        -------
-        Optional[List[str]]
-            List of vertex feature names, or None if not available
-        """
-        return getattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES, None)
-
     def get_edge_feature_names(self) -> Optional[List[str]]:
         """
         Get the names of edge features.
@@ -337,7 +331,30 @@ class NapistuData(Data):
         Optional[List[str]]
             List of edge feature names, or None if not available
         """
-        return getattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES, None)
+        result = getattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES, None)
+        if result is None:
+            logger.warning(
+                "Edge feature names not found in NapistuData. "
+                f"Attribute '{NAPISTU_DATA.EDGE_FEATURE_NAMES}' is missing."
+            )
+        return result
+
+    def get_edge_names(self) -> Optional[pd.Index]:
+        """
+        Get the edge names as a pandas Index.
+
+        Returns
+        -------
+        Optional[pd.Index]
+            Pandas Index of edge names, or None if not available
+        """
+        result = getattr(self, NAPISTU_DATA.NG_EDGE_NAMES, None)
+        if result is None:
+            logger.warning(
+                "Edge names not found in NapistuData. "
+                f"Attribute '{NAPISTU_DATA.NG_EDGE_NAMES}' is missing."
+            )
+        return result
 
     def get_edge_weights(self) -> Optional[torch.Tensor]:
         """
@@ -359,7 +376,125 @@ class NapistuData(Data):
         ...     print(f"Edge weights shape: {weights.shape}")
         ...     print(f"Mean weight: {weights.mean():.3f}")
         """
-        return getattr(self, NAPISTU_DATA.EDGE_WEIGHT, None)
+        result = getattr(self, NAPISTU_DATA.EDGE_WEIGHT, None)
+        if result is None:
+            logger.warning(
+                "Edge weights not found in NapistuData. "
+                f"Attribute '{NAPISTU_DATA.EDGE_WEIGHT}' is missing."
+            )
+        return result
+
+    def get_feature_by_name(self, feature_name: str) -> torch.Tensor:
+        """
+        Get a feature by name from the NapistuData object.
+
+        Parameters
+        ----------
+        feature_name : str
+            The name of the feature to get
+
+        Returns
+        -------
+        torch.Tensor
+            The feature tensor
+        """
+        vertex_feature_names = self.get_vertex_feature_names()
+        if feature_name not in vertex_feature_names:
+            raise ValueError(
+                f"Feature name {feature_name} not found in NapistuData vertex feature names"
+            )
+        feature_idx = vertex_feature_names.index(feature_name)
+        return self.x[:, feature_idx]
+
+    def get_features_by_regex(
+        self, regex: str, return_suffixes: bool = False
+    ) -> Tuple[torch.Tensor, List[str]]:
+        """
+        Get features by regex from the NapistuData object.
+
+        Parameters
+        ----------
+        regex: str
+            The regex to search for in the vertex feature names
+        return_suffixes: bool
+            If True, return the substring following the regex as feature_names
+
+        Returns:
+        Tuple[torch.Tensor, List[str]]
+            The features tensor and feature names
+
+            features: torch.Tensor
+                The features tensor
+            feature_names: List[str]
+                The feature names
+
+        Examples
+        --------
+        >>> features, feature_names = napistu_data.get_features_by_regex("__source")
+        >>> print(features.shape)
+        >>> print(feature_names)
+        (100, 5)
+        ['source_1', 'source_2', 'source_3', 'source_4', 'source_5']
+        """
+
+        vertex_feature_names = self.get_vertex_feature_names()
+        mask = [bool(re.search(regex, x)) for x in vertex_feature_names]
+        if not any(mask):
+            raise ValueError(f"No features found with regex {regex}")
+
+        matching_feature_names = [
+            name for name, match in zip(vertex_feature_names, mask) if match
+        ]
+        if return_suffixes:
+            # Check if regex already has capturing groups - if so, throw an exception
+            if "(" in regex and ")" in regex:
+                raise ValueError(
+                    f"Regex '{regex}' already contains capturing groups. When return_suffixes=True, the regex should not contain parentheses."
+                )
+
+            # No capturing groups, create one for the suffix
+            matching_feature_names = [
+                re.search(regex + r"(.*)", x).group(1) for x in matching_feature_names
+            ]
+            matching_feature_names = [x.lstrip("_") for x in matching_feature_names]
+
+        indices = [i for i, m in enumerate(mask) if m]
+        selected_features = self.x[:, indices]
+        return selected_features, matching_feature_names
+
+    def get_vertex_feature_names(self) -> Optional[List[str]]:
+        """
+        Get the names of vertex features.
+
+        Returns
+        -------
+        Optional[List[str]]
+            List of vertex feature names, or None if not available
+        """
+        result = getattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES, None)
+        if result is None:
+            logger.warning(
+                "Vertex feature names not found in NapistuData. "
+                f"Attribute '{NAPISTU_DATA.VERTEX_FEATURE_NAMES}' is missing."
+            )
+        return result
+
+    def get_vertex_names(self) -> Optional[pd.Index]:
+        """
+        Get the vertex names as a pandas Index.
+
+        Returns
+        -------
+        Optional[pd.Index]
+            Pandas Index of vertex names, or None if not available
+        """
+        result = getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES, None)
+        if result is None:
+            logger.warning(
+                "Vertex names not found in NapistuData. "
+                f"Attribute '{NAPISTU_DATA.NG_VERTEX_NAMES}' is missing."
+            )
+        return result
 
     def summary(self) -> Dict[str, Any]:
         """
