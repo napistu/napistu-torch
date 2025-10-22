@@ -8,6 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
+from napistu.constants import IDENTIFIERS, ONTOLOGIES
 from napistu.network.constants import (
     NAPISTU_GRAPH,
     NAPISTU_GRAPH_EDGES,
@@ -232,3 +233,98 @@ def test_unencode_features_node_type(napistu_data, napistu_graph):
     # Verify we have a reasonable number of nodes
     assert len(unencoded_node_types) > 0, "Should have unencoded node types"
     assert len(unencoded_node_types.dropna()) > 0, "Should have non-null node types"
+
+
+def test_get_feature_by_name(napistu_data):
+    """Test get_feature_by_name method with valid and invalid feature names."""
+
+    # Get the vertex feature names to test with
+    vertex_feature_names = napistu_data.get_vertex_feature_names()
+    assert vertex_feature_names is not None, "Should have vertex feature names"
+
+    # Test with a valid feature name
+    valid_feature_name = vertex_feature_names[0]  # Use the first feature
+    feature_tensor = napistu_data.get_feature_by_name(valid_feature_name)
+
+    # Verify the returned tensor has the expected shape
+    assert isinstance(feature_tensor, torch.Tensor)
+    assert feature_tensor.shape == (napistu_data.num_nodes,)
+
+    # Test with an invalid feature name
+    invalid_feature_name = "nonexistent_feature"
+    with pytest.raises(
+        ValueError, match=f"Feature name {invalid_feature_name} not found"
+    ):
+        napistu_data.get_feature_by_name(invalid_feature_name)
+
+
+def test_get_features_by_regex(napistu_data):
+    """Test get_features_by_regex method with ontology regex pattern."""
+
+    # Test 1: Match features containing "ontology" (lowercase)
+    features, feature_names = napistu_data.get_features_by_regex(
+        IDENTIFIERS.ONTOLOGY, return_suffixes=False
+    )
+
+    # Verify the returned types
+    assert isinstance(features, torch.Tensor)
+    assert isinstance(feature_names, list)
+
+    # Verify the shape matches the number of matching features
+    assert features.shape[0] == napistu_data.num_nodes
+    assert features.shape[1] == len(feature_names)
+
+    # Verify all feature names contain "ontology"
+    for name in feature_names:
+        assert (
+            "ontology" in name.lower()
+        ), f"Feature name {name} should contain 'ontology'"
+
+    # Test 2: Verify "chebi" is one of the matched entries and check total count
+    chebi_matches = [name for name in feature_names if ONTOLOGIES.CHEBI in name.lower()]
+    assert (
+        len(chebi_matches) == 1
+    ), f"Expected exactly 1 'chebi' feature, but found {len(chebi_matches)}: {chebi_matches}"
+    assert (
+        chebi_matches[0] == "numeric__ontology_chebi"
+    ), f"Expected 'numeric__ontology_chebi' but found {chebi_matches[0]}"
+    print(f"\nFound {len(chebi_matches)} features containing 'chebi': {chebi_matches}")
+
+    # Test 3: Verify we have exactly 6 ontology features as shown in the output
+    assert (
+        len(feature_names) == 6
+    ), f"Expected exactly 6 ontology features, but found {len(feature_names)}"
+
+    # Test 4: Test with return_suffixes=True to extract suffixes after "ontology"
+    masks, mask_names = napistu_data.get_features_by_regex(
+        "ontology", return_suffixes=True
+    )
+
+    # Verify the returned types
+    assert isinstance(masks, torch.Tensor)
+    assert isinstance(mask_names, list)
+
+    # Verify the same number of features are returned
+    assert masks.shape == features.shape
+    assert len(mask_names) == len(feature_names)
+
+    # Verify suffixes are extracted correctly (should be the part after "ontology")
+    EXPECTED_MASK_NAMES = [
+        ONTOLOGIES.EC_CODE,
+        ONTOLOGIES.CHEBI,
+        ONTOLOGIES.GO,
+        ONTOLOGIES.PUBMED,
+        ONTOLOGIES.REACTOME,
+        ONTOLOGIES.UNIPROT,
+    ]
+    assert set(mask_names) == set(
+        EXPECTED_MASK_NAMES
+    ), f"Expected mask names {EXPECTED_MASK_NAMES}, but got {mask_names}"
+
+    # Test 5: Test error case - no matching features
+    with pytest.raises(ValueError, match="No features found with regex"):
+        napistu_data.get_features_by_regex("nonexistent_pattern_12345")
+
+    # Test 6: Test error case - regex with capturing groups when return_suffixes=True
+    with pytest.raises(ValueError, match="already contains capturing groups"):
+        napistu_data.get_features_by_regex("ontology(.*)", return_suffixes=True)
