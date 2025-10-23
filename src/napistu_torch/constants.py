@@ -52,22 +52,6 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     VERTEX_TENSORS=NAPISTU_DATA_STORE.VERTEX_TENSORS,
 )
 
-ENCODER_TYPES = SimpleNamespace(
-    SAGE="sage",
-    GCN="gcn",
-    GAT="gat",
-)
-
-VALID_ENCODER_TYPES = list(ENCODER_TYPES.__dict__.values())
-
-HEADS = SimpleNamespace(
-    DOT_PRODUCT="dot_product",
-    MLP="mlp",
-    BILINEAR="bilinear",
-)
-
-VALID_HEADS = list(HEADS.__dict__.values())
-
 TASKS = SimpleNamespace(
     EDGE_PREDICTION="edge_prediction",
     NETWORK_EMBEDDING="network_embedding",
@@ -106,13 +90,14 @@ VALID_WANDB_MODES = list(WANDB_MODES.__dict__.values())
 
 
 MODEL_CONFIG = SimpleNamespace(
-    ENCODER_TYPE="encoder_type",
+    ENCODER="encoder",
     HIDDEN_CHANNELS="hidden_channels",
     NUM_LAYERS="num_layers",
     DROPOUT="dropout",
     HEAD_TYPE="head_type",
-    AGGREGATOR="aggregator",
-    HEADS="heads",
+    SAGE_AGGREGATOR="sage_aggregator",
+    GAT_HEADS="gat_heads",
+    GAT_CONCAT="gat_concat",
     HEAD_HIDDEN_DIM="head_hidden_dim",
 )
 

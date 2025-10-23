@@ -16,9 +16,7 @@ from napistu_torch.configs import (
 )
 from napistu_torch.constants import (
     DATA_CONFIG,
-    ENCODER_TYPES,
     EXPERIMENT_CONFIG,
-    HEADS,
     METRICS,
     MODEL_CONFIG,
     OPTIMIZERS,
@@ -26,8 +24,6 @@ from napistu_torch.constants import (
     TASK_CONFIG,
     TASKS,
     TRAINING_CONFIG,
-    VALID_ENCODER_TYPES,
-    VALID_HEADS,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
     VALID_TASKS,
@@ -39,23 +35,29 @@ from napistu_torch.load.constants import (
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
 )
+from napistu_torch.models.constants import (
+    ENCODERS,
+    HEADS,
+    VALID_ENCODERS,
+    VALID_HEADS,
+)
 
 
 class TestModelConfig:
     """Test ModelConfig class."""
 
-    def test_encoder_type_validation(self):
-        """Test encoder_type validation with valid and invalid values."""
+    def test_encoder_validation(self):
+        """Test encoder validation with valid and invalid values."""
         # Test valid encoder types
-        for encoder_type in VALID_ENCODER_TYPES:
-            config = ModelConfig(encoder_type=encoder_type)
-            assert hasattr(config, "encoder_type")
-            assert config.encoder_type == encoder_type
+        for encoder in VALID_ENCODERS:
+            config = ModelConfig(encoder=encoder)
+            assert hasattr(config, MODEL_CONFIG.ENCODER)
+            assert config.encoder == encoder
 
         # Test invalid encoder type
         with pytest.raises(ValidationError) as exc_info:
-            ModelConfig(encoder_type="invalid_encoder")
-        assert "Invalid encoder type" in str(exc_info.value)
+            ModelConfig(encoder="invalid_encoder")
+        assert "Invalid encoder" in str(exc_info.value)
 
     def test_head_type_validation(self):
         """Test head_type validation with valid and invalid values."""
@@ -123,14 +125,14 @@ class TestModelConfig:
         config = ModelConfig()
 
         # Test that optional fields exist
-        assert hasattr(config, MODEL_CONFIG.AGGREGATOR)
-        assert hasattr(config, MODEL_CONFIG.HEADS)
+        assert hasattr(config, MODEL_CONFIG.SAGE_AGGREGATOR)
+        assert hasattr(config, MODEL_CONFIG.GAT_HEADS)
         assert hasattr(config, MODEL_CONFIG.HEAD_HIDDEN_DIM)
 
         # Test that they can be customized
-        config = ModelConfig(aggregator="max", heads=8, head_hidden_dim=128)
-        assert config.aggregator == "max"
-        assert config.heads == 8
+        config = ModelConfig(sage_aggregator="max", gat_heads=8, head_hidden_dim=128)
+        assert config.sage_aggregator == "max"
+        assert config.gat_heads == 8
         assert config.head_hidden_dim == 128
 
     def test_extra_fields_forbidden(self):
@@ -573,7 +575,7 @@ class TestConfigIntegration:
     def test_experiment_config_with_custom_components(self):
         """Test creating experiment config with custom component configs."""
         model_config = ModelConfig(
-            encoder_type=ENCODER_TYPES.GAT, hidden_channels=256, head_type=HEADS.MLP
+            encoder=ENCODERS.GAT, hidden_channels=256, head_type=HEADS.MLP
         )
 
         data_config = DataConfig(
@@ -605,7 +607,7 @@ class TestConfigIntegration:
 
         # Verify all custom values are preserved
         assert experiment_config.name == "integration_test"
-        assert experiment_config.model.encoder_type == ENCODER_TYPES.GAT
+        assert experiment_config.model.encoder == ENCODERS.GAT
         assert experiment_config.model.hidden_channels == 256
         assert experiment_config.data.name == "custom_dataset"
         assert experiment_config.task.task == TASKS.NODE_CLASSIFICATION
@@ -616,7 +618,7 @@ class TestConfigIntegration:
         """Test that validation errors cascade properly."""
         # Test that invalid values in component configs cause validation errors
         with pytest.raises(ValidationError):
-            ExperimentConfig(model=ModelConfig(encoder_type="invalid_encoder"))
+            ExperimentConfig(model=ModelConfig(encoder="invalid_encoder"))
 
         with pytest.raises(ValidationError):
             ExperimentConfig(data=DataConfig(splitting_strategy="invalid_strategy"))

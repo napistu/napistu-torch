@@ -1,0 +1,246 @@
+"""
+Graph Neural Network models for Napistu-Torch.
+
+This module provides a unified GNN encoder that supports multiple architectures
+using PyTorch Geometric. All models follow a consistent interface for easy
+integration with the Lightning framework and config system.
+"""
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch_geometric.nn import SAGEConv, GCNConv, GATConv
+from typing import Optional, Dict, Any
+
+from napistu_torch.configs import ModelConfig
+
+from napistu_torch.models.constants import (
+    ENCODER_DEFS,
+    ENCODER_NATIVE_ARGNAMES_MAPS,
+    ENCODER_SPECIFIC_ARGS,
+    ENCODERS,
+    VALID_ENCODERS,
+)
+from napistu_torch.constants import MODEL_CONFIG
+
+CONV_CLASSES = {
+    ENCODERS.SAGE: SAGEConv,
+    ENCODERS.GCN: GCNConv,
+    ENCODERS.GAT: GATConv,
+}
+
+
+class GNNEncoder(nn.Module):
+    """
+    Unified Graph Neural Network encoder supporting multiple architectures.
+
+    This class eliminates boilerplate by providing a single interface for
+    SAGE, GCN, and GAT models with consistent behavior and configuration.
+
+    Parameters
+    ----------
+    in_channels : int
+        Number of input node features
+    hidden_channels : int
+        Number of hidden channels in each layer
+    num_layers : int
+        Number of GNN layers
+    dropout : float, optional
+        Dropout probability, by default 0.0
+    encoder : str, optional
+        Type of encoder ('sage', 'gcn', 'gat'), by default 'sage'
+    sage_aggregator : str, optional
+        Aggregation method for SAGE ('mean', 'max', 'lstm'), by default 'mean'
+    gat_heads : int, optional
+        Number of attention heads for GAT, by default 1
+    gat_concat : bool, optional
+        Whether to concatenate attention heads in GAT, by default True
+
+    Examples
+    --------
+    >>> # Direct instantiation
+    >>> encoder = GNNEncoder(128, 256, 3, encoder='sage', sage_aggregator='mean')
+    >>>
+    >>> # From config
+    >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
+    >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+    """
+
+    def __init__(
+        self,
+        in_channels: int,
+        hidden_channels: int,
+        num_layers: int,
+        dropout: float = 0.0,
+        encoder: str = ENCODERS.SAGE,
+        # SAGE-specific parameters
+        sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
+        # GAT-specific parameters
+        gat_heads: int = 1,
+        gat_concat: bool = True,
+    ):
+        super().__init__()
+        self.num_layers = num_layers
+        self.dropout = dropout
+        self.encoder = encoder
+
+        # Map encoder types to classes
+        if encoder not in VALID_ENCODERS:
+            raise ValueError(
+                f"Unknown encoder: {encoder}. Must be one of {VALID_ENCODERS}"
+            )
+
+        conv_class = CONV_CLASSES[encoder]
+        self.convs = nn.ModuleList()
+
+        # Build encoder_kwargs based on encoder using dict comprehension
+        param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder, {})
+        local_vars = locals()
+        encoder_kwargs = {
+            native_param: local_vars[encoder_param]
+            for encoder_param, native_param in param_mapping.items()
+        }
+
+        # Build layers
+        for i in range(num_layers):
+            if i == 0:
+                # First layer: in_channels -> hidden_channels
+                self.convs.append(
+                    conv_class(in_channels, hidden_channels, **encoder_kwargs)
+                )
+            else:
+                # Hidden/output layers: handle GAT's head concatenation
+                if encoder == ENCODERS.GAT:
+                    # For GAT, calculate input dimension based on previous layer's concat setting
+                    if i == 1:
+                        # Second layer: input comes from first layer
+                        in_dim = (
+                            hidden_channels * gat_heads
+                            if gat_concat
+                            else hidden_channels
+                        )
+                    else:
+                        # Subsequent layers: input comes from previous layer
+                        # If previous layer concatenated, we need to account for that
+                        in_dim = (
+                            hidden_channels * gat_heads
+                            if gat_concat
+                            else hidden_channels
+                        )
+
+                    # For the final layer, we might want to not concatenate to get clean output
+                    layer_kwargs = encoder_kwargs.copy()
+                    if i == num_layers - 1 and not gat_concat:
+                        # Final layer: don't concatenate heads for clean output
+                        layer_kwargs["concat"] = False
+                        in_dim = (
+                            hidden_channels * gat_heads
+                        )  # Previous layer was concatenated
+
+                    self.convs.append(
+                        conv_class(in_dim, hidden_channels, **layer_kwargs)
+                    )
+                else:
+                    # SAGE/GCN: hidden_channels -> hidden_channels
+                    self.convs.append(
+                        conv_class(hidden_channels, hidden_channels, **encoder_kwargs)
+                    )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Forward pass.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Node feature matrix [num_nodes, in_channels]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        edge_weight : torch.Tensor, optional
+            Edge weights [num_edges] (not used in GAT)
+
+        Returns
+        -------
+        torch.Tensor
+            Node embeddings [num_nodes, hidden_channels]
+        """
+        for i, conv in enumerate(self.convs):
+            # GAT doesn't use edge_weight
+            if self.encoder == ENCODERS.GAT:
+                x = conv(x, edge_index)
+            else:
+                x = conv(x, edge_index, edge_weight)
+
+            # Apply activation and dropout (except on last layer)
+            if i < len(self.convs) - 1:
+                # GAT uses ELU, others use ReLU
+                if self.encoder == ENCODERS.GAT:
+                    x = F.elu(x)
+                else:
+                    x = F.relu(x)
+                x = F.dropout(x, p=self.dropout, training=self.training)
+
+        return x
+
+    def encode(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_weight: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Alias for forward method for consistency with other models."""
+        return self.forward(x, edge_index, edge_weight)
+
+    @classmethod
+    def from_config(cls, config: ModelConfig, in_channels: int) -> "GNNEncoder":
+        """
+        Create GNNEncoder from ModelConfig.
+
+        Parameters
+        ----------
+        config : ModelConfig
+            Model configuration containing encoder, hidden_channels, etc.
+        in_channels : int
+            Number of input node features (not in config as it depends on data)
+
+        Returns
+        -------
+        GNNEncoder
+            Configured encoder instance
+
+        Examples
+        --------
+        >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
+        >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+        """
+
+        encoder = config.encoder
+        if encoder not in VALID_ENCODERS:
+            raise ValueError(
+                f"Unknown encoder: {encoder}. Must be one of {VALID_ENCODERS}"
+            )
+
+        # Build model-specific parameters
+        model_kwargs = {}
+
+        if encoder == ENCODERS.SAGE and config.sage_aggregator is not None:
+            model_kwargs[ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR] = config.sage_aggregator
+
+        if encoder == ENCODERS.GAT and config.gat_heads is not None:
+            model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_HEADS] = config.gat_heads
+        if encoder == ENCODERS.GAT and config.gat_concat is not None:
+            model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_CONCAT] = config.gat_concat
+
+        return cls(
+            in_channels=in_channels,
+            hidden_channels=config.hidden_channels,
+            num_layers=config.num_layers,
+            dropout=config.dropout,
+            encoder=encoder,
+            **model_kwargs,
+        )
