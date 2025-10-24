@@ -38,7 +38,7 @@ class EdgePredictionTask(BaseTask):
     >>> from napistu_torch.models.gnns import GNNEncoder
     >>> from napistu_torch.models.heads import DotProductHead
     >>>
-    >>> encoder = GNNEncoder(in_channels=128, hidden_channels=256, num_layers=3, encoder='sage')
+    >>> encoder = GNNEncoder(in_channels=128, hidden_channels=256, num_layers=3, encoder_type='sage')
     >>> head = DotProductHead()
     >>> task = EdgePredictionTask(encoder, head)
     >>>

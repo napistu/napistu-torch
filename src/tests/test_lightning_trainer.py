@@ -9,6 +9,7 @@ from napistu_torch.configs import DataConfig, ExperimentConfig
 from napistu_torch.lightning.data_module import NapistuDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
+from napistu_torch.models.constants import ENCODERS
 from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
@@ -40,7 +41,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data):
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,  # Small for fast testing
         num_layers=2,
-        encoder="sage",
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 
@@ -108,7 +109,7 @@ def test_edge_prediction_trainer_fit_with_callbacks(edge_masked_napistu_data):
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder="sage",
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 
@@ -180,7 +181,7 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data):
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder="sage",
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 
@@ -250,7 +251,7 @@ def test_edge_prediction_trainer_different_encoders(edge_masked_napistu_data):
             in_channels=edge_masked_napistu_data.num_node_features,
             hidden_channels=16,  # Small for fast testing
             num_layers=1,  # Minimal layers
-            encoder=encoder_type,
+            encoder_type=encoder_type,
         )
         head = DotProductHead()
 
@@ -322,7 +323,7 @@ def test_edge_prediction_trainer_gpu_if_available(edge_masked_napistu_data):
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder="sage",
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 

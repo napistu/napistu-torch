@@ -20,7 +20,7 @@ def test_edge_prediction_lightning_integration(
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder=ENCODERS.SAGE,
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 
@@ -62,7 +62,7 @@ def test_edge_prediction_task_prepare_batch(edge_masked_napistu_data):
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder=ENCODERS.SAGE,
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 
@@ -98,7 +98,7 @@ def test_lightning_task_batch_validation(edge_masked_napistu_data, experiment_co
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
-        encoder=ENCODERS.SAGE,
+        encoder_type=ENCODERS.SAGE,
     )
     head = DotProductHead()
 

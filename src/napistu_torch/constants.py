@@ -97,6 +97,11 @@ DATA_CONFIG = SimpleNamespace(
     TEST_SIZE="test_size",
 )
 
+MODEL_CONFIG = SimpleNamespace(
+    ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
+    HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
+)
+
 TASK_CONFIG = SimpleNamespace(
     TASK="task",
     NEG_SAMPLING_RATIO="neg_sampling_ratio",

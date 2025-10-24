@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch_geometric.nn import GATConv, GCNConv, SAGEConv
 
 from napistu_torch.configs import ModelConfig
+from napistu_torch.constants import MODEL_CONFIG
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODER_NATIVE_ARGNAMES_MAPS,
@@ -20,7 +21,7 @@ from napistu_torch.models.constants import (
     VALID_ENCODERS,
 )
 
-CONV_CLASSES = {
+ENCODER_CLASSES = {
     ENCODERS.SAGE: SAGEConv,
     ENCODERS.GCN: GCNConv,
     ENCODERS.GAT: GATConv,
@@ -44,7 +45,7 @@ class GNNEncoder(nn.Module):
         Number of GNN layers
     dropout : float, optional
         Dropout probability, by default 0.0
-    encoder : str, optional
+    encoder_type : str, optional
         Type of encoder ('sage', 'gcn', 'gat'), by default 'sage'
     sage_aggregator : str, optional
         Aggregation method for SAGE ('mean', 'max', 'lstm'), by default 'mean'
@@ -66,7 +67,7 @@ class GNNEncoder(nn.Module):
     Examples
     --------
     >>> # Direct instantiation
-    >>> encoder = GNNEncoder(128, 256, 3, encoder='sage', sage_aggregator='mean')
+    >>> encoder = GNNEncoder(128, 256, 3, encoder_type='sage', sage_aggregator='mean')
     >>>
     >>> # From config
     >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
@@ -79,7 +80,7 @@ class GNNEncoder(nn.Module):
         hidden_channels: int,
         num_layers: int,
         dropout: float = 0.0,
-        encoder: str = ENCODERS.SAGE,
+        encoder_type: str = ENCODERS.SAGE,
         # SAGE-specific parameters
         sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
         # GAT-specific parameters
@@ -89,19 +90,19 @@ class GNNEncoder(nn.Module):
         super().__init__()
         self.num_layers = num_layers
         self.dropout = dropout
-        self.encoder = encoder
+        self.encoder_type = encoder_type
 
         # Map encoder types to classes
-        if encoder not in VALID_ENCODERS:
+        if encoder_type not in VALID_ENCODERS:
             raise ValueError(
-                f"Unknown encoder: {encoder}. Must be one of {VALID_ENCODERS}"
+                f"Unknown encoder: {encoder_type}. Must be one of {VALID_ENCODERS}"
             )
 
-        conv_class = CONV_CLASSES[encoder]
+        encoder = ENCODER_CLASSES[encoder_type]
         self.convs = nn.ModuleList()
 
         # Build encoder_kwargs based on encoder using dict comprehension
-        param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder, {})
+        param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder_type, {})
         local_vars = locals()
         encoder_kwargs = {
             native_param: local_vars[encoder_param]
@@ -113,11 +114,11 @@ class GNNEncoder(nn.Module):
             if i == 0:
                 # First layer: in_channels -> hidden_channels
                 self.convs.append(
-                    conv_class(in_channels, hidden_channels, **encoder_kwargs)
+                    encoder(in_channels, hidden_channels, **encoder_kwargs)
                 )
             else:
                 # Hidden/output layers: handle GAT's head concatenation
-                if encoder == ENCODERS.GAT:
+                if encoder_type == ENCODERS.GAT:
                     # For GAT, calculate input dimension based on previous layer's concat setting
                     if i == 1:
                         # Second layer: input comes from first layer
@@ -144,13 +145,11 @@ class GNNEncoder(nn.Module):
                             hidden_channels * gat_heads
                         )  # Previous layer was concatenated
 
-                    self.convs.append(
-                        conv_class(in_dim, hidden_channels, **layer_kwargs)
-                    )
+                    self.convs.append(encoder(in_dim, hidden_channels, **layer_kwargs))
                 else:
                     # SAGE/GCN: hidden_channels -> hidden_channels
                     self.convs.append(
-                        conv_class(hidden_channels, hidden_channels, **encoder_kwargs)
+                        encoder(hidden_channels, hidden_channels, **encoder_kwargs)
                     )
 
     def forward(
@@ -189,7 +188,7 @@ class GNNEncoder(nn.Module):
             # Apply activation and dropout (except on last layer)
             if i < len(self.convs) - 1:
                 # GAT uses ELU, others use ReLU
-                if self.encoder == ENCODERS.GAT:
+                if self.encoder_type == ENCODERS.GAT:
                     x = F.elu(x)
                 else:
                     x = F.relu(x)
@@ -242,21 +241,20 @@ class GNNEncoder(nn.Module):
         >>> encoder = GNNEncoder.from_config(config, in_channels=128)
         """
 
-        encoder = getattr(config, MODEL_DEFS.ENCODER)
-        if encoder not in VALID_ENCODERS:
+        encoder_type = getattr(config, MODEL_CONFIG.ENCODER)
+        if encoder_type not in VALID_ENCODERS:
             raise ValueError(
-                f"Unknown encoder: {encoder}. Must be one of {VALID_ENCODERS}"
+                f"Unknown encoder: {encoder_type}. Must be one of {VALID_ENCODERS}"
             )
 
         # Build model-specific parameters
         model_kwargs = {}
 
-        if encoder == ENCODERS.SAGE and config.sage_aggregator is not None:
+        if encoder_type == ENCODERS.SAGE and config.sage_aggregator is not None:
             model_kwargs[ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR] = config.sage_aggregator
-
-        if encoder == ENCODERS.GAT and config.gat_heads is not None:
+        if encoder_type == ENCODERS.GAT and config.gat_heads is not None:
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_HEADS] = config.gat_heads
-        if encoder == ENCODERS.GAT and config.gat_concat is not None:
+        if encoder_type == ENCODERS.GAT and config.gat_concat is not None:
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_CONCAT] = config.gat_concat
 
         return cls(
@@ -264,6 +262,6 @@ class GNNEncoder(nn.Module):
             hidden_channels=getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
             dropout=getattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT),
-            encoder=encoder,
+            encoder_type=encoder_type,
             **model_kwargs,
         )

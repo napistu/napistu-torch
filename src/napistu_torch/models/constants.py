@@ -2,8 +2,10 @@ from types import SimpleNamespace
 
 MODEL_DEFS = SimpleNamespace(
     ENCODER="encoder",
+    ENCODER_TYPE="encoder_type",
     GCN="gcn",
     HEAD="head",
+    HEAD_TYPE="head_type",
     HIDDEN_CHANNELS="hidden_channels",
     NUM_LAYERS="num_layers",
 )

@@ -10,6 +10,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
+from napistu_torch.constants import MODEL_CONFIG
 from napistu_torch.models.constants import (
     HEAD_SPECIFIC_ARGS,
     HEADS,
@@ -239,7 +240,7 @@ class Decoder(nn.Module):
     ----------
     hidden_channels : int
         Dimension of input node embeddings (should match GNN encoder output)
-    head : str
+    head_type : str
         Type of head to create (dot_product, mlp, bilinear, node_classification)
     mlp_hidden_dim : int, optional
         Hidden layer dimension for MLP head, by default 64
@@ -258,7 +259,7 @@ class Decoder(nn.Module):
     def __init__(
         self,
         hidden_channels: int,
-        head: str = HEADS.DOT_PRODUCT,
+        head_type: str = HEADS.DOT_PRODUCT,
         mlp_hidden_dim: int = 64,
         mlp_num_layers: int = 2,
         mlp_dropout: float = 0.1,
@@ -268,26 +269,26 @@ class Decoder(nn.Module):
     ):
         super().__init__()
         self.hidden_channels = hidden_channels
-        self.head = head
+        self.head_type = head_type
 
-        if head not in VALID_HEADS:
-            raise ValueError(f"Unknown head: {head}. Must be one of {VALID_HEADS}")
+        if head_type not in VALID_HEADS:
+            raise ValueError(f"Unknown head: {head_type}. Must be one of {VALID_HEADS}")
 
         # Create the appropriate head based on type
-        if head == HEADS.DOT_PRODUCT:
+        if head_type == HEADS.DOT_PRODUCT:
             self.head = DotProductHead()
-        elif head == HEADS.MLP:
+        elif head_type == HEADS.MLP:
             self.head = EdgeMLPHead(
                 self.hidden_channels, mlp_hidden_dim, mlp_num_layers, mlp_dropout
             )
-        elif head == HEADS.BILINEAR:
+        elif head_type == HEADS.BILINEAR:
             self.head = BilinearHead(self.hidden_channels, bilinear_bias)
-        elif head == HEADS.NODE_CLASSIFICATION:
+        elif head_type == HEADS.NODE_CLASSIFICATION:
             self.head = NodeClassificationHead(
                 self.hidden_channels, nc_num_classes, nc_dropout
             )
         else:
-            raise ValueError(f"Unsupported head type: {head}")
+            raise ValueError(f"Unsupported head type: {head_type}")
 
     def forward(
         self, node_embeddings: torch.Tensor, edge_index: Optional[torch.Tensor] = None
@@ -307,15 +308,15 @@ class Decoder(nn.Module):
         torch.Tensor
             Head output (edge scores or node predictions)
         """
-        if self.head in [HEADS.DOT_PRODUCT, HEADS.MLP, HEADS.BILINEAR]:
+        if self.head_type in [HEADS.DOT_PRODUCT, HEADS.MLP, HEADS.BILINEAR]:
             if edge_index is None:
-                raise ValueError(f"edge_index is required for {self.head} head")
+                raise ValueError(f"edge_index is required for {self.head_type} head")
             return self.head(node_embeddings, edge_index)
-        elif self.head == HEADS.NODE_CLASSIFICATION:
+        elif self.head_type == HEADS.NODE_CLASSIFICATION:
             # Node classification head doesn't need edge_index
             return self.head(node_embeddings)
         else:
-            raise ValueError(f"Unsupported head type: {self.head}")
+            raise ValueError(f"Unsupported head type: {self.head_type}")
 
     @classmethod
     def from_config(cls, config):
@@ -335,7 +336,7 @@ class Decoder(nn.Module):
         # Extract head-specific parameters from config
         head_kwargs = {
             MODEL_DEFS.HIDDEN_CHANNELS: getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
-            MODEL_DEFS.HEAD: getattr(config, MODEL_DEFS.HEAD),
+            MODEL_DEFS.HEAD_TYPE: getattr(config, MODEL_CONFIG.HEAD),
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: getattr(
                 config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
             ),
@@ -357,7 +358,3 @@ class Decoder(nn.Module):
         }
 
         return cls(**head_kwargs)
-
-
-# Backward compatibility aliases - keep original classes available
-# Note: These are the original individual head classes, not the unified HeadEncoder
