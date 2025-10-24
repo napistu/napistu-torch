@@ -6,6 +6,7 @@ from torch_geometric.utils import negative_sampling
 
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
+from napistu_torch.ml.constants import TRAINING, SPLIT_TO_MASK
 
 
 class EdgePredictionTask(BaseTask):
@@ -83,11 +84,12 @@ class EdgePredictionTask(BaseTask):
             - edge_weight: Edge weights (optional)
         """
         # Get the right mask for this split
-        mask = getattr(data, f"{split}_mask")
+        mask_attr = SPLIT_TO_MASK[split]
+        mask = getattr(data, mask_attr)
         pos_edge_index = data.edge_index[:, mask]
 
         # Edges for message passing (exclude test/val during training)
-        if split == "train":
+        if split == TRAINING.TRAIN:
             supervision_edges = data.edge_index[:, data.train_mask]
         else:
             # During validation/test, use training edges only
@@ -122,7 +124,6 @@ class EdgePredictionTask(BaseTask):
         z = self.encoder.encode(
             batch["x"],
             batch["supervision_edges"],
-            batch.get("edge_weight"),
         )
 
         # Score positive and negative edges
@@ -138,7 +139,7 @@ class EdgePredictionTask(BaseTask):
     def compute_metrics(
         self,
         data: NapistuData,
-        split: str = "val",
+        split: str = TRAINING.VALIDATION,
     ) -> Dict[str, float]:
         """
         Compute evaluation metrics (AUC, AP, etc.).
@@ -156,7 +157,6 @@ class EdgePredictionTask(BaseTask):
             z = self.encoder.encode(
                 batch["x"],
                 batch["supervision_edges"],
-                batch.get("edge_weight"),
             )
 
             # Score positive and negative edges

@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, field_validator
 from napistu_torch.constants import (
     DATA_CONFIG,
     METRICS,
-    MODEL_CONFIG,
     OPTIMIZERS,
     TASK_CONFIG,
     TASKS,
@@ -25,6 +24,7 @@ from napistu_torch.models.constants import (
     ENCODERS,
     ENCODER_DEFS,
     HEADS,
+    MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
 )
@@ -37,15 +37,26 @@ class ModelConfig(BaseModel):
     hidden_channels: int = Field(default=128, gt=0)
     num_layers: int = Field(default=3, ge=1, le=10)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
-    head_type: str = Field(default=HEADS.DOT_PRODUCT)
+    head: str = Field(default=HEADS.DOT_PRODUCT)
 
     # Model-specific fields (optional, with defaults)
     sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
     gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
     gat_concat: Optional[bool] = True  # For GAT
-    head_hidden_dim: Optional[int] = 64  # For MLP head
 
-    @field_validator(MODEL_CONFIG.ENCODER)
+    # Head-specific fields (optional, with defaults)
+    mlp_hidden_dim: Optional[int] = 64  # For MLP head
+    mlp_num_layers: Optional[int] = Field(default=2, ge=1)  # For MLP head
+    mlp_dropout: Optional[float] = Field(default=0.1, ge=0.0, lt=1.0)  # For MLP head
+    bilinear_bias: Optional[bool] = True  # For bilinear head
+    nc_num_classes: Optional[int] = Field(
+        default=2, ge=2
+    )  # For node classification head
+    nc_dropout: Optional[float] = Field(
+        default=0.1, ge=0.0, lt=1.0
+    )  # For node classification head
+
+    @field_validator(MODEL_DEFS.ENCODER)
     @classmethod
     def validate_encoder(cls, v):
         if v not in VALID_ENCODERS:
@@ -54,14 +65,14 @@ class ModelConfig(BaseModel):
             )
         return v
 
-    @field_validator(MODEL_CONFIG.HEAD_TYPE)
+    @field_validator(MODEL_DEFS.HEAD)
     @classmethod
-    def validate_head_type(cls, v):
+    def validate_head(cls, v):
         if v not in VALID_HEADS:
             raise ValueError(f"Invalid head type: {v}. Valid types are: {VALID_HEADS}")
         return v
 
-    @field_validator(MODEL_CONFIG.HIDDEN_CHANNELS)
+    @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
     def validate_power_of_2(cls, v):
         """Optionally enforce power of 2 for efficiency"""

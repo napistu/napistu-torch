@@ -10,6 +10,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+from napistu_torch.models.constants import (
+    HEADS,
+    HEAD_SPECIFIC_ARGS,
+    MODEL_DEFS,
+    VALID_HEADS,
+)
+
 
 class DotProductHead(nn.Module):
     """
@@ -218,3 +225,139 @@ class NodeClassificationHead(nn.Module):
         x = self.dropout(node_embeddings)
         logits = self.classifier(x)
         return logits
+
+
+class Decoder(nn.Module):
+    """
+    Unified head decoder that can create different types of prediction heads.
+
+    This class provides a single interface for creating various head types
+    (dot product, MLP, bilinear, node classification) with a from_config
+    classmethod for easy integration with configuration systems.
+
+    Parameters
+    ----------
+    hidden_channels : int
+        Dimension of input node embeddings (should match GNN encoder output)
+    head : str
+        Type of head to create (dot_product, mlp, bilinear, node_classification)
+    mlp_hidden_dim : int, optional
+        Hidden layer dimension for MLP head, by default 64
+    mlp_num_layers : int, optional
+        Number of hidden layers for MLP head, by default 2
+    mlp_dropout : float, optional
+        Dropout probability for MLP head, by default 0.1
+    bilinear_bias : bool, optional
+        Whether to add bias term for bilinear head, by default True
+    nc_num_classes : int, optional
+        Number of output classes for node classification head, by default 2
+    nc_dropout : float, optional
+        Dropout probability for node classification head, by default 0.1
+    """
+
+    def __init__(
+        self,
+        hidden_channels: int,
+        head: str = HEADS.DOT_PRODUCT,
+        mlp_hidden_dim: int = 64,
+        mlp_num_layers: int = 2,
+        mlp_dropout: float = 0.1,
+        bilinear_bias: bool = True,
+        nc_num_classes: int = 2,
+        nc_dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.hidden_channels = hidden_channels
+        self.head = head
+
+        if head not in VALID_HEADS:
+            raise ValueError(f"Unknown head: {head}. Must be one of {VALID_HEADS}")
+
+        # Create the appropriate head based on type
+        if head == HEADS.DOT_PRODUCT:
+            self.head = DotProductHead()
+        elif head == HEADS.MLP:
+            self.head = EdgeMLPHead(
+                self.hidden_channels, mlp_hidden_dim, mlp_num_layers, mlp_dropout
+            )
+        elif head == HEADS.BILINEAR:
+            self.head = BilinearHead(self.hidden_channels, bilinear_bias)
+        elif head == HEADS.NODE_CLASSIFICATION:
+            self.head = NodeClassificationHead(
+                self.hidden_channels, nc_num_classes, nc_dropout
+            )
+        else:
+            raise ValueError(f"Unsupported head type: {head}")
+
+    def forward(
+        self, node_embeddings: torch.Tensor, edge_index: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Forward pass through the head.
+
+        Parameters
+        ----------
+        node_embeddings : torch.Tensor
+            Node embeddings [num_nodes, embedding_dim]
+        edge_index : torch.Tensor, optional
+            Edge connectivity [2, num_edges] (required for edge prediction heads)
+
+        Returns
+        -------
+        torch.Tensor
+            Head output (edge scores or node predictions)
+        """
+        if self.head in [HEADS.DOT_PRODUCT, HEADS.MLP, HEADS.BILINEAR]:
+            if edge_index is None:
+                raise ValueError(f"edge_index is required for {self.head} head")
+            return self.head(node_embeddings, edge_index)
+        elif self.head == HEADS.NODE_CLASSIFICATION:
+            # Node classification head doesn't need edge_index
+            return self.head(node_embeddings)
+        else:
+            raise ValueError(f"Unsupported head type: {self.head}")
+
+    @classmethod
+    def from_config(cls, config):
+        """
+        Create a Decoder from a configuration object.
+
+        Parameters
+        ----------
+        config : ModelConfig
+            Configuration object containing head parameters
+
+        Returns
+        -------
+        Decoder
+            Configured head decoder
+        """
+        # Extract head-specific parameters from config
+        head_kwargs = {
+            MODEL_DEFS.HIDDEN_CHANNELS: getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
+            MODEL_DEFS.HEAD: getattr(config, MODEL_DEFS.HEAD),
+            HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: getattr(
+                config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
+            ),
+            HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS: getattr(
+                config, HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS
+            ),
+            HEAD_SPECIFIC_ARGS.MLP_DROPOUT: getattr(
+                config, HEAD_SPECIFIC_ARGS.MLP_DROPOUT
+            ),
+            HEAD_SPECIFIC_ARGS.BILINEAR_BIAS: getattr(
+                config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS
+            ),
+            HEAD_SPECIFIC_ARGS.NC_NUM_CLASSES: getattr(
+                config, HEAD_SPECIFIC_ARGS.NC_NUM_CLASSES
+            ),
+            HEAD_SPECIFIC_ARGS.NC_DROPOUT: getattr(
+                config, HEAD_SPECIFIC_ARGS.NC_DROPOUT
+            ),
+        }
+
+        return cls(**head_kwargs)
+
+
+# Backward compatibility aliases - keep original classes available
+# Note: These are the original individual head classes, not the unified HeadEncoder

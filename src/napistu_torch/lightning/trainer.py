@@ -51,7 +51,7 @@ class NapistuTrainer:
         callbacks: Optional[List[pl.Callback]] = None,
     ):
         self.config = config
-        self.callbacks = callbacks or []
+        self._user_callbacks = callbacks or []
 
         # Create the underlying Lightning trainer
         self._trainer = self._create_trainer()
@@ -63,7 +63,7 @@ class NapistuTrainer:
 
         # Setup callbacks
         all_callbacks = self._create_callbacks()
-        all_callbacks.extend(self.callbacks)
+        all_callbacks.extend(self._user_callbacks)
 
         # Create Trainer
         trainer = pl.Trainer(

@@ -1,9 +1,8 @@
 """
-Graph Neural Network models for Napistu-Torch.
+Graph Neural Network models for Napistu-Torch - CLEAN VERSION
 
-This module provides a unified GNN encoder that supports multiple architectures
-using PyTorch Geometric. All models follow a consistent interface for easy
-integration with the Lightning framework and config system.
+Removed edge_weight parameter since it's not used for message passing.
+Edge weights are stored in edge attributes for supervision, not encoding.
 """
 
 import torch
@@ -19,9 +18,9 @@ from napistu_torch.models.constants import (
     ENCODER_NATIVE_ARGNAMES_MAPS,
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
+    MODEL_DEFS,
     VALID_ENCODERS,
 )
-from napistu_torch.constants import MODEL_CONFIG
 
 CONV_CLASSES = {
     ENCODERS.SAGE: SAGEConv,
@@ -55,6 +54,16 @@ class GNNEncoder(nn.Module):
         Number of attention heads for GAT, by default 1
     gat_concat : bool, optional
         Whether to concatenate attention heads in GAT, by default True
+
+    Notes
+    -----
+    This encoder does NOT use edge weights for message passing. If you need
+    weighted message passing, you would need to:
+    1. Use GCNConv (only encoder that natively supports edge weights)
+    2. Implement custom message passing with edge attributes
+
+    Edge weights and attributes in your NapistuData are still available for
+    supervision and evaluation - they just aren't used during encoding.
 
     Examples
     --------
@@ -150,10 +159,9 @@ class GNNEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_weight: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
-        Forward pass.
+        Forward pass through the GNN encoder.
 
         Parameters
         ----------
@@ -161,20 +169,24 @@ class GNNEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
-        edge_weight : torch.Tensor, optional
-            Edge weights [num_edges] (not used in GAT)
 
         Returns
         -------
         torch.Tensor
             Node embeddings [num_nodes, hidden_channels]
+
+        Notes
+        -----
+        This method does NOT use edge weights or edge attributes for message passing.
+        All encoders use unweighted/uniform message passing (or attention in GAT's case).
+
+        If you need edge-weighted message passing in the future:
+        - GCN: Add edge_weight parameter and pass to GCNConv
+        - SAGE: Implement custom message passing (not natively supported)
+        - GAT: Already uses learned attention (different from edge weights)
         """
         for i, conv in enumerate(self.convs):
-            # GAT doesn't use edge_weight
-            if self.encoder == ENCODERS.GAT:
-                x = conv(x, edge_index)
-            else:
-                x = conv(x, edge_index, edge_weight)
+            x = conv(x, edge_index)
 
             # Apply activation and dropout (except on last layer)
             if i < len(self.convs) - 1:
@@ -191,10 +203,23 @@ class GNNEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_weight: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Alias for forward method for consistency with other models."""
-        return self.forward(x, edge_index, edge_weight)
+        """
+        Alias for forward method for consistency with other models.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Node feature matrix [num_nodes, in_channels]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+
+        Returns
+        -------
+        torch.Tensor
+            Node embeddings [num_nodes, hidden_channels]
+        """
+        return self.forward(x, edge_index)
 
     @classmethod
     def from_config(cls, config: ModelConfig, in_channels: int) -> "GNNEncoder":
@@ -219,7 +244,7 @@ class GNNEncoder(nn.Module):
         >>> encoder = GNNEncoder.from_config(config, in_channels=128)
         """
 
-        encoder = config.encoder
+        encoder = getattr(config, MODEL_DEFS.ENCODER)
         if encoder not in VALID_ENCODERS:
             raise ValueError(
                 f"Unknown encoder: {encoder}. Must be one of {VALID_ENCODERS}"
@@ -238,9 +263,9 @@ class GNNEncoder(nn.Module):
 
         return cls(
             in_channels=in_channels,
-            hidden_channels=config.hidden_channels,
-            num_layers=config.num_layers,
-            dropout=config.dropout,
+            hidden_channels=getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
+            num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
+            dropout=getattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT),
             encoder=encoder,
             **model_kwargs,
         )

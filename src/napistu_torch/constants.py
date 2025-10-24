@@ -88,19 +88,6 @@ WANDB_MODES = SimpleNamespace(
 )
 VALID_WANDB_MODES = list(WANDB_MODES.__dict__.values())
 
-
-MODEL_CONFIG = SimpleNamespace(
-    ENCODER="encoder",
-    HIDDEN_CHANNELS="hidden_channels",
-    NUM_LAYERS="num_layers",
-    DROPOUT="dropout",
-    HEAD_TYPE="head_type",
-    SAGE_AGGREGATOR="sage_aggregator",
-    GAT_HEADS="gat_heads",
-    GAT_CONCAT="gat_concat",
-    HEAD_HIDDEN_DIM="head_hidden_dim",
-)
-
 DATA_CONFIG = SimpleNamespace(
     NAME="name",
     STORE_DIR="store_dir",

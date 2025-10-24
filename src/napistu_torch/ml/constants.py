@@ -4,8 +4,16 @@ TRAINING = SimpleNamespace(
     TRAIN="train",
     TEST="test",
     VALIDATION="validation",
-    SPLIT_MASK_TEMPLATE="{split_name}_mask",
 )
+
+# Mapping from split names to mask attribute names
+SPLIT_TO_MASK = {
+    TRAINING.TRAIN: "train_mask",
+    TRAINING.TEST: "test_mask",
+    TRAINING.VALIDATION: "val_mask",
+}
+
+VALID_SPLITS = list(SPLIT_TO_MASK.keys())
 
 DEVICE = SimpleNamespace(
     CPU="cpu",

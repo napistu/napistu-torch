@@ -8,10 +8,32 @@ functions before passing the data to this DataModule (prevents data leakage).
 
 from typing import Optional, Union, Dict
 import pytorch_lightning as pl
+import torch
+from torch.utils.data import DataLoader, Dataset
 
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.configs import DataConfig
+from napistu_torch.ml.constants import TRAINING
+
+
+class SingleGraphDataset(Dataset):
+    """
+    Wrapper to make a single NapistuData object work with DataLoader.
+
+    This is necessary because DataLoader expects a Dataset interface.
+    For full-batch training on a single graph, this just returns the same
+    graph every time (batch_size should be 1).
+    """
+
+    def __init__(self, data: NapistuData):
+        self.data = data
+
+    def __len__(self):
+        return 1
+
+    def __getitem__(self, idx):
+        return self.data
 
 
 class NapistuDataModule(pl.LightningDataModule):
@@ -29,7 +51,7 @@ class NapistuDataModule(pl.LightningDataModule):
     napistu_data : Union[NapistuData, Dict[str, NapistuData]]
         Pre-processed NapistuData object(s). For transductive splits, pass a single
         NapistuData object. For inductive splits, pass a dictionary with keys
-        'train', 'val', 'test' (or subset thereof).
+        TRAINING.TRAIN, TRAINING.VALIDATION, TRAINING.TEST (or subset thereof).
     config : DataConfig
         Pydantic data configuration (used for validation and logging)
 
@@ -83,11 +105,11 @@ class NapistuDataModule(pl.LightningDataModule):
         if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
             # For inductive splits, get features from training data
             if isinstance(self.napistu_data, dict):
-                return self.napistu_data["train"].num_node_features
+                return self.napistu_data[TRAINING.TRAIN].num_node_features
             else:
                 raise ValueError(
                     f"For inductive splitting strategy, napistu_data must be a dictionary "
-                    f"with keys 'train', 'val', 'test', but got {type(self.napistu_data)}"
+                    f"with keys 'train', 'validation', 'test', but got {type(self.napistu_data)}"
                 )
         else:
             # For transductive splits, get features from the single data object
@@ -113,13 +135,13 @@ class NapistuDataModule(pl.LightningDataModule):
         if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
             # Separate graphs for each split
             if isinstance(self.napistu_data, dict):
-                self.train_data = self.napistu_data["train"]
-                self.val_data = self.napistu_data.get("val")
-                self.test_data = self.napistu_data.get("test")
+                self.train_data = self.napistu_data[TRAINING.TRAIN]
+                self.val_data = self.napistu_data.get(TRAINING.VALIDATION)
+                self.test_data = self.napistu_data.get(TRAINING.TEST)
             else:
                 raise ValueError(
                     f"For inductive splitting strategy, napistu_data must be a dictionary "
-                    f"with keys 'train', 'val', 'test', but got {type(self.napistu_data)}"
+                    f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, but got {type(self.napistu_data)}"
                 )
         else:
             # Single graph with masks (transductive)
@@ -132,22 +154,57 @@ class NapistuDataModule(pl.LightningDataModule):
                 )
 
     def train_dataloader(self):
-        """Return training data (list with single item for iteration)."""
-        if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
-            return [self.train_data]
-        else:
-            return [self.data]  # Lightning module uses train_mask
+        """
+        Return a DataLoader for training.
+
+        For single-graph training, this returns a DataLoader with batch_size=1
+        that yields the same graph on each iteration. The Lightning Trainer
+        will only iterate once per epoch.
+        """
+        dataset = SingleGraphDataset(self.data)
+        return DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,  # No shuffling for single graph
+            collate_fn=identity_collate,  # Don't use PyG's batching
+            num_workers=0,  # Single graph, no benefit from workers
+        )
 
     def val_dataloader(self):
-        """Return validation data."""
-        if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
-            return [self.val_data] if self.val_data else None
-        else:
-            return [self.data]  # Lightning module uses val_mask
+        """Return a DataLoader for validation."""
+        dataset = SingleGraphDataset(self.data)
+        return DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=identity_collate,
+            num_workers=0,
+        )
 
     def test_dataloader(self):
-        """Return test data."""
-        if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
-            return [self.test_data] if self.test_data else None
-        else:
-            return [self.data]  # Lightning module uses test_mask
+        """Return a DataLoader for testing."""
+        dataset = SingleGraphDataset(self.data)
+        return DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=identity_collate,
+            num_workers=0,
+        )
+
+
+def identity_collate(batch):
+    """
+    Custom collate function that returns the NapistuData object unchanged.
+
+    For single-graph training, we don't want PyG's batching behavior.
+
+    This function is STRICT - it expects exactly what SingleGraphDataset
+    produces: a list with one NapistuData object.
+    """
+    assert isinstance(batch, list), f"Expected list, got {type(batch)}"
+    assert len(batch) == 1, f"Expected batch of size 1, got {len(batch)}"
+    assert isinstance(
+        batch[0], NapistuData
+    ), f"Expected NapistuData, got {type(batch[0])}"
+    return batch[0]

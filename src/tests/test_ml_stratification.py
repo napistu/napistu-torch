@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import torch
 
-from napistu_torch.ml.constants import TRAINING
+from napistu_torch.ml.constants import TRAINING, SPLIT_TO_MASK
 from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
 
 
@@ -70,11 +70,9 @@ def test_train_test_val_split_mutually_exclusive_collectively_exhaustive():
     splits_dict = train_test_val_split(df, return_dict=True)
     masks = create_split_masks(df, splits_dict)
 
-    train_mask = masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.TRAIN)]
-    test_mask = masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.TEST)]
-    val_mask = masks[
-        TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.VALIDATION)
-    ]
+    train_mask = masks[SPLIT_TO_MASK[TRAINING.TRAIN]]
+    test_mask = masks[SPLIT_TO_MASK[TRAINING.TEST]]
+    val_mask = masks[SPLIT_TO_MASK[TRAINING.VALIDATION]]
 
     # Verify masks are mutually exclusive and collectively exhaustive
     # Sum of all masks should be exactly 1 for each element
@@ -91,11 +89,9 @@ def test_train_test_val_split_zero_val_size_masks():
     )
     masks = create_split_masks(df, splits_dict)
 
-    train_mask = masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.TRAIN)]
-    test_mask = masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.TEST)]
-    val_mask = masks[
-        TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.VALIDATION)
-    ]
+    train_mask = masks[SPLIT_TO_MASK[TRAINING.TRAIN]]
+    test_mask = masks[SPLIT_TO_MASK[TRAINING.TEST]]
+    val_mask = masks[SPLIT_TO_MASK[TRAINING.VALIDATION]]
 
     # Verify val_mask is all zeros
     assert torch.all(~val_mask)
@@ -116,12 +112,12 @@ def test_create_split_masks_basic():
 
     masks = create_split_masks(vertex_df, splits_dict)
 
-    assert f"{TRAINING.TRAIN}_mask" in masks
-    assert f"{TRAINING.TEST}_mask" in masks
-    assert f"{TRAINING.VALIDATION}_mask" in masks
+    assert SPLIT_TO_MASK[TRAINING.TRAIN] in masks
+    assert SPLIT_TO_MASK[TRAINING.TEST] in masks
+    assert SPLIT_TO_MASK[TRAINING.VALIDATION] in masks
     assert all(isinstance(mask, torch.Tensor) for mask in masks.values())
     assert all(mask.dtype == torch.bool for mask in masks.values())
     assert all(len(mask) == len(vertex_df) for mask in masks.values())
-    assert masks[f"{TRAINING.TRAIN}_mask"].sum() == len(train)
-    assert masks[f"{TRAINING.TEST}_mask"].sum() == len(test)
-    assert masks[f"{TRAINING.VALIDATION}_mask"].sum() == len(val)
+    assert masks[SPLIT_TO_MASK[TRAINING.TRAIN]].sum() == len(train)
+    assert masks[SPLIT_TO_MASK[TRAINING.TEST]].sum() == len(test)
+    assert masks[SPLIT_TO_MASK[TRAINING.VALIDATION]].sum() == len(val)

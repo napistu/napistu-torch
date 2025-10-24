@@ -6,6 +6,10 @@ from torch_geometric.utils import negative_sampling
 
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
+from napistu_torch.ml.constants import (
+    SPLIT_TO_MASK,
+    TRAINING,
+)
 
 
 class NodeClassificationTask(BaseTask):
@@ -39,12 +43,12 @@ class NodeClassificationTask(BaseTask):
 
         For transductive learning, returns full graph with mask.
         """
-        mask = getattr(data, f"{split}_mask")
+        mask_attr = SPLIT_TO_MASK[split]
+        mask = getattr(data, mask_attr)
 
         return {
             "x": data.x,
             "edge_index": data.edge_index,
-            "edge_weight": getattr(data, "edge_weight", None),
             "y": data.y,
             "mask": mask,
         }
@@ -57,7 +61,6 @@ class NodeClassificationTask(BaseTask):
         z = self.encoder.encode(
             batch["x"],
             batch["edge_index"],
-            batch.get("edge_weight"),
         )
 
         # Classify nodes
@@ -71,7 +74,7 @@ class NodeClassificationTask(BaseTask):
     def compute_metrics(
         self,
         data: NapistuData,
-        split: str = "val",
+        split: str = TRAINING.VALIDATION,
     ) -> Dict[str, float]:
         """
         Compute classification metrics.

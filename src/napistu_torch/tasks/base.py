@@ -5,6 +5,7 @@ import torch.nn as nn
 from torch_geometric.utils import negative_sampling
 
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.ml.constants import TRAINING
 
 
 class BaseTask(ABC, nn.Module):
@@ -34,7 +35,7 @@ class BaseTask(ABC, nn.Module):
 
     @abstractmethod
     def prepare_batch(
-        self, data: NapistuData, split: str = "train"
+        self, data: NapistuData, split: str = TRAINING.TRAIN
     ) -> Dict[str, torch.Tensor]:
         """
         Prepare data batch for this task.
@@ -51,7 +52,7 @@ class BaseTask(ABC, nn.Module):
 
     @abstractmethod
     def compute_metrics(
-        self, data: NapistuData, split: str = "val"
+        self, data: NapistuData, split: str = TRAINING.VALIDATION
     ) -> Dict[str, float]:
         """
         Compute evaluation metrics.
@@ -70,7 +71,7 @@ class BaseTask(ABC, nn.Module):
 
         This is the interface Lightning expects.
         """
-        batch = self.prepare_batch(data, split="train")
+        batch = self.prepare_batch(data, split=TRAINING.TRAIN)
         loss = self.compute_loss(batch)
         return loss
 
@@ -78,13 +79,13 @@ class BaseTask(ABC, nn.Module):
         """
         Validation step - called by Lightning adapter.
         """
-        return self.compute_metrics(data, split="val")
+        return self.compute_metrics(data, split=TRAINING.VALIDATION)
 
     def test_step(self, data: NapistuData) -> Dict[str, float]:
         """
         Test step - called by Lightning adapter.
         """
-        return self.compute_metrics(data, split="test")
+        return self.compute_metrics(data, split=TRAINING.TEST)
 
     # ========================================================================
     # Convenience methods for inference (no Lightning needed!)

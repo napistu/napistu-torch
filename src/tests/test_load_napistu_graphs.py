@@ -12,8 +12,14 @@ from napistu_torch.load.constants import (
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
 )
-from napistu_torch.load.napistu_graphs import _name_napistu_data, napistu_graph_to_pyg
-from napistu_torch.ml.constants import TRAINING
+from napistu_torch.load.napistu_graphs import (
+    _name_napistu_data,
+    napistu_graph_to_pyg,
+)
+from napistu_torch.ml.constants import (
+    TRAINING,
+    SPLIT_TO_MASK,
+)
 from napistu_torch.tasks.constants import SUPERVISION
 
 
@@ -71,11 +77,11 @@ def test_vertex_mask_with_zero_val_size(augmented_napistu_graph):
     # Verify we get a Data object with masks
     assert isinstance(data, Data)
     for mask_type in [TRAINING.TRAIN, TRAINING.TEST, TRAINING.VALIDATION]:
-        mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=mask_type)
+        mask_name = SPLIT_TO_MASK[mask_type]
         assert hasattr(data, mask_name)
 
     # Verify val_mask is all zeros (blank mask)
-    val_mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=TRAINING.VALIDATION)
+    val_mask_name = SPLIT_TO_MASK[TRAINING.VALIDATION]
     val_mask = getattr(data, val_mask_name)
     assert torch.all(~val_mask)
     assert val_mask.sum().item() == 0
@@ -105,7 +111,7 @@ def test_no_mask_ignores_unused_params_with_warnings(napistu_graph, caplog):
 
     # Verify no masks are present (no_mask strategy doesn't create masks)
     for mask_type in [TRAINING.TRAIN, TRAINING.TEST, TRAINING.VALIDATION]:
-        mask_name = TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=mask_type)
+        mask_name = SPLIT_TO_MASK[mask_type]
         assert not hasattr(data, mask_name)
 
     # Verify warning was logged about ignored parameters

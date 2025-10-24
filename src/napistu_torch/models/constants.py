@@ -1,5 +1,13 @@
 from types import SimpleNamespace
 
+MODEL_DEFS = SimpleNamespace(
+    ENCODER="encoder",
+    GCN="gcn",
+    HEAD="head",
+    HIDDEN_CHANNELS="hidden_channels",
+    NUM_LAYERS="num_layers",
+)
+
 ENCODERS = SimpleNamespace(
     SAGE="sage",
     GCN="gcn",
@@ -36,6 +44,17 @@ HEADS = SimpleNamespace(
     DOT_PRODUCT="dot_product",
     MLP="mlp",
     BILINEAR="bilinear",
+    NODE_CLASSIFICATION="node_classification",
 )
 
 VALID_HEADS = list(HEADS.__dict__.values())
+
+# Head-specific parameter names
+HEAD_SPECIFIC_ARGS = SimpleNamespace(
+    MLP_HIDDEN_DIM="mlp_hidden_dim",
+    MLP_NUM_LAYERS="mlp_num_layers",
+    MLP_DROPOUT="mlp_dropout",
+    BILINEAR_BIAS="bilinear_bias",
+    NC_NUM_CLASSES="nc_num_classes",
+    NC_DROPOUT="nc_dropout",
+)

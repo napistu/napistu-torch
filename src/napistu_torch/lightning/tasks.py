@@ -1,8 +1,5 @@
 """
-Lightning task adapters.
-
-These are thin wrappers around your core task logic.
-They adapt your domain logic to Lightning's interface.
+Simplified Lightning task adapters that handle single-graph batches correctly.
 """
 
 from typing import List, Optional, Dict, Any
@@ -14,6 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 from napistu_torch.tasks.node_classification import NodeClassificationTask
 from napistu_torch.configs import TrainingConfig
+from napistu_torch.napistu_data import NapistuData
 
 
 class BaseLightningTask(pl.LightningModule):
@@ -22,10 +20,6 @@ class BaseLightningTask(pl.LightningModule):
 
     This handles all the Lightning boilerplate (optimizer config, logging, etc.)
     so your task-specific classes can focus on task logic.
-
-    Subclasses just need to implement:
-    - training_step()
-    - validation_step()
     """
 
     def __init__(
@@ -41,11 +35,7 @@ class BaseLightningTask(pl.LightningModule):
         self.save_hyperparameters(ignore=["task"])
 
     def configure_optimizers(self):
-        """
-        Shared optimizer configuration.
-
-        This is the same across all tasks, so it lives in the base class.
-        """
+        """Shared optimizer configuration."""
         # Get all parameters
         params = self.task.parameters()
 
@@ -108,29 +98,7 @@ class EdgePredictionLightning(BaseLightningTask):
     """
     Lightning adapter for edge prediction.
 
-    This is a thin wrapper around EdgePredictionTask (your core logic).
-    It just adapts your task to Lightning's training/validation interface.
-
-    Parameters
-    ----------
-    task : EdgePredictionTask
-        Your core edge prediction task (no Lightning dependency)
-    config : TrainingConfig
-        Training configuration
-
-    Examples
-    --------
-    >>> # Your core task (no Lightning)
-    >>> from napistu_torch.tasks import EdgePredictionTask
-    >>> task = EdgePredictionTask(encoder, head)
-    >>>
-    >>> # Wrap for Lightning
-    >>> from napistu_torch.lightning import EdgePredictionLightning
-    >>> lightning_task = EdgePredictionLightning(task, training_config)
-    >>>
-    >>> # Train with Lightning
-    >>> trainer = pl.Trainer(...)
-    >>> trainer.fit(lightning_task, datamodule)
+    This wraps EdgePredictionTask and handles the DataLoader interface.
     """
 
     def __init__(
@@ -142,15 +110,18 @@ class EdgePredictionLightning(BaseLightningTask):
 
     def training_step(self, batch, batch_idx):
         """
-        Delegate to your core task logic.
+        Training step - batch should be a NapistuData object.
 
-        This just adapts Lightning's interface to your task's interface.
+        Our DataModule with identity_collate ensures batch is a NapistuData
+        object directly, not wrapped in any container.
         """
-        # batch is a list with single NapistuData object
-        data = batch[0] if isinstance(batch, list) else batch
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
 
         # Delegate to your core task
-        loss = self.task.training_step(data)
+        loss = self.task.training_step(batch)
 
         # Lightning handles logging
         self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
@@ -158,13 +129,14 @@ class EdgePredictionLightning(BaseLightningTask):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        """
-        Delegate to your core task logic.
-        """
-        data = batch[0] if isinstance(batch, list) else batch
+        """Validation step - batch should be a NapistuData object."""
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
 
         # Delegate to your core task
-        metrics = self.task.validation_step(data)
+        metrics = self.task.validation_step(batch)
 
         # Log all metrics
         for metric_name, value in metrics.items():
@@ -173,13 +145,14 @@ class EdgePredictionLightning(BaseLightningTask):
         return metrics
 
     def test_step(self, batch, batch_idx):
-        """
-        Delegate to your core task logic.
-        """
-        data = batch[0] if isinstance(batch, list) else batch
+        """Test step - batch should be a NapistuData object."""
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
 
         # Delegate to your core task
-        metrics = self.task.test_step(data)
+        metrics = self.task.test_step(batch)
 
         # Log all metrics
         for metric_name, value in metrics.items():
@@ -203,21 +176,33 @@ class NodeClassificationLightning(BaseLightningTask):
         super().__init__(task, config)
 
     def training_step(self, batch, batch_idx):
-        data = batch[0] if isinstance(batch, list) else batch
-        loss = self.task.training_step(data)
+        """Training step - batch should be a NapistuData object."""
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
+        loss = self.task.training_step(batch)
         self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        data = batch[0] if isinstance(batch, list) else batch
-        metrics = self.task.validation_step(data)
+        """Validation step - batch should be a NapistuData object."""
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
+        metrics = self.task.validation_step(batch)
         for metric_name, value in metrics.items():
             self.log(f"val_{metric_name}", value, prog_bar=True, on_epoch=True)
         return metrics
 
     def test_step(self, batch, batch_idx):
-        data = batch[0] if isinstance(batch, list) else batch
-        metrics = self.task.test_step(data)
+        """Test step - batch should be a NapistuData object."""
+        assert isinstance(batch, NapistuData), (
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn."
+        )
+        metrics = self.task.test_step(batch)
         for metric_name, value in metrics.items():
             self.log(f"test_{metric_name}", value, on_epoch=True)
         return metrics
