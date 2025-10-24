@@ -1,12 +1,12 @@
-from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
+
 import torch
 import torch.nn as nn
 from torch_geometric.utils import negative_sampling
 
+from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
-from napistu_torch.ml.constants import TRAINING, SPLIT_TO_MASK
 
 
 class EdgePredictionTask(BaseTask):
@@ -146,7 +146,7 @@ class EdgePredictionTask(BaseTask):
 
         This runs in eval mode (no gradients).
         """
-        from sklearn.metrics import roc_auc_score, average_precision_score
+        from sklearn.metrics import average_precision_score, roc_auc_score
 
         self.eval()
         with torch.no_grad():

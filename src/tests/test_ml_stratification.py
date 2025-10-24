@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 import torch
 
-from napistu_torch.ml.constants import TRAINING, SPLIT_TO_MASK
+from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
 
 

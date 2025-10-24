@@ -6,16 +6,6 @@ import os
 import pandas as pd
 import pytest
 from napistu import consensus, indices
-
-# Suppress napistu logging during tests to reduce noise
-logging.getLogger("napistu").setLevel(logging.ERROR)
-logging.getLogger("napistu.consensus").setLevel(logging.ERROR)
-logging.getLogger("napistu.network").setLevel(logging.ERROR)
-logging.getLogger("napistu.ingestion").setLevel(logging.ERROR)
-logging.getLogger("napistu.sbml_dfs_core").setLevel(logging.ERROR)
-logging.getLogger("napistu.sbml_dfs_utils").setLevel(logging.ERROR)
-logging.getLogger("napistu.utils").setLevel(logging.ERROR)
-
 from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
@@ -32,6 +22,15 @@ from napistu_torch.load.napistu_graphs import (
     construct_unsupervised_pyg_data,
     napistu_graph_to_pyg,
 )
+
+# Suppress napistu logging during tests to reduce noise
+logging.getLogger("napistu").setLevel(logging.ERROR)
+logging.getLogger("napistu.consensus").setLevel(logging.ERROR)
+logging.getLogger("napistu.network").setLevel(logging.ERROR)
+logging.getLogger("napistu.ingestion").setLevel(logging.ERROR)
+logging.getLogger("napistu.sbml_dfs_core").setLevel(logging.ERROR)
+logging.getLogger("napistu.sbml_dfs_utils").setLevel(logging.ERROR)
+logging.getLogger("napistu.utils").setLevel(logging.ERROR)
 
 
 @pytest.fixture
@@ -168,7 +167,6 @@ def unsupervised_napistu_data(sbml_dfs, napistu_graph):
 @pytest.fixture
 def edge_masked_napistu_data(sbml_dfs, napistu_graph):
     """Create a NapistuData object with train/val/test masks for testing."""
-    from napistu_torch.load.napistu_graphs import napistu_graph_to_pyg
     from napistu_torch.load.constants import SPLITTING_STRATEGIES
 
     return construct_unsupervised_pyg_data(

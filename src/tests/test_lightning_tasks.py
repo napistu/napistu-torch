@@ -3,14 +3,13 @@
 import pytest
 import torch
 
+from napistu_torch.lightning.data_module import NapistuDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
+from napistu_torch.ml.constants import TRAINING
+from napistu_torch.models.constants import ENCODERS
 from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
-from napistu_torch.napistu_data import NapistuData
-from napistu_torch.ml.constants import TRAINING
-from napistu_torch.lightning.data_module import NapistuDataModule
-from napistu_torch.models.constants import ENCODERS
 
 
 def test_edge_prediction_lightning_integration(

@@ -8,11 +8,9 @@ Edge weights are stored in edge attributes for supervision, not encoding.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import SAGEConv, GCNConv, GATConv
-from typing import Optional, Dict, Any
+from torch_geometric.nn import GATConv, GCNConv, SAGEConv
 
 from napistu_torch.configs import ModelConfig
-
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODER_NATIVE_ARGNAMES_MAPS,

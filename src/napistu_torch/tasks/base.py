@@ -1,11 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional, Tuple
+from typing import Dict
+
 import torch
 import torch.nn as nn
-from torch_geometric.utils import negative_sampling
 
-from napistu_torch.napistu_data import NapistuData
 from napistu_torch.ml.constants import TRAINING
+from napistu_torch.napistu_data import NapistuData
 
 
 class BaseTask(ABC, nn.Module):

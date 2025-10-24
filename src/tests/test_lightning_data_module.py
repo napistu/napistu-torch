@@ -1,15 +1,13 @@
 """Tests for Lightning DataModule functionality."""
 
-import pytest
 import torch
 
 from napistu_torch.lightning.data_module import NapistuDataModule
-from napistu_torch.napistu_data import NapistuData
-
 from napistu_torch.ml.constants import (
     SPLIT_TO_MASK,
     TRAINING,
 )
+from napistu_torch.napistu_data import NapistuData
 
 
 def test_datamodule_returns_dataloaders(edge_masked_napistu_data, data_config):

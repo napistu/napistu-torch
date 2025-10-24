@@ -21,8 +21,8 @@ from napistu_torch.load.constants import (
     VALID_SPLITTING_STRATEGIES,
 )
 from napistu_torch.models.constants import (
-    ENCODERS,
     ENCODER_DEFS,
+    ENCODERS,
     HEADS,
     MODEL_DEFS,
     VALID_ENCODERS,

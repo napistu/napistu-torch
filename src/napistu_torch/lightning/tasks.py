@@ -2,16 +2,14 @@
 Simplified Lightning task adapters that handle single-graph batches correctly.
 """
 
-from typing import List, Optional, Dict, Any
-import torch
 import pytorch_lightning as pl
 from torch.optim import Adam, AdamW
-from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
-from napistu_torch.tasks.edge_prediction import EdgePredictionTask
-from napistu_torch.tasks.node_classification import NodeClassificationTask
 from napistu_torch.configs import TrainingConfig
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.tasks.edge_prediction import EdgePredictionTask
+from napistu_torch.tasks.node_classification import NodeClassificationTask
 
 
 class BaseLightningTask(pl.LightningModule):

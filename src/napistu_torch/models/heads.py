@@ -5,14 +5,14 @@ This module provides implementations of different prediction heads for various t
 like edge prediction, node classification, etc. All heads follow a consistent interface.
 """
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
 from typing import Optional
 
+import torch
+import torch.nn as nn
+
 from napistu_torch.models.constants import (
-    HEADS,
     HEAD_SPECIFIC_ARGS,
+    HEADS,
     MODEL_DEFS,
     VALID_HEADS,
 )

@@ -5,18 +5,18 @@ Provides a NapistuTrainer class that wraps PyTorch Lightning Trainer
 with Napistu-specific configurations and conveniences.
 """
 
-from pathlib import Path
-from typing import Optional, List, Union
+from typing import List, Optional, Union
+
 import pytorch_lightning as pl
-from torch.utils.data import DataLoader
-from pytorch_lightning.loggers import WandbLogger
 from pytorch_lightning.callbacks import (
     EarlyStopping,
-    ModelCheckpoint,
     LearningRateMonitor,
+    ModelCheckpoint,
 )
+from pytorch_lightning.loggers import WandbLogger
+from torch.utils.data import DataLoader
 
-from napistu_torch.configs import ExperimentConfig, TrainingConfig, WandBConfig
+from napistu_torch.configs import ExperimentConfig
 
 
 class NapistuTrainer:

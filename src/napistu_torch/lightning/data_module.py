@@ -6,15 +6,15 @@ All data loading/splitting logic should be done using napistu_torch.load.napistu
 functions before passing the data to this DataModule (prevents data leakage).
 """
 
-from typing import Optional, Union, Dict
+from typing import Dict, Optional, Union
+
 import pytorch_lightning as pl
-import torch
 from torch.utils.data import DataLoader, Dataset
 
-from napistu_torch.napistu_data import NapistuData
-from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.configs import DataConfig
+from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import TRAINING
+from napistu_torch.napistu_data import NapistuData
 
 
 class SingleGraphDataset(Dataset):

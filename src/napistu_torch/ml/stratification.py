@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 
-from napistu_torch.ml.constants import TRAINING, SPLIT_TO_MASK
+from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 
 
 def train_test_val_split(

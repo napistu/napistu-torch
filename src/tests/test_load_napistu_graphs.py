@@ -17,8 +17,8 @@ from napistu_torch.load.napistu_graphs import (
     napistu_graph_to_pyg,
 )
 from napistu_torch.ml.constants import (
-    TRAINING,
     SPLIT_TO_MASK,
+    TRAINING,
 )
 from napistu_torch.tasks.constants import SUPERVISION
 

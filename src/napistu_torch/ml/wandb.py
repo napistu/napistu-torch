@@ -1,5 +1,6 @@
-from napistu_torch.configs import ExperimentConfig
 from lightning.pytorch.loggers import WandbLogger
+
+from napistu_torch.configs import ExperimentConfig
 
 
 def setup_wandb_logger(cfg: ExperimentConfig) -> WandbLogger:
