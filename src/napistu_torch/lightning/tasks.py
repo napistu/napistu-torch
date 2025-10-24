@@ -113,12 +113,9 @@ class EdgePredictionLightning(BaseLightningTask):
         Our DataModule with identity_collate ensures batch is a NapistuData
         object directly, not wrapped in any container.
         """
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "training_step")
 
-        # Delegate to your core task
+        # Delegates to the core task
         loss = self.task.training_step(batch)
 
         # Lightning handles logging
@@ -128,12 +125,9 @@ class EdgePredictionLightning(BaseLightningTask):
 
     def validation_step(self, batch, batch_idx):
         """Validation step - batch should be a NapistuData object."""
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "validation_step")
 
-        # Delegate to your core task
+        # Delegates to the core task
         metrics = self.task.validation_step(batch)
 
         # Log all metrics
@@ -144,12 +138,9 @@ class EdgePredictionLightning(BaseLightningTask):
 
     def test_step(self, batch, batch_idx):
         """Test step - batch should be a NapistuData object."""
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "test_step")
 
-        # Delegate to your core task
+        # Delegates to the core task
         metrics = self.task.test_step(batch)
 
         # Log all metrics
@@ -157,6 +148,22 @@ class EdgePredictionLightning(BaseLightningTask):
             self.log(f"test_{metric_name}", value, on_epoch=True)
 
         return metrics
+
+    def predict_step(self, batch, batch_idx):
+        """
+        Predict step - returns per-edge predictions for analysis.
+
+        This method is called by trainer.predict() and returns predictions
+        for each edge in the batch, which can be used for analysis.
+
+        Returns
+        -------
+        torch.Tensor
+            The actual model predictions (sigmoid probabilities).
+            Higher scores = more likely to be a real edge.
+        """
+        _validate_is_napistu_data(batch, "predict_step")
+        return self.task.predict(batch)
 
 
 class NodeClassificationLightning(BaseLightningTask):
@@ -175,20 +182,14 @@ class NodeClassificationLightning(BaseLightningTask):
 
     def training_step(self, batch, batch_idx):
         """Training step - batch should be a NapistuData object."""
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "training_step")
         loss = self.task.training_step(batch)
         self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
         """Validation step - batch should be a NapistuData object."""
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "validation_step")
         metrics = self.task.validation_step(batch)
         for metric_name, value in metrics.items():
             self.log(f"val_{metric_name}", value, prog_bar=True, on_epoch=True)
@@ -196,11 +197,31 @@ class NodeClassificationLightning(BaseLightningTask):
 
     def test_step(self, batch, batch_idx):
         """Test step - batch should be a NapistuData object."""
-        assert isinstance(batch, NapistuData), (
-            f"Expected NapistuData, got {type(batch)}. "
-            f"Check your DataModule's collate_fn."
-        )
+        _validate_is_napistu_data(batch, "test_step")
         metrics = self.task.test_step(batch)
         for metric_name, value in metrics.items():
             self.log(f"test_{metric_name}", value, on_epoch=True)
         return metrics
+
+
+def _validate_is_napistu_data(batch, method_name: str):
+    """
+    Utility function to validate that batch is a NapistuData object.
+
+    Parameters
+    ----------
+    batch : Any
+        The batch to validate
+    method_name : str
+        Name of the method calling this validation (for error messages)
+
+    Raises
+    ------
+    AssertionError
+        If batch is not a NapistuData object
+    """
+    if not isinstance(batch, NapistuData):
+        raise AssertionError(
+            f"Expected NapistuData, got {type(batch)}. "
+            f"Check your DataModule's collate_fn in {method_name}."
+        )

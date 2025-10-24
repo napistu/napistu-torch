@@ -192,6 +192,17 @@ class NapistuDataModule(pl.LightningDataModule):
             num_workers=0,
         )
 
+    def predict_dataloader(self):
+        """Return a DataLoader for prediction."""
+        dataset = SingleGraphDataset(self.data)
+        return DataLoader(
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            collate_fn=identity_collate,
+            num_workers=0,
+        )
+
 
 def identity_collate(batch):
     """

@@ -162,7 +162,9 @@ class NapistuTrainer:
         **kwargs,
     ):
         """Test the model."""
-        return self._trainer.test(model, datamodule, dataloaders, **kwargs)
+        return self._trainer.test(
+            model, dataloaders=dataloaders, datamodule=datamodule, **kwargs
+        )
 
     def validate(
         self,

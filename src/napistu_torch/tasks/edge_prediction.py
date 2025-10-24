@@ -191,7 +191,6 @@ class EdgePredictionTask(BaseTask):
         z = self.encoder.encode(
             data.x,
             data.edge_index,
-            getattr(data, "edge_weight", None),
         )
 
         # Score all edges
