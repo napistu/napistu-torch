@@ -5,16 +5,11 @@ from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.constants import (
     DATA_CONFIG,
-    ENCODER_TYPES,
-    HEADS,
     METRICS,
-    MODEL_CONFIG,
     OPTIMIZERS,
     TASK_CONFIG,
     TASKS,
     TRAINING_CONFIG,
-    VALID_ENCODER_TYPES,
-    VALID_HEADS,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
     VALID_TASKS,
@@ -25,39 +20,59 @@ from napistu_torch.load.constants import (
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
 )
+from napistu_torch.models.constants import (
+    ENCODER_DEFS,
+    ENCODERS,
+    HEADS,
+    MODEL_DEFS,
+    VALID_ENCODERS,
+    VALID_HEADS,
+)
 
 
 class ModelConfig(BaseModel):
     """Model architecture configuration"""
 
-    encoder_type: str = Field(default=ENCODER_TYPES.SAGE)
+    encoder: str = Field(default=ENCODERS.SAGE)
     hidden_channels: int = Field(default=128, gt=0)
     num_layers: int = Field(default=3, ge=1, le=10)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
-    head_type: str = Field(default=HEADS.DOT_PRODUCT)
+    head: str = Field(default=HEADS.DOT_PRODUCT)
 
     # Model-specific fields (optional, with defaults)
-    aggregator: Optional[str] = "mean"  # For SAGE
-    heads: Optional[int] = 4  # For GAT
-    head_hidden_dim: Optional[int] = 64  # For MLP head
+    sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
+    gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
+    gat_concat: Optional[bool] = True  # For GAT
 
-    @field_validator(MODEL_CONFIG.ENCODER_TYPE)
+    # Head-specific fields (optional, with defaults)
+    mlp_hidden_dim: Optional[int] = 64  # For MLP head
+    mlp_num_layers: Optional[int] = Field(default=2, ge=1)  # For MLP head
+    mlp_dropout: Optional[float] = Field(default=0.1, ge=0.0, lt=1.0)  # For MLP head
+    bilinear_bias: Optional[bool] = True  # For bilinear head
+    nc_num_classes: Optional[int] = Field(
+        default=2, ge=2
+    )  # For node classification head
+    nc_dropout: Optional[float] = Field(
+        default=0.1, ge=0.0, lt=1.0
+    )  # For node classification head
+
+    @field_validator(MODEL_DEFS.ENCODER)
     @classmethod
-    def validate_encoder_type(cls, v):
-        if v not in VALID_ENCODER_TYPES:
+    def validate_encoder(cls, v):
+        if v not in VALID_ENCODERS:
             raise ValueError(
-                f"Invalid encoder type: {v}. Valid types are: {VALID_ENCODER_TYPES}"
+                f"Invalid encoder type: {v}. Valid types are: {VALID_ENCODERS}"
             )
         return v
 
-    @field_validator(MODEL_CONFIG.HEAD_TYPE)
+    @field_validator(MODEL_DEFS.HEAD)
     @classmethod
-    def validate_head_type(cls, v):
+    def validate_head(cls, v):
         if v not in VALID_HEADS:
             raise ValueError(f"Invalid head type: {v}. Valid types are: {VALID_HEADS}")
         return v
 
-    @field_validator(MODEL_CONFIG.HIDDEN_CHANNELS)
+    @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
     def validate_power_of_2(cls, v):
         """Optionally enforce power of 2 for efficiency"""
@@ -160,10 +175,10 @@ class TrainingConfig(BaseModel):
 class WandBConfig(BaseModel):
     """Weights & Biases configuration"""
 
-    project: str = "napistu-edge-prediction"
+    project: str = "napistu-experiments"
     entity: Optional[str] = None
     group: Optional[str] = "baseline"
-    tags: List[str] = Field(default_factory=list)
+    tags: List[str] = Field(default_factory=lambda: ["gnn", "pytorch-lightning"])
     save_dir: Path = Field(default=Path("./wandb"))
     log_model: bool = False
     mode: str = Field(default="online")
@@ -174,6 +189,27 @@ class WandBConfig(BaseModel):
         if v not in VALID_WANDB_MODES:
             raise ValueError(f"Invalid mode: {v}. Valid modes are: {VALID_WANDB_MODES}")
         return v
+
+    def get_run_name(
+        self, model_config: "ModelConfig", task_config: "TaskConfig"
+    ) -> str:
+        """Generate a descriptive run name based on model and task configs"""
+        return f"{model_config.encoder}_h{model_config.hidden_channels}_l{model_config.num_layers}_{task_config.task}"
+
+    def get_enhanced_tags(
+        self, model_config: "ModelConfig", task_config: "TaskConfig"
+    ) -> List[str]:
+        """Get tags with model and task-specific additions"""
+        enhanced_tags = self.tags.copy()
+        enhanced_tags.extend(
+            [
+                model_config.encoder,
+                task_config.task,
+                f"hidden_{model_config.hidden_channels}",
+                f"layers_{model_config.num_layers}",
+            ]
+        )
+        return enhanced_tags
 
     class Config:
         extra = "forbid"

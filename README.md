@@ -26,3 +26,15 @@ pip install .
 ## Documentation
 - 🚸 **Project Documentation**: [napistu/wiki](https://github.com/napistu/napistu/wiki)
 
+
+
+## Advanced setup
+
+### Wandb
+
+If this is your first time using wandb, you'll need to authenticate:
+
+1. Go to https://wandb.ai/ and create an account
+2. Get your API key from https://wandb.ai/authorize
+3. Run: wandb login
+4. Or set environment variable: export WANDB_API_KEY=your_api_key_here

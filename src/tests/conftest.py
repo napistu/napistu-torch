@@ -1,5 +1,6 @@
 """Shared fixtures for napistu_torch tests."""
 
+import logging
 import os
 
 import pandas as pd
@@ -21,6 +22,15 @@ from napistu_torch.load.napistu_graphs import (
     construct_unsupervised_pyg_data,
     napistu_graph_to_pyg,
 )
+
+# Suppress napistu logging during tests to reduce noise
+logging.getLogger("napistu").setLevel(logging.ERROR)
+logging.getLogger("napistu.consensus").setLevel(logging.ERROR)
+logging.getLogger("napistu.network").setLevel(logging.ERROR)
+logging.getLogger("napistu.ingestion").setLevel(logging.ERROR)
+logging.getLogger("napistu.sbml_dfs_core").setLevel(logging.ERROR)
+logging.getLogger("napistu.sbml_dfs_utils").setLevel(logging.ERROR)
+logging.getLogger("napistu.utils").setLevel(logging.ERROR)
 
 
 @pytest.fixture
@@ -152,6 +162,45 @@ def supervised_napistu_data(sbml_dfs, napistu_graph):
 def unsupervised_napistu_data(sbml_dfs, napistu_graph):
     """Create an unsupervised NapistuData object using default settings."""
     return construct_unsupervised_pyg_data(sbml_dfs, napistu_graph)
+
+
+@pytest.fixture
+def edge_masked_napistu_data(sbml_dfs, napistu_graph):
+    """Create a NapistuData object with train/val/test masks for testing."""
+    from napistu_torch.load.constants import SPLITTING_STRATEGIES
+
+    return construct_unsupervised_pyg_data(
+        sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK
+    )
+
+
+@pytest.fixture
+def experiment_config():
+    """Create a basic experiment config for testing."""
+    from napistu_torch.configs import ExperimentConfig
+
+    return ExperimentConfig(
+        name="test_experiment",
+        seed=42,
+        deterministic=True,
+        fast_dev_run=True,
+        limit_train_batches=1.0,
+        limit_val_batches=1.0,
+    )
+
+
+@pytest.fixture
+def data_config():
+    """Create a basic data config for testing."""
+    from napistu_torch.configs import DataConfig
+    from napistu_torch.load.constants import SPLITTING_STRATEGIES
+
+    return DataConfig(
+        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
+        train_size=0.6,
+        val_size=0.2,
+        test_size=0.2,
+    )
 
 
 @pytest.fixture

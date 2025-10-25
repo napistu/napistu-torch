@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
 
-from napistu_torch.ml.constants import TRAINING
+from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 
 
 def train_test_val_split(
@@ -154,6 +154,6 @@ def create_split_masks(
         mask = torch.zeros(n, dtype=torch.bool)
         if split_name in splits_dict and not splits_dict[split_name].empty:
             mask[splits_dict[split_name].index] = True
-        masks[TRAINING.SPLIT_MASK_TEMPLATE.format(split_name=split_name)] = mask
+        masks[SPLIT_TO_MASK[split_name]] = mask
 
     return masks

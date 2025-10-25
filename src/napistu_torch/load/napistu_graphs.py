@@ -324,7 +324,7 @@ def napistu_graph_to_pyg(
             Mask tensor for validation split
 
         If splitting_strategy is 'inductive', returns Dict[str, NapistuData] with keys
-        'train', 'test', 'val' (or subset thereof).
+        'train', 'test', 'validation' (or subset thereof).
 
     Examples
     --------
