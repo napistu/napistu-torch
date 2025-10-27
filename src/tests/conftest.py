@@ -208,3 +208,50 @@ def data_config():
 def comprehensive_source_membership(sbml_dfs, napistu_graph):
     """Create a comprehensive source membership VertexTensor."""
     return get_comprehensive_source_membership(napistu_graph, sbml_dfs)
+
+
+@pytest.fixture
+def temp_napistu_data_store_with_edge_data(
+    sbml_dfs, napistu_graph, edge_masked_napistu_data
+):
+    """Create a temporary NapistuDataStore with edge_masked_napistu_data saved to it."""
+    import tempfile
+
+    from napistu_torch.napistu_data_store import NapistuDataStore
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create real pickle files
+        sbml_dfs_path = Path(temp_dir) / "sbml_dfs.pkl"
+        napistu_graph_path = Path(temp_dir) / "napistu_graph.pkl"
+
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
+
+        # Create the store
+        store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            sbml_dfs_path=sbml_dfs_path,
+            napistu_graph_path=napistu_graph_path,
+            copy_to_store=False,
+        )
+
+        # Save the edge_masked_napistu_data to the store
+        store.save_napistu_data(
+            edge_masked_napistu_data, name="edge_prediction", overwrite=True
+        )
+
+        yield store
+
+
+@pytest.fixture
+def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
+    """Create a DataConfig that points to the temporary store."""
+    store = temp_napistu_data_store_with_edge_data
+
+    return DataConfig(
+        name="test_data_with_store",
+        store_dir=store.store_dir,
+        sbml_dfs_path=store.sbml_dfs_path,
+        napistu_graph_path=store.napistu_graph_path,
+        required_artifacts=["edge_prediction"],
+    )
