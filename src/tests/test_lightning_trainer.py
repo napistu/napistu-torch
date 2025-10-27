@@ -1,5 +1,7 @@
 """Tests for Lightning trainer integration - actual model fitting."""
 
+from pathlib import Path
+
 import pytest
 import pytorch_lightning as pl
 import torch
@@ -8,14 +10,24 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 from napistu_torch.configs import DataConfig, ExperimentConfig
 from napistu_torch.lightning.data_module import NapistuDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
-from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.models.constants import ENCODERS
 from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
-def test_edge_prediction_trainer_fit(edge_masked_napistu_data):
+@pytest.fixture
+def stub_data_config():
+    """Create a stubbed DataConfig for testing."""
+    return DataConfig(
+        name="stubbed_config",
+        sbml_dfs_path=Path("stub_sbml.pkl"),
+        napistu_graph_path=Path("stub_graph.pkl"),
+        required_artifacts=["edge_prediction"],
+    )
+
+
+def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config):
     """Test that we can actually fit an edge prediction model with Lightning trainer."""
 
     # Create a minimal experiment config for fast testing
@@ -26,14 +38,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data):
         fast_dev_run=True,  # Only run 1 batch for testing
         limit_train_batches=0.1,  # Limit to 10% of batches
         limit_val_batches=0.1,
-    )
-
-    # Create data config
-    data_config = DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        data=stub_data_config,
     )
 
     # Create encoder and head
@@ -52,7 +57,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data):
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(edge_masked_napistu_data, data_config)
+    dm = NapistuDataModule(edge_masked_napistu_data, experiment_config.data)
 
     # Create trainer with minimal settings for testing
     trainer = pl.Trainer(
@@ -83,7 +88,9 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data):
     # So we only check encoder parameters
 
 
-def test_edge_prediction_trainer_fit_with_callbacks(edge_masked_napistu_data):
+def test_edge_prediction_trainer_fit_with_callbacks(
+    edge_masked_napistu_data, stub_data_config
+):
     """Test trainer fit with callbacks enabled."""
 
     # Create experiment config
@@ -94,14 +101,7 @@ def test_edge_prediction_trainer_fit_with_callbacks(edge_masked_napistu_data):
         fast_dev_run=True,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-    )
-
-    # Create data config
-    data_config = DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        data=stub_data_config,
     )
 
     # Create encoder and head
@@ -120,7 +120,7 @@ def test_edge_prediction_trainer_fit_with_callbacks(edge_masked_napistu_data):
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(edge_masked_napistu_data, data_config)
+    dm = NapistuDataModule(edge_masked_napistu_data, experiment_config.data)
 
     # Create callbacks
     early_stopping = EarlyStopping(
@@ -155,7 +155,7 @@ def test_edge_prediction_trainer_fit_with_callbacks(edge_masked_napistu_data):
     assert len(trainer.callbacks) == 2
 
 
-def test_edge_prediction_trainer_test(edge_masked_napistu_data):
+def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config):
     """Test that we can run test after fitting."""
 
     # Create experiment config
@@ -166,14 +166,7 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data):
         fast_dev_run=True,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-    )
-
-    # Create data config
-    data_config = DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        data=stub_data_config,
     )
 
     # Create encoder and head
@@ -192,7 +185,7 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data):
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(edge_masked_napistu_data, data_config)
+    dm = NapistuDataModule(edge_masked_napistu_data, experiment_config.data)
 
     # Create trainer
     trainer = pl.Trainer(
@@ -222,7 +215,9 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data):
     assert "test_ap" in test_results[0]
 
 
-def test_edge_prediction_trainer_different_encoders(edge_masked_napistu_data):
+def test_edge_prediction_trainer_different_encoders(
+    edge_masked_napistu_data, stub_data_config
+):
     """Test trainer with different encoder types."""
 
     encoders_to_test = ["sage", "gcn", "gat"]
@@ -236,14 +231,12 @@ def test_edge_prediction_trainer_different_encoders(edge_masked_napistu_data):
             fast_dev_run=True,
             limit_train_batches=0.05,  # Even smaller for multiple tests
             limit_val_batches=0.05,
-        )
-
-        # Create data config
-        data_config = DataConfig(
-            splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-            train_size=0.6,
-            val_size=0.2,
-            test_size=0.2,
+            data=DataConfig(
+                name="test_data",
+                sbml_dfs_path=Path("test_sbml.pkl"),
+                napistu_graph_path=Path("test_graph.pkl"),
+                required_artifacts=["edge_prediction"],
+            ),
         )
 
         # Create encoder and head
@@ -262,7 +255,7 @@ def test_edge_prediction_trainer_different_encoders(edge_masked_napistu_data):
         lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
         # Create data module
-        dm = NapistuDataModule(edge_masked_napistu_data, data_config)
+        dm = NapistuDataModule(edge_masked_napistu_data, experiment_config.data)
 
         # Create trainer
         trainer = pl.Trainer(
@@ -308,14 +301,7 @@ def test_edge_prediction_trainer_gpu_if_available(edge_masked_napistu_data):
         fast_dev_run=True,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-    )
-
-    # Create data config
-    data_config = DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        data=stub_data_config,
     )
 
     # Create encoder and head
@@ -334,7 +320,7 @@ def test_edge_prediction_trainer_gpu_if_available(edge_masked_napistu_data):
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(edge_masked_napistu_data, data_config)
+    dm = NapistuDataModule(edge_masked_napistu_data, experiment_config.data)
 
     # Create trainer with GPU
     trainer = pl.Trainer(

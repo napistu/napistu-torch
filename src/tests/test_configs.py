@@ -30,10 +30,6 @@ from napistu_torch.constants import (
     WANDB_CONFIG,
     WANDB_MODES,
 )
-from napistu_torch.load.constants import (
-    SPLITTING_STRATEGIES,
-    VALID_SPLITTING_STRATEGIES,
-)
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
@@ -42,6 +38,14 @@ from napistu_torch.models.constants import (
     VALID_ENCODERS,
     VALID_HEADS,
 )
+
+
+@pytest.fixture
+def stubbed_data_config():
+    """Create a stubbed DataConfig for testing."""
+    return DataConfig(
+        sbml_dfs_path=Path("stub_sbml.pkl"), napistu_graph_path=Path("stub_graph.pkl")
+    )
 
 
 class TestModelConfig:
@@ -144,82 +148,73 @@ class TestModelConfig:
 class TestDataConfig:
     """Test DataConfig class."""
 
-    def test_splitting_strategy_validation(self):
-        """Test splitting_strategy validation with valid and invalid values."""
-        # Test valid splitting strategies
-        for strategy in VALID_SPLITTING_STRATEGIES:
-            config = DataConfig(splitting_strategy=strategy)
-            assert hasattr(config, DATA_CONFIG.SPLITTING_STRATEGY)
-            assert config.splitting_strategy == strategy
-
-        # Test invalid splitting strategy
-        with pytest.raises(ValidationError) as exc_info:
-            DataConfig(splitting_strategy="invalid_strategy")
-        assert "Invalid splitting strategy" in str(exc_info.value)
-
-    def test_size_validation(self):
-        """Test train/val/test size validation with valid and invalid values."""
-        # Test valid sizes
-        valid_sizes = [0.1, 0.3, 0.5, 0.7, 0.9]
-        for size in valid_sizes:
-            config = DataConfig(train_size=size, val_size=0.1, test_size=0.1)
-            assert hasattr(config, DATA_CONFIG.TRAIN_SIZE)
-            assert config.train_size == size
-
-            config = DataConfig(train_size=0.7, val_size=size, test_size=0.1)
-            assert hasattr(config, DATA_CONFIG.VAL_SIZE)
-            assert config.val_size == size
-
-            config = DataConfig(train_size=0.7, val_size=0.1, test_size=size)
-            assert hasattr(config, DATA_CONFIG.TEST_SIZE)
-            assert config.test_size == size
-
-        # Test invalid values (at boundaries)
-        with pytest.raises(ValidationError):
-            DataConfig(train_size=0.0)  # At minimum (should be > 0.0)
-
-        with pytest.raises(ValidationError):
-            DataConfig(val_size=0.0)  # At minimum (should be > 0.0)
-
-        with pytest.raises(ValidationError):
-            DataConfig(test_size=0.0)  # At minimum (should be > 0.0)
-
-        with pytest.raises(ValidationError):
-            DataConfig(train_size=1.0)  # At maximum (should be < 1.0)
-
-        with pytest.raises(ValidationError):
-            DataConfig(val_size=1.0)  # At maximum (should be < 1.0)
-
-        with pytest.raises(ValidationError):
-            DataConfig(test_size=1.0)  # At maximum (should be < 1.0)
-
     def test_required_fields_exist(self):
         """Test that all required fields exist and can be set."""
-        config = DataConfig()
+        # Test that required fields exist in the model
+        model_fields = DataConfig.model_fields
+        assert DATA_CONFIG.NAME in model_fields
+        assert DATA_CONFIG.STORE_DIR in model_fields
+        assert DATA_CONFIG.SBML_DFS_PATH in model_fields
+        assert DATA_CONFIG.NAPISTU_GRAPH_PATH in model_fields
+        assert DATA_CONFIG.COPY_TO_STORE in model_fields
+        assert DATA_CONFIG.OVERWRITE in model_fields
+        assert DATA_CONFIG.REQUIRED_ARTIFACTS in model_fields
 
-        # Test that all fields exist
-        assert hasattr(config, DATA_CONFIG.NAME)
-        assert hasattr(config, DATA_CONFIG.STORE_DIR)
-        assert hasattr(config, DATA_CONFIG.SPLITTING_STRATEGY)
-        assert hasattr(config, DATA_CONFIG.TRAIN_SIZE)
-        assert hasattr(config, DATA_CONFIG.VAL_SIZE)
-        assert hasattr(config, DATA_CONFIG.TEST_SIZE)
+    def test_default_values(self):
+        """Test that default values are set correctly."""
+        # Create config with only required fields
+        config = DataConfig(
+            sbml_dfs_path=Path("test_sbml.pkl"),
+            napistu_graph_path=Path("test_graph.pkl"),
+        )
 
-        # Test that they can be customized
+        assert config.name == "default"
+        assert config.store_dir == Path(".store")
+        assert config.copy_to_store is False
+        assert config.overwrite is False
+        assert config.required_artifacts == []
+
+    def test_custom_values(self):
+        """Test that fields can be customized."""
         custom_path = Path("/custom/path")
         config = DataConfig(
             name="custom_name",
             store_dir=custom_path,
-            train_size=0.8,
-            val_size=0.1,
-            test_size=0.1,
+            sbml_dfs_path=Path("custom_sbml.pkl"),
+            napistu_graph_path=Path("custom_graph.pkl"),
+            copy_to_store=True,
+            overwrite=True,
+            required_artifacts=["unsupervised", "edge_prediction"],
         )
+
         assert config.name == "custom_name"
         assert config.store_dir == custom_path
+        assert config.sbml_dfs_path == Path("custom_sbml.pkl")
+        assert config.napistu_graph_path == Path("custom_graph.pkl")
+        assert config.copy_to_store is True
+        assert config.overwrite is True
+        assert config.required_artifacts == ["unsupervised", "edge_prediction"]
+
+    def test_path_objects(self):
+        """Test that Path objects are properly handled."""
+        config = DataConfig(
+            sbml_dfs_path=Path("test_sbml.pkl"),
+            napistu_graph_path=Path("test_graph.pkl"),
+        )
+
         assert isinstance(config.store_dir, Path)
-        assert config.train_size == 0.8
-        assert config.val_size == 0.1
-        assert config.test_size == 0.1
+        assert isinstance(config.sbml_dfs_path, Path)
+        assert isinstance(config.napistu_graph_path, Path)
+
+    def test_extra_fields_forbidden(self):
+        """Test that extra fields are forbidden."""
+        with pytest.raises(ValidationError) as exc_info:
+            DataConfig(
+                sbml_dfs_path=Path("test_sbml.pkl"),
+                napistu_graph_path=Path("test_graph.pkl"),
+                invalid_field="value",
+            )
+        assert "Extra inputs are not permitted" in str(exc_info.value)
 
 
 class TestTaskConfig:
@@ -487,9 +482,10 @@ class TestWandBConfig:
 class TestExperimentConfig:
     """Test ExperimentConfig class."""
 
-    def test_required_fields_exist(self):
+    def test_required_fields_exist(self, stubbed_data_config):
         """Test that all required fields exist and can be set."""
-        config = ExperimentConfig()
+        # Create config with required DataConfig fields
+        config = ExperimentConfig(data=stubbed_data_config)
 
         # Test that all fields exist
         assert hasattr(config, EXPERIMENT_CONFIG.NAME)
@@ -514,18 +510,25 @@ class TestExperimentConfig:
     def test_component_configs_customization(self):
         """Test that component configs can be customized."""
         model_config = ModelConfig(hidden_channels=256, num_layers=5)
-        data_config = DataConfig(name="custom_data", train_size=0.8)
+        data_config = DataConfig(
+            name="custom_data",
+            sbml_dfs_path=Path("stub_sbml.pkl"),
+            napistu_graph_path=Path("stub_graph.pkl"),
+        )
 
         config = ExperimentConfig(model=model_config, data=data_config)
 
         assert config.model.hidden_channels == 256
         assert config.model.num_layers == 5
         assert config.data.name == "custom_data"
-        assert config.data.train_size == 0.8
+        assert config.data.sbml_dfs_path == Path("stub_sbml.pkl")
+        assert config.data.napistu_graph_path == Path("stub_graph.pkl")
 
-    def test_serialization_methods(self):
+    def test_serialization_methods(self, stubbed_data_config):
         """Test serialization and deserialization methods."""
-        config = ExperimentConfig(name="test_experiment", seed=123)
+        config = ExperimentConfig(
+            name="test_experiment", seed=123, data=stubbed_data_config
+        )
 
         # Test to_dict method
         config_dict = config.to_dict()
@@ -561,10 +564,10 @@ class TestExperimentConfig:
             assert isinstance(loaded_config.model, ModelConfig)
             assert isinstance(loaded_config.data, DataConfig)
 
-    def test_extra_fields_forbidden(self):
+    def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""
         with pytest.raises(ValidationError) as exc_info:
-            ExperimentConfig(invalid_field="value")
+            ExperimentConfig(invalid_field="value", data=stubbed_data_config)
         assert "Extra inputs are not permitted" in str(exc_info.value)
 
 
@@ -579,8 +582,9 @@ class TestConfigIntegration:
 
         data_config = DataConfig(
             name="custom_dataset",
-            splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
-            train_size=0.8,
+            sbml_dfs_path=Path("custom_sbml.pkl"),
+            napistu_graph_path=Path("custom_graph.pkl"),
+            required_artifacts=["unsupervised"],
         )
 
         task_config = TaskConfig(
@@ -609,37 +613,60 @@ class TestConfigIntegration:
         assert experiment_config.model.encoder == ENCODERS.GAT
         assert experiment_config.model.hidden_channels == 256
         assert experiment_config.data.name == "custom_dataset"
+        assert experiment_config.data.sbml_dfs_path == Path("custom_sbml.pkl")
+        assert experiment_config.data.napistu_graph_path == Path("custom_graph.pkl")
+        assert experiment_config.data.required_artifacts == ["unsupervised"]
         assert experiment_config.task.task == TASKS.NODE_CLASSIFICATION
         assert experiment_config.training.optimizer == OPTIMIZERS.ADAMW
         assert experiment_config.wandb.project == "custom-project"
 
-    def test_config_validation_cascades(self):
+    def test_config_validation_cascades(self, stubbed_data_config):
         """Test that validation errors cascade properly."""
         # Test that invalid values in component configs cause validation errors
         with pytest.raises(ValidationError):
-            ExperimentConfig(model=ModelConfig(encoder="invalid_encoder"))
+            ExperimentConfig(
+                model=ModelConfig(encoder="invalid_encoder"), data=stubbed_data_config
+            )
 
         with pytest.raises(ValidationError):
-            ExperimentConfig(data=DataConfig(splitting_strategy="invalid_strategy"))
+            ExperimentConfig(
+                data=DataConfig(
+                    sbml_dfs_path=Path("test.pkl"),
+                    napistu_graph_path=Path("test.pkl"),
+                    invalid_field="should_fail",
+                )
+            )
 
         with pytest.raises(ValidationError):
-            ExperimentConfig(task=TaskConfig(task="invalid_task"))
+            ExperimentConfig(
+                task=TaskConfig(task="invalid_task"), data=stubbed_data_config
+            )
 
         with pytest.raises(ValidationError):
-            ExperimentConfig(training=TrainingConfig(optimizer="invalid_optimizer"))
+            ExperimentConfig(
+                training=TrainingConfig(optimizer="invalid_optimizer"),
+                data=stubbed_data_config,
+            )
 
         with pytest.raises(ValidationError):
-            ExperimentConfig(wandb=WandBConfig(mode="invalid_mode"))
+            ExperimentConfig(
+                wandb=WandBConfig(mode="invalid_mode"), data=stubbed_data_config
+            )
 
-    def test_config_roundtrip_serialization(self):
+    def test_config_roundtrip_serialization(self, stubbed_data_config):
         """Test that configs can be serialized and deserialized without data loss."""
         original_config = ExperimentConfig(
-            name="roundtrip_test", seed=999, deterministic=False, fast_dev_run=True
+            name="roundtrip_test",
+            seed=999,
+            deterministic=False,
+            fast_dev_run=True,
+            data=stubbed_data_config,
         )
 
         # Customize component configs
         original_config.model.hidden_channels = 512
-        original_config.data.train_size = 0.9
+        original_config.data.name = "roundtrip_data"
+        original_config.data.required_artifacts = ["unsupervised", "edge_prediction"]
         original_config.task.neg_sampling_ratio = 3.0
         original_config.training.lr = 0.005
         original_config.wandb.project = "roundtrip-project"
@@ -657,7 +684,11 @@ class TestConfigIntegration:
             assert loaded_config.deterministic is False
             assert loaded_config.fast_dev_run is True
             assert loaded_config.model.hidden_channels == 512
-            assert loaded_config.data.train_size == 0.9
+            assert loaded_config.data.name == "roundtrip_data"
+            assert loaded_config.data.required_artifacts == [
+                "unsupervised",
+                "edge_prediction",
+            ]
             assert loaded_config.task.neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"

@@ -102,10 +102,11 @@ VALID_WANDB_MODES = list(WANDB_MODES.__dict__.values())
 DATA_CONFIG = SimpleNamespace(
     NAME="name",
     STORE_DIR="store_dir",
-    SPLITTING_STRATEGY="splitting_strategy",
-    TRAIN_SIZE="train_size",
-    VAL_SIZE="val_size",
-    TEST_SIZE="test_size",
+    SBML_DFS_PATH="sbml_dfs_path",
+    NAPISTU_GRAPH_PATH="napistu_graph_path",
+    COPY_TO_STORE="copy_to_store",
+    OVERWRITE="overwrite",
+    REQUIRED_ARTIFACTS="required_artifacts",
 )
 
 MODEL_CONFIG = SimpleNamespace(

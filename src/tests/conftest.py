@@ -2,6 +2,7 @@
 
 import logging
 import os
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -10,6 +11,10 @@ from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from napistu_torch.configs import (
+    DataConfig,
+    ExperimentConfig,
+)
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.load.constants import (
     ENCODING_MANAGER,
@@ -138,9 +143,7 @@ def simple_raw_graph_df():
 def augmented_napistu_graph(napistu_graph, sbml_dfs):
     """Create a NapistuGraph that has been augmented with SBML_dfs information."""
     # Augment the graph with SBML_dfs information
-    augment_napistu_graph(sbml_dfs, napistu_graph, inplace=True)
-
-    return napistu_graph
+    return augment_napistu_graph(sbml_dfs, napistu_graph, inplace=False)
 
 
 @pytest.fixture
@@ -167,8 +170,6 @@ def unsupervised_napistu_data(sbml_dfs, napistu_graph):
 @pytest.fixture
 def edge_masked_napistu_data(sbml_dfs, napistu_graph):
     """Create a NapistuData object with train/val/test masks for testing."""
-    from napistu_torch.load.constants import SPLITTING_STRATEGIES
-
     return construct_unsupervised_pyg_data(
         sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK
     )
@@ -177,8 +178,6 @@ def edge_masked_napistu_data(sbml_dfs, napistu_graph):
 @pytest.fixture
 def experiment_config():
     """Create a basic experiment config for testing."""
-    from napistu_torch.configs import ExperimentConfig
-
     return ExperimentConfig(
         name="test_experiment",
         seed=42,
@@ -186,20 +185,22 @@ def experiment_config():
         fast_dev_run=True,
         limit_train_batches=1.0,
         limit_val_batches=1.0,
+        data=DataConfig(
+            sbml_dfs_path=Path("stub_sbml.pkl"),
+            napistu_graph_path=Path("stub_graph.pkl"),
+        ),
     )
 
 
 @pytest.fixture
 def data_config():
     """Create a basic data config for testing."""
-    from napistu_torch.configs import DataConfig
-    from napistu_torch.load.constants import SPLITTING_STRATEGIES
 
     return DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        name="test_data",
+        sbml_dfs_path=Path("test_sbml.pkl"),
+        napistu_graph_path=Path("test_graph.pkl"),
+        required_artifacts=["unsupervised"],
     )
 
 

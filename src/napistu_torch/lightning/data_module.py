@@ -12,7 +12,6 @@ import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Dataset
 
 from napistu_torch.configs import DataConfig
-from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
 
@@ -59,12 +58,12 @@ class NapistuDataModule(pl.LightningDataModule):
     --------
     >>> # Using pre-processed transductive data
     >>> data = construct_unsupervised_pyg_data(sbml_dfs, ng, splitting_strategy='edge_mask')
-    >>> config = DataConfig(splitting_strategy='edge_mask', train_size=0.7)
+    >>> config = DataConfig(sbml_dfs_path=Path("data.pkl"), napistu_graph_path=Path("graph.pkl"))
     >>> dm = NapistuDataModule(data, config)
     >>>
     >>> # Using pre-processed inductive data
     >>> data_dict = construct_unsupervised_pyg_data(sbml_dfs, ng, splitting_strategy='inductive')
-    >>> config = DataConfig(splitting_strategy='inductive')
+    >>> config = DataConfig(sbml_dfs_path=Path("data.pkl"), napistu_graph_path=Path("graph.pkl"))
     >>> dm = NapistuDataModule(data_dict, config)
     """
 
@@ -102,24 +101,19 @@ class NapistuDataModule(pl.LightningDataModule):
         >>> in_channels = dm.num_node_features
         >>> encoder = GNNEncoder.from_config(model_config, in_channels=in_channels)
         """
-        if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
+        # Determine splitting strategy from the data itself
+        if isinstance(self.napistu_data, dict):
             # For inductive splits, get features from training data
-            if isinstance(self.napistu_data, dict):
-                return self.napistu_data[TRAINING.TRAIN].num_node_features
-            else:
-                raise ValueError(
-                    f"For inductive splitting strategy, napistu_data must be a dictionary "
-                    f"with keys 'train', 'validation', 'test', but got {type(self.napistu_data)}"
-                )
-        else:
+            return self.napistu_data[TRAINING.TRAIN].num_node_features
+        elif isinstance(self.napistu_data, NapistuData):
             # For transductive splits, get features from the single data object
-            if isinstance(self.napistu_data, NapistuData):
-                return self.napistu_data.num_node_features
-            else:
-                raise ValueError(
-                    f"For transductive splitting strategies, napistu_data must be a single "
-                    f"NapistuData object, but got {type(self.napistu_data)}"
-                )
+            return self.napistu_data.num_node_features
+        else:
+            raise ValueError(
+                f"napistu_data must be either a NapistuData object or a dictionary "
+                f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, "
+                f"but got {type(self.napistu_data)}"
+            )
 
     def setup(self, stage: Optional[str] = None):
         """
@@ -131,27 +125,21 @@ class NapistuDataModule(pl.LightningDataModule):
         if self.data is not None or self.train_data is not None:
             return  # Already set up
 
-        # Handle different splitting strategies
-        if self.config.splitting_strategy == SPLITTING_STRATEGIES.INDUCTIVE:
-            # Separate graphs for each split
-            if isinstance(self.napistu_data, dict):
-                self.train_data = self.napistu_data[TRAINING.TRAIN]
-                self.val_data = self.napistu_data.get(TRAINING.VALIDATION)
-                self.test_data = self.napistu_data.get(TRAINING.TEST)
-            else:
-                raise ValueError(
-                    f"For inductive splitting strategy, napistu_data must be a dictionary "
-                    f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, but got {type(self.napistu_data)}"
-                )
-        else:
+        # Determine splitting strategy from the data structure
+        if isinstance(self.napistu_data, dict):
+            # Separate graphs for each split (inductive)
+            self.train_data = self.napistu_data[TRAINING.TRAIN]
+            self.val_data = self.napistu_data.get(TRAINING.VALIDATION)
+            self.test_data = self.napistu_data.get(TRAINING.TEST)
+        elif isinstance(self.napistu_data, NapistuData):
             # Single graph with masks (transductive)
-            if isinstance(self.napistu_data, NapistuData):
-                self.data = self.napistu_data
-            else:
-                raise ValueError(
-                    f"For transductive splitting strategies, napistu_data must be a single "
-                    f"NapistuData object, but got {type(self.napistu_data)}"
-                )
+            self.data = self.napistu_data
+        else:
+            raise ValueError(
+                f"napistu_data must be either a NapistuData object or a dictionary "
+                f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, "
+                f"but got {type(self.napistu_data)}"
+            )
 
     def train_dataloader(self):
         """
@@ -161,7 +149,13 @@ class NapistuDataModule(pl.LightningDataModule):
         that yields the same graph on each iteration. The Lightning Trainer
         will only iterate once per epoch.
         """
-        dataset = SingleGraphDataset(self.data)
+        if self.train_data is not None:
+            # Inductive split - use separate training data
+            dataset = SingleGraphDataset(self.train_data)
+        else:
+            # Transductive split - use single graph with masks
+            dataset = SingleGraphDataset(self.data)
+
         return DataLoader(
             dataset,
             batch_size=1,
@@ -172,7 +166,13 @@ class NapistuDataModule(pl.LightningDataModule):
 
     def val_dataloader(self):
         """Return a DataLoader for validation."""
-        dataset = SingleGraphDataset(self.data)
+        if self.val_data is not None:
+            # Inductive split - use separate validation data
+            dataset = SingleGraphDataset(self.val_data)
+        else:
+            # Transductive split - use single graph with masks
+            dataset = SingleGraphDataset(self.data)
+
         return DataLoader(
             dataset,
             batch_size=1,
@@ -183,7 +183,13 @@ class NapistuDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         """Return a DataLoader for testing."""
-        dataset = SingleGraphDataset(self.data)
+        if self.test_data is not None:
+            # Inductive split - use separate test data
+            dataset = SingleGraphDataset(self.test_data)
+        else:
+            # Transductive split - use single graph with masks
+            dataset = SingleGraphDataset(self.data)
+
         return DataLoader(
             dataset,
             batch_size=1,
@@ -194,7 +200,13 @@ class NapistuDataModule(pl.LightningDataModule):
 
     def predict_dataloader(self):
         """Return a DataLoader for prediction."""
-        dataset = SingleGraphDataset(self.data)
+        if self.test_data is not None:
+            # Inductive split - use separate test data for prediction
+            dataset = SingleGraphDataset(self.test_data)
+        else:
+            # Transductive split - use single graph with masks
+            dataset = SingleGraphDataset(self.data)
+
         return DataLoader(
             dataset,
             batch_size=1,
