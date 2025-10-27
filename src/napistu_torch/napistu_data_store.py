@@ -3,17 +3,25 @@ import logging
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
+from napistu_torch.configs import DataConfig
 from napistu_torch.constants import (
+    ARTIFACT_TYPES,
     NAPISTU_DATA,
     NAPISTU_DATA_STORE,
     NAPISTU_DATA_STORE_STRUCTURE,
     VERTEX_TENSOR,
+)
+from napistu_torch.load.artifacts import (
+    DEFAULT_ARTIFACT_REGISTRY,
+    ArtifactDefinition,
+    create_artifact,
+    validate_artifact_registry,
 )
 from napistu_torch.load.constants import VALID_SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import DEVICE
@@ -60,13 +68,13 @@ class NapistuDataStore:
         Load the NapistuGraph from disk
     load_vertex_tensor(name, map_location="cpu")
         Load a VertexTensor from the store
-    pd_load(name)
+    load_pandas_df(name)
         Load a pandas DataFrame from the store
     save_napistu_data(napistu_data, name=None, overwrite=False)
         Save a NapistuData object to the store
     save_vertex_tensor(vertex_tensor, name=None, overwrite=False)
         Save a VertexTensor to the store
-    pd_save(dataframe, name=None, overwrite=False)
+    save_pandas_df(dataframe, name=None, overwrite=False)
         Save a pandas DataFrame to the store
     summary()
         Get a summary of the store contents
@@ -242,6 +250,258 @@ class NapistuDataStore:
         # Return new instance
         return cls(store_dir)
 
+    def ensure_artifacts(
+        self,
+        artifact_names: List[str],
+        artifact_registry: Dict[str, ArtifactDefinition] = DEFAULT_ARTIFACT_REGISTRY,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Ensure specified artifacts exist in the store, creating if missing.
+
+        This is the key method for efficient batch artifact creation.
+        It loads raw data (sbml_dfs, ng) ONCE and creates all missing artifacts.
+
+        Only checks registry for artifacts not already in store. This allows
+        custom artifacts to exist in store without being in registry.
+
+        Parameters
+        ----------
+        artifact_names : List[str]
+            Names of artifacts to ensure exist
+        artifact_registry : Dict[str, ArtifactDefinition], default=DEFAULT_ARTIFACT_REGISTRY
+            Registry of artifact definitions
+        overwrite : bool, default=False
+            If True, recreate artifacts even if they exist
+
+        Raises
+        ------
+        KeyError
+            If artifact not in store and not in registry
+
+        Examples
+        --------
+        >>> # Works with registry artifacts
+        >>> store.ensure_artifacts(["unsupervised", "edge_prediction"])
+        >>>
+        >>> # Also works with custom artifacts already in store
+        >>> custom_data = construct_custom_pyg_data(...)
+        >>> store.save_napistu_data(custom_data, name="my_custom_artifact")
+        >>> store.ensure_artifacts(["my_custom_artifact"])  # Just verifies existence
+        """
+
+        # validate artifact registry
+        validate_artifact_registry(artifact_registry)
+
+        # Determine which artifacts need creation
+        if overwrite:
+            to_create = artifact_names
+        else:
+            to_create = []
+            for name in artifact_names:
+                # Check if exists in store
+                in_napistu_data = name in self.list_napistu_datas()
+                in_vertex_tensors = name in self.list_vertex_tensors()
+                in_pandas_dfs = name in self.list_pandas_dfs()
+
+                if not (in_napistu_data or in_vertex_tensors or in_pandas_dfs):
+                    to_create.append(name)
+
+        if not to_create:
+            logger.info("All requested artifacts already exist in store")
+            return
+
+        logger.info(f"Need to create {len(to_create)} artifacts: {to_create}")
+
+        # Validate all artifacts to create are in registry
+        missing_from_registry = [
+            name for name in to_create if name not in artifact_registry
+        ]
+        if missing_from_registry:
+            available = sorted(artifact_registry.keys())
+            raise KeyError(
+                f"Cannot create artifacts not in registry: {missing_from_registry}. "
+                f"Available in registry: {available}. "
+                f"To use custom artifacts, save them to the store directly using "
+                f"save_napistu_data() or save_vertex_tensor() or save_pandas_df()."
+            )
+
+        # Load raw data ONCE (expensive operation)
+        logger.info("Loading SBML_dfs and NapistuGraph for artifact creation...")
+        sbml_dfs = self.load_sbml_dfs()
+        napistu_graph = self.load_napistu_graph()
+
+        # Create all missing artifacts
+        for name in to_create:
+            logger.info(f"Creating artifact: {name}")
+
+            artifact = create_artifact(
+                name, sbml_dfs, napistu_graph, artifact_registry=artifact_registry
+            )
+            definition = artifact_registry[name]
+
+            # Save based on type
+            if definition.artifact_type == ARTIFACT_TYPES.NAPISTU_DATA:
+                self.save_napistu_data(artifact, name=name, overwrite=overwrite)
+            elif definition.artifact_type == ARTIFACT_TYPES.VERTEX_TENSOR:
+                self.save_vertex_tensor(artifact, name=name, overwrite=overwrite)
+            elif definition.artifact_type == ARTIFACT_TYPES.PANDAS_DFS:
+                self.save_pandas_df(artifact, name=name, overwrite=overwrite)
+            else:
+                raise ValueError(f"Unknown artifact type: {definition.artifact_type}")
+
+            # Free memory
+            del artifact
+            logger.info(f"Successfully created and saved artifact: {name}")
+
+        # Free raw data
+        del sbml_dfs, napistu_graph
+        logger.info("Artifact creation complete")
+
+    def get_missing_artifacts(self, artifact_names: List[str]) -> List[str]:
+        """
+        Check which artifacts are missing from the store.
+
+        Parameters
+        ----------
+        artifact_names : List[str]
+            Names of artifacts to check
+
+        Returns
+        -------
+        List[str]
+            Names of artifacts that don't exist in store
+
+        Raises
+        ------
+        KeyError
+            If any artifact name is not in the registry
+
+        Examples
+        --------
+        >>> missing = store.get_missing_artifacts([
+        ...     "unsupervised",
+        ...     "edge_prediction",
+        ...     "custom_artifact"
+        ... ])
+        >>> print(missing)
+        ['edge_prediction']
+        """
+        from napistu_torch.load.artifacts import ARTIFACT_REGISTRY
+
+        missing = []
+        for name in artifact_names:
+            if name not in ARTIFACT_REGISTRY:
+                available = sorted(ARTIFACT_REGISTRY.keys())
+                raise KeyError(
+                    f"Unknown artifact: '{name}'. Available in registry: {available}"
+                )
+
+            definition = ARTIFACT_REGISTRY[name]
+
+            if definition.artifact_type == "napistu_data":
+                exists = name in self.list_napistu_datas()
+            elif definition.artifact_type == "vertex_tensor":
+                exists = name in self.list_vertex_tensors()
+            else:
+                raise ValueError(f"Unknown artifact type: {definition.artifact_type}")
+
+            if not exists:
+                missing.append(name)
+
+        return missing
+
+    @classmethod
+    def from_config(
+        cls,
+        config: DataConfig,
+    ) -> "NapistuDataStore":
+        """
+        Create or load a NapistuDataStore from a DataConfig.
+
+        Flow:
+        1. If store exists and not config.overwrite: load existing store
+        2. If store doesn't exist or config.overwrite: create new store
+        - Uses sbml_dfs_path and napistu_graph_path from config
+        - Copies to store if config.copy_to_store is True
+        3. Ensure required_artifacts exist (always, regardless of store creation)
+
+        Parameters
+        ----------
+        config : DataConfig
+            Configuration with store location, artifact paths, and requirements.
+            Must include sbml_dfs_path and napistu_graph_path.
+
+        Returns
+        -------
+        NapistuDataStore
+            Ready-to-use store with all required artifacts
+
+        Raises
+        ------
+        FileNotFoundError
+            If sbml_dfs_path or napistu_graph_path don't exist when creating new store
+
+        Examples
+        --------
+        >>> from napistu_torch.configs import DataConfig
+        >>> from pathlib import Path
+        >>>
+        >>> config = DataConfig(
+        ...     name="ecoli_experiment",
+        ...     store_dir=Path(".store/ecoli"),
+        ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
+        ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),
+        ...     copy_to_store=True,
+        ...     required_artifacts=["unsupervised", "edge_prediction"]
+        ... )
+        >>> store = NapistuDataStore.from_config(config)
+        """
+        store_dir = config.store_dir
+        registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
+
+        # Determine if we need to create or load the store
+        if registry_path.exists() and not config.overwrite:
+            # Store exists - load it
+            logger.info(f"Loading existing store from {store_dir}")
+            store = cls(store_dir)
+        else:
+            # Store doesn't exist or we're overwriting - create new store
+            logger.info(f"Creating new store at {store_dir}")
+
+            # Validate that paths exist
+            if not config.sbml_dfs_path.is_file():
+                raise FileNotFoundError(
+                    f"SBML_dfs file not found: {config.sbml_dfs_path}. "
+                    "Please provide a valid path in config.sbml_dfs_path"
+                )
+            if not config.napistu_graph_path.is_file():
+                raise FileNotFoundError(
+                    f"NapistuGraph file not found: {config.napistu_graph_path}. "
+                    "Please provide a valid path in config.napistu_graph_path"
+                )
+
+            # Create store
+            store = cls.create(
+                store_dir=store_dir,
+                sbml_dfs_path=config.sbml_dfs_path,
+                napistu_graph_path=config.napistu_graph_path,
+                copy_to_store=config.copy_to_store,
+                overwrite=config.overwrite,
+            )
+
+        # ALWAYS ensure required artifacts exist, regardless of whether
+        # we just created the store or loaded an existing one
+        if config.required_artifacts:
+            logger.info(
+                f"Ensuring required artifacts exist: {config.required_artifacts}"
+            )
+            store.ensure_artifacts(
+                config.required_artifacts, overwrite=config.overwrite
+            )
+
+        return store
+
     def list_napistu_datas(self) -> list[str]:
         """
         List all NapistuData names in the store.
@@ -249,7 +509,7 @@ class NapistuDataStore:
         Returns
         -------
         list[str]
-            List of NapistuData names in the store
+        List of NapistuData names in the store
         """
         return list(self.registry[NAPISTU_DATA_STORE.NAPISTU_DATA].keys())
 
@@ -376,7 +636,7 @@ class NapistuDataStore:
         logger.info(f"Loading VertexTensor from {filepath}")
         return VertexTensor.load(filepath, map_location=map_location)
 
-    def pd_load(self, name: str) -> pd.DataFrame:
+    def load_pandas_df(self, name: str) -> pd.DataFrame:
         """
         Load a pandas DataFrame from the store.
 
@@ -543,7 +803,7 @@ class NapistuDataStore:
         self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS][name] = entry
         self._save_registry()
 
-    def pd_save(
+    def save_pandas_df(
         self,
         df: pd.DataFrame,
         name: str,

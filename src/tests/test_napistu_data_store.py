@@ -9,6 +9,7 @@ import pytest
 import torch
 
 from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_STORE, VERTEX_TENSOR
+from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.napistu_data_store import NapistuDataStore
 
 
@@ -27,6 +28,31 @@ def temp_napistu_data_store():
         # Create empty files to satisfy the file existence check
         sbml_dfs_path.touch()
         napistu_graph_path.touch()
+
+        # Create the store
+        store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            sbml_dfs_path=sbml_dfs_path,
+            napistu_graph_path=napistu_graph_path,
+            copy_to_store=False,
+        )
+
+        yield store
+
+
+@pytest.fixture(scope="function")
+def temp_napistu_data_store_with_real_data(sbml_dfs, napistu_graph):
+    """Create a temporary NapistuDataStore with real SBML_dfs and NapistuGraph data.
+
+    This fixture is used for testing ensure_artifacts which needs actual data.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create real pickle files
+        sbml_dfs_path = Path(temp_dir) / "sbml_dfs.pkl"
+        napistu_graph_path = Path(temp_dir) / "napistu_graph.pkl"
+
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
 
         # Create the store
         store = NapistuDataStore.create(
@@ -305,7 +331,9 @@ def test_summary(
     temp_napistu_data_store.save_vertex_tensor(
         comprehensive_source_membership, name="test_tensor", overwrite=True
     )
-    temp_napistu_data_store.pd_save(test_dataframe_with_nans, "test_df", overwrite=True)
+    temp_napistu_data_store.save_pandas_df(
+        test_dataframe_with_nans, "test_df", overwrite=True
+    )
 
     # Check updated summary
     summary = temp_napistu_data_store.summary()
@@ -323,10 +351,10 @@ def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
     df_name = "test_nan_data"
 
     # Save DataFrame
-    temp_napistu_data_store.pd_save(df, df_name, overwrite=True)
+    temp_napistu_data_store.save_pandas_df(df, df_name, overwrite=True)
 
     # Load and verify data integrity
-    loaded_df = temp_napistu_data_store.pd_load(df_name)
+    loaded_df = temp_napistu_data_store.load_pandas_df(df_name)
     pd.testing.assert_frame_equal(df, loaded_df, check_dtype=False)
 
     # Test listing
@@ -334,4 +362,124 @@ def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
 
     # Test loading missing entry
     with pytest.raises(KeyError, match="not found in registry"):
-        temp_napistu_data_store.pd_load("missing_df")
+        temp_napistu_data_store.load_pandas_df("missing_df")
+
+
+# Tests for ensure_artifacts
+def test_ensure_artifacts_comprehensive(
+    temp_napistu_data_store_with_real_data,
+    napistu_graph,
+):
+    """Comprehensive test for ensure_artifacts functionality.
+
+    Tests:
+    1. Creating missing NapistuData artifact (unsupervised)
+    2. Creating multiple missing artifacts in one call (edge_prediction, comprehensive_pathway_memberships, composite_edge_strata)
+    3. Skipping existing artifacts when overwrite=False
+    4. Overwriting existing artifacts when overwrite=True
+    """
+
+    store = temp_napistu_data_store_with_real_data
+
+    # Test 1: Create single NapistuData artifact (unsupervised)
+    store.ensure_artifacts(["unsupervised"], overwrite=False)
+    assert "unsupervised" in store.list_napistu_datas()
+
+    # Load and verify it's usable
+    unsupervised_data = store.load_napistu_data("unsupervised")
+    assert unsupervised_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
+    assert unsupervised_data.x.shape[0] == napistu_graph.vcount()
+
+    # Test 2 & 3 & 4: Create multiple artifacts of different types
+    store.ensure_artifacts(
+        [
+            "edge_prediction",
+            "comprehensive_pathway_memberships",
+            "composite_edge_strata",
+        ],
+        overwrite=False,
+    )
+
+    # Verify all were created
+    assert "edge_prediction" in store.list_napistu_datas()
+    assert "comprehensive_pathway_memberships" in store.list_vertex_tensors()
+    assert "composite_edge_strata" in store.list_pandas_dfs()
+
+    # Test 5: Loading and verifying data integrity
+    edge_pred = store.load_napistu_data("edge_prediction")
+    assert edge_pred.splitting_strategy == SPLITTING_STRATEGIES.EDGE_MASK
+
+    pathway_membership = store.load_vertex_tensor("comprehensive_pathway_memberships")
+    assert pathway_membership.data.shape[0] == napistu_graph.vcount()
+
+    edge_strata = store.load_pandas_df("composite_edge_strata")
+    assert len(edge_strata) == napistu_graph.ecount()
+
+    # Test 6: Skipping existing artifacts (should not recreate)
+    initial_napistu_data_count = len(store.list_napistu_datas())
+    store.ensure_artifacts(["unsupervised"], overwrite=False)
+    assert len(store.list_napistu_datas()) == initial_napistu_data_count
+
+    # Test 7: Overwriting existing artifact
+    store.ensure_artifacts(["unsupervised"], overwrite=True)
+    # Should still have same count but artifact was recreated
+    assert len(store.list_napistu_datas()) == initial_napistu_data_count
+
+
+def test_ensure_artifacts_error_handling(temp_napistu_data_store_with_real_data):
+    """Test error handling in ensure_artifacts.
+
+    Tests:
+    1. Raises KeyError on unknown artifact name
+    2. Raises ValueError on invalid artifact registry
+    """
+    store = temp_napistu_data_store_with_real_data
+
+    # Test 1: Unknown artifact name
+    with pytest.raises(KeyError, match="Cannot create artifacts not in registry"):
+        store.ensure_artifacts(["unknown_artifact_name"], overwrite=False)
+
+    # Test 2: Invalid registry (empty dict)
+
+    with pytest.raises(ValueError, match="cannot be empty"):
+        store.ensure_artifacts(["unsupervised"], artifact_registry={}, overwrite=False)
+
+
+def test_ensure_artifacts_with_custom_registry(
+    temp_napistu_data_store_with_real_data, sbml_dfs, napistu_graph
+):
+    """Test ensure_artifacts with a custom artifact registry."""
+    store = temp_napistu_data_store_with_real_data
+
+    # Import required classes
+    from napistu_torch.constants import ARTIFACT_TYPES
+    from napistu_torch.load.artifacts import ArtifactDefinition
+    from napistu_torch.load.constants import SPLITTING_STRATEGIES
+    from napistu_torch.load.napistu_graphs import construct_unsupervised_pyg_data
+
+    # Create a minimal custom registry with just one artifact
+    def custom_unsupervised(sbml_dfs, napistu_graph):
+        return construct_unsupervised_pyg_data(
+            sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
+        )
+
+    custom_registry = {
+        "custom_unsupervised": ArtifactDefinition(
+            name="custom_unsupervised",
+            artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
+            creation_func=custom_unsupervised,
+            description="Custom unsupervised data",
+        )
+    }
+
+    # Use custom registry
+    store.ensure_artifacts(
+        ["custom_unsupervised"], artifact_registry=custom_registry, overwrite=False
+    )
+
+    # Verify it was created
+    assert "custom_unsupervised" in store.list_napistu_datas()
+
+    # Verify it can be loaded
+    custom_data = store.load_napistu_data("custom_unsupervised")
+    assert custom_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
