@@ -7,6 +7,15 @@ from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
 )
 
+# artifact defs
+
+ARTIFACT_DEFS = SimpleNamespace(
+    NAME="name",
+    ARTIFACT_TYPE="artifact_type",
+    CREATION_FUNC="creation_func",
+    DESCRIPTION="description",
+)
+
 # transformation defs
 
 ENCODING_MANAGER = SimpleNamespace(

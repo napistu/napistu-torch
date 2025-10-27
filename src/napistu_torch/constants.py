@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+ARTIFACT_TYPES = SimpleNamespace(
+    NAPISTU_DATA="napistu_data",
+    VERTEX_TENSOR="vertex_tensor",
+    PANDAS_DFS="pandas_dfs",
+)
+
+VALID_ARTIFACT_TYPES = list(ARTIFACT_TYPES.__dict__.values())
+
 NAPISTU_DATA = SimpleNamespace(
     EDGE_ATTR="edge_attr",
     EDGE_FEATURE_NAMES="edge_feature_names",
