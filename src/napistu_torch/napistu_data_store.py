@@ -1,6 +1,7 @@
 import json
 import logging
 import shutil
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Union
@@ -15,6 +16,7 @@ from napistu_torch.constants import (
     NAPISTU_DATA,
     NAPISTU_DATA_STORE,
     NAPISTU_DATA_STORE_STRUCTURE,
+    VALID_ARTIFACT_TYPES,
     VERTEX_TENSOR,
 )
 from napistu_torch.load.artifacts import (
@@ -54,6 +56,12 @@ class NapistuDataStore:
     --------------
     create(store_dir, sbml_dfs_path, napistu_graph_path, copy_to_store=False, overwrite=False)
         Create a new NapistuDataStore
+    ensure_artifacts(artifact_names, artifact_registry=DEFAULT_ARTIFACT_REGISTRY, overwrite=False)
+        Ensure specified artifacts exist in the store, creating if missing.
+    get_missing_artifacts(artifact_names)
+        Check which artifacts are missing from the store.
+    from_config(config)
+        Create or load a NapistuDataStore from a DataConfig.
     list_napistu_datas()
         List all NapistuData names in the store
     list_vertex_tensors()
@@ -358,7 +366,11 @@ class NapistuDataStore:
         del sbml_dfs, napistu_graph
         logger.info("Artifact creation complete")
 
-    def get_missing_artifacts(self, artifact_names: List[str]) -> List[str]:
+    def get_missing_artifacts(
+        self,
+        artifact_names: List[str],
+        artifact_registry: Dict[str, ArtifactDefinition] = DEFAULT_ARTIFACT_REGISTRY,
+    ) -> List[str]:
         """
         Check which artifacts are missing from the store.
 
@@ -366,6 +378,8 @@ class NapistuDataStore:
         ----------
         artifact_names : List[str]
             Names of artifacts to check
+        artifact_registry : Dict[str, ArtifactDefinition], default=DEFAULT_ARTIFACT_REGISTRY
+            Registry of artifact definitions
 
         Returns
         -------
@@ -387,24 +401,17 @@ class NapistuDataStore:
         >>> print(missing)
         ['edge_prediction']
         """
-        from napistu_torch.load.artifacts import ARTIFACT_REGISTRY
 
         missing = []
         for name in artifact_names:
-            if name not in ARTIFACT_REGISTRY:
-                available = sorted(ARTIFACT_REGISTRY.keys())
+            if name not in artifact_registry:
+                available = sorted(artifact_registry.keys())
                 raise KeyError(
                     f"Unknown artifact: '{name}'. Available in registry: {available}"
                 )
 
-            definition = ARTIFACT_REGISTRY[name]
-
-            if definition.artifact_type == "napistu_data":
-                exists = name in self.list_napistu_datas()
-            elif definition.artifact_type == "vertex_tensor":
-                exists = name in self.list_vertex_tensors()
-            else:
-                raise ValueError(f"Unknown artifact type: {definition.artifact_type}")
+            definition = artifact_registry[name]
+            exists = name in self.list_artifacts(definition.artifact_type)
 
             if not exists:
                 missing.append(name)
@@ -502,6 +509,39 @@ class NapistuDataStore:
 
         return store
 
+    def list_artifacts(self, artifact_type: Optional[str] = None) -> list[str]:
+        """
+        List all artifact names in the store.
+
+        Parameters
+        ----------
+        artifact_type : Optional[str], default=None
+            Type of artifact to list. If not provided, all artifact types will be listed.
+
+        Returns
+        -------
+        list[str]
+            List of artifact names in the store
+        """
+
+        napistu_datas = self.list_napistu_datas()
+        vertex_tensors = self.list_vertex_tensors()
+        pandas_dfs = self.list_pandas_dfs()
+
+        if artifact_type is None:
+            # flag duplicates across 2 or more sets
+            self._validate_no_duplicate_names(raise_error=False)
+            return set(napistu_datas + vertex_tensors + pandas_dfs)
+        else:
+            if artifact_type == ARTIFACT_TYPES.NAPISTU_DATA:
+                return napistu_datas
+            elif artifact_type == ARTIFACT_TYPES.VERTEX_TENSOR:
+                return vertex_tensors
+            elif artifact_type == ARTIFACT_TYPES.PANDAS_DFS:
+                return pandas_dfs
+            else:
+                raise ValueError(f"Invalid artifact type: {artifact_type}")
+
     def list_napistu_datas(self) -> list[str]:
         """
         List all NapistuData names in the store.
@@ -535,12 +575,37 @@ class NapistuDataStore:
         """
         return list(self.registry[NAPISTU_DATA_STORE.PANDAS_DFS].keys())
 
-    def load_sbml_dfs(self) -> SBML_dfs:
-        """Load the SBML_dfs from disk."""
-        if self.sbml_dfs_path.is_file():
-            return SBML_dfs.from_pickle(self.sbml_dfs_path)
+    def load_artifact(
+        self, name: str, artifact_type: str
+    ) -> Union[NapistuData, VertexTensor, pd.DataFrame]:
+        """
+        Load an artifact from the store.
+
+        Parameters
+        ----------
+        name : str
+            Name of the artifact to load
+        artifact_type : str
+            Type of the artifact to load
+
+        Returns
+        -------
+        Union[NapistuData, VertexTensor, pd.DataFrame]
+            The loaded artifact
+
+        Raises
+        ------
+        ValueError
+            If invalid artifact type
+        """
+        if artifact_type == ARTIFACT_TYPES.NAPISTU_DATA:
+            return self.load_napistu_data(name)
+        elif artifact_type == ARTIFACT_TYPES.VERTEX_TENSOR:
+            return self.load_vertex_tensor(name)
+        elif artifact_type == ARTIFACT_TYPES.PANDAS_DFS:
+            return self.load_pandas_df(name)
         else:
-            raise FileNotFoundError(f"SBML_dfs file not found: {self.sbml_dfs_path}")
+            raise ValueError(f"Invalid artifact type: {artifact_type}")
 
     def load_napistu_data(
         self, name: str, map_location: str = DEVICE.CPU
@@ -591,6 +656,13 @@ class NapistuDataStore:
             raise FileNotFoundError(
                 f"NapistuGraph file not found: {self.napistu_graph_path}"
             )
+
+    def load_sbml_dfs(self) -> SBML_dfs:
+        """Load the SBML_dfs from disk."""
+        if self.sbml_dfs_path.is_file():
+            return SBML_dfs.from_pickle(self.sbml_dfs_path)
+        else:
+            raise FileNotFoundError(f"SBML_dfs file not found: {self.sbml_dfs_path}")
 
     def load_vertex_tensor(
         self, name: str, map_location: str = DEVICE.CPU
@@ -877,6 +949,87 @@ class NapistuDataStore:
             "last_modified": self.registry.get(NAPISTU_DATA_STORE.LAST_MODIFIED),
         }
 
+    def validate(self) -> None:
+        """
+        Validate the store contents.
+        """
+        self._validate_no_duplicate_names(raise_error=False)
+
+    def validate_artifact_name(
+        self,
+        name: str,
+        artifact_registry: Dict[str, ArtifactDefinition] = DEFAULT_ARTIFACT_REGISTRY,
+        required_type: Optional[str] = None,
+    ) -> None:
+        """
+        Validate an artifact name by ensuring that it is either already in the store or available from the registry
+
+        Parameters
+        ----------
+        name : str
+            Name of artifact to validate
+        artifact_registry : Dict[str, ArtifactDefinition], default=DEFAULT_ARTIFACT_REGISTRY
+            Registry of artifact definitions
+        required_type : Optional[str], default=None
+            Type of artifact that is required. If not provided, any type is allowed.
+
+        Raises
+        ------
+        KeyError
+            If artifact is not in store and not in registry
+        """
+
+        if required_type is not None:
+            if required_type not in VALID_ARTIFACT_TYPES:
+                raise ValueError(
+                    f"Invalid 'required_type' value ({required_type}). This must be one of: {VALID_ARTIFACT_TYPES}"
+                )
+
+            existing_w_valid_type = self.list_artifacts(required_type)
+            if name in existing_w_valid_type:
+                # existing name of the correct type
+                return None
+
+        # Check if already in store
+        in_store = name in self.list_artifacts()
+        if in_store:
+            if required_type is not None:
+                raise KeyError(
+                    f"Artifact '{name}' already exists in store but is not of type {required_type}"
+                )
+            else:
+                return None
+
+        # Not in store - check if we can create it
+        in_registry = name in artifact_registry
+
+        if not in_registry:
+            # Not in store and not in registry
+            available_in_store = self.list_artifacts(required_type)
+            available_in_registry = [
+                name
+                for name, defn in artifact_registry.items()
+                if defn.artifact_type == required_type
+            ]
+            required_type_str = (
+                required_type if required_type is not None else "any type"
+            )
+
+            raise ValueError(
+                f"An artifact of type {required_type_str} named '{name}' was not found.\n"
+                f"Available in store: {available_in_store}\n"
+                f"Available from registry: {available_in_registry}\n"
+                f"To add a custom artifact, save it to the store first using "
+                f"store.save_napistu_data(), store.save_vertex_tensor(), or store.save_pandas_df()."
+            )
+
+        # In registry - check it's the right type
+        artifact_def = artifact_registry[name]
+        if required_type is not None and artifact_def.artifact_type != required_type:
+            raise KeyError(
+                f"Artifact '{name}' is a {artifact_def.artifact_type}, not a {required_type}"
+            )
+
     def _load_registry(self) -> dict:
         """Load the registry from disk."""
         with open(self.registry_path, "r") as f:
@@ -888,6 +1041,31 @@ class NapistuDataStore:
 
         with open(self.registry_path, "w") as f:
             json.dump(self.registry, f, indent=2)
+
+    def _validate_no_duplicate_names(self, raise_error: bool = True) -> None:
+        """Check for duplicate names across artifact types and warn if found."""
+        name_to_types = defaultdict(list)
+
+        for name in self.list_napistu_datas():
+            name_to_types[name].append(ARTIFACT_TYPES.NAPISTU_DATA)
+        for name in self.list_vertex_tensors():
+            name_to_types[name].append(ARTIFACT_TYPES.VERTEX_TENSOR)
+        for name in self.list_pandas_dfs():
+            name_to_types[name].append(ARTIFACT_TYPES.PANDAS_DFS)
+
+        duplicates = {
+            name: types for name, types in name_to_types.items() if len(types) > 1
+        }
+
+        if duplicates:
+            msg = "Duplicate artifact names found:\n" + "\n".join(
+                f"  - '{name}' in {types}" for name, types in sorted(duplicates.items())
+            )
+
+            if raise_error:
+                raise ValueError(msg)
+            else:
+                logger.warning(msg)
 
 
 # private functions

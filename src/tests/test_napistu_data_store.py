@@ -1,5 +1,6 @@
 """Tests for NapistuDataStore functionality."""
 
+import logging
 import tempfile
 from pathlib import Path
 
@@ -8,7 +9,12 @@ import pandas as pd
 import pytest
 import torch
 
-from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_STORE, VERTEX_TENSOR
+from napistu_torch.constants import (
+    ARTIFACT_TYPES,
+    NAPISTU_DATA,
+    NAPISTU_DATA_STORE,
+    VERTEX_TENSOR,
+)
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.napistu_data_store import NapistuDataStore
 
@@ -483,3 +489,125 @@ def test_ensure_artifacts_with_custom_registry(
     # Verify it can be loaded
     custom_data = store.load_napistu_data("custom_unsupervised")
     assert custom_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
+
+
+def test_validate_store(
+    temp_napistu_data_store,
+    supervised_napistu_data,
+    comprehensive_source_membership,
+    test_dataframe_with_nans,
+    caplog,
+):
+    """Test store validation method."""
+    store = temp_napistu_data_store
+
+    # Empty store should validate fine
+    store.validate()
+
+    # Add some artifacts with different names - should still validate
+    store.save_napistu_data(supervised_napistu_data)
+    store.save_vertex_tensor(comprehensive_source_membership, name="test_tensor")
+    store.save_pandas_df(test_dataframe_with_nans, "test_df")
+
+    store.validate()  # Should pass
+
+    # Test name conflict - should just log a warning, not raise an error
+    store.save_vertex_tensor(comprehensive_source_membership, name="test_df")
+
+    # Should log a warning but not raise an error - capture logger output
+    with caplog.at_level(logging.WARNING):
+        store.validate()
+        assert "Duplicate artifact names found" in caplog.text
+
+
+def test_validate_artifact_name(temp_napistu_data_store, supervised_napistu_data):
+    """Test artifact name validation method."""
+    store = temp_napistu_data_store
+
+    # Test 1: Valid artifact name from registry (not in store)
+    store.validate_artifact_name("unsupervised")  # Should pass
+
+    # Test 2: Valid artifact name with required type
+    store.validate_artifact_name(
+        "unsupervised", required_type=ARTIFACT_TYPES.NAPISTU_DATA
+    )  # Should pass
+
+    # Test 3: Invalid artifact name (not in registry)
+    with pytest.raises(ValueError, match="was not found"):
+        store.validate_artifact_name("nonexistent_artifact")
+
+    # Test 4: Wrong type requirement
+    with pytest.raises(KeyError, match="is a napistu_data, not a vertex_tensor"):
+        store.validate_artifact_name(
+            "unsupervised", required_type=ARTIFACT_TYPES.VERTEX_TENSOR
+        )
+
+    # Test 5: Artifact already in store
+    store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    store.validate_artifact_name(supervised_napistu_data.name)  # Should pass
+
+    # Test 6: Artifact in store but wrong type requirement
+    with pytest.raises(KeyError, match="already exists in store but is not of type"):
+        store.validate_artifact_name(
+            supervised_napistu_data.name, required_type=ARTIFACT_TYPES.VERTEX_TENSOR
+        )
+
+
+def test_list_artifacts(
+    temp_napistu_data_store,
+    supervised_napistu_data,
+    unsupervised_napistu_data,
+    comprehensive_source_membership,
+    test_dataframe_with_nans,
+):
+    """Test list_artifacts method."""
+    store = temp_napistu_data_store
+
+    # Initially empty
+    all_artifacts = store.list_artifacts()
+    assert all_artifacts == set()
+
+    # List specific types when empty
+    assert store.list_artifacts(ARTIFACT_TYPES.NAPISTU_DATA) == []
+    assert store.list_artifacts(ARTIFACT_TYPES.VERTEX_TENSOR) == []
+    assert store.list_artifacts(ARTIFACT_TYPES.PANDAS_DFS) == []
+
+    # Add NapistuData
+    store.save_napistu_data(supervised_napistu_data)
+    assert supervised_napistu_data.name in store.list_artifacts(
+        ARTIFACT_TYPES.NAPISTU_DATA
+    )
+    assert supervised_napistu_data.name in store.list_artifacts()  # All artifacts
+
+    # Add another NapistuData
+    store.save_napistu_data(unsupervised_napistu_data)
+    napistu_datas = store.list_artifacts(ARTIFACT_TYPES.NAPISTU_DATA)
+    assert supervised_napistu_data.name in napistu_datas
+    assert unsupervised_napistu_data.name in napistu_datas
+    assert len(napistu_datas) == 2
+
+    # Add VertexTensor
+    store.save_vertex_tensor(comprehensive_source_membership, name="test_tensor")
+    vertex_tensors = store.list_artifacts(ARTIFACT_TYPES.VERTEX_TENSOR)
+    assert "test_tensor" in vertex_tensors
+    assert len(vertex_tensors) == 1
+
+    # Add pandas DataFrame
+    store.save_pandas_df(test_dataframe_with_nans, "test_df")
+    pandas_dfs = store.list_artifacts(ARTIFACT_TYPES.PANDAS_DFS)
+    assert "test_df" in pandas_dfs
+    assert len(pandas_dfs) == 1
+
+    # Check all artifacts together
+    all_artifacts = store.list_artifacts()
+    assert (
+        len(all_artifacts) == 4
+    )  # 2 NapistuData + 1 VertexTensor + 1 pandas DataFrame
+    assert supervised_napistu_data.name in all_artifacts
+    assert unsupervised_napistu_data.name in all_artifacts
+    assert "test_tensor" in all_artifacts
+    assert "test_df" in all_artifacts
+
+    # Test invalid artifact type
+    with pytest.raises(ValueError, match="Invalid artifact type"):
+        store.list_artifacts("invalid_type")
