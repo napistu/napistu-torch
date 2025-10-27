@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
+import pandas as pd
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
@@ -34,8 +35,10 @@ class NapistuDataStore:
     │   └── napistu_graph.pkl   # (optional copy)
     ├── napistu_data/           # organizes NapistuData objects
     |   └── (NapistuData .pt files)
-    └── vertex_tensors/          # organizes VertexTensor objects
-        └── (VertexTensor .pt files)
+    ├── vertex_tensors/          # organizes VertexTensor objects
+    │   └── (VertexTensor .pt files)
+    └── pandas_dfs/             # organizes pandas DataFrames
+        └── (DataFrame .parquet files)
 
     Each store manages objects for a single biological network.
 
@@ -47,6 +50,8 @@ class NapistuDataStore:
         List all NapistuData names in the store
     list_vertex_tensors()
         List all VertexTensor names in the store
+    list_pandas_dfs()
+        List all pandas DataFrame names in the store
     load_sbml_dfs()
         Load the SBML_dfs from disk
     load_napistu_data(name, map_location="cpu")
@@ -55,10 +60,14 @@ class NapistuDataStore:
         Load the NapistuGraph from disk
     load_vertex_tensor(name, map_location="cpu")
         Load a VertexTensor from the store
+    pd_load(name)
+        Load a pandas DataFrame from the store
     save_napistu_data(napistu_data, name=None, overwrite=False)
         Save a NapistuData object to the store
     save_vertex_tensor(vertex_tensor, name=None, overwrite=False)
         Save a VertexTensor to the store
+    pd_save(dataframe, name=None, overwrite=False)
+        Save a pandas DataFrame to the store
     summary()
         Get a summary of the store contents
 
@@ -87,7 +96,7 @@ class NapistuDataStore:
         Examples
         --------
         >>> # Load an existing store
-        >>> store = NapistuDataStore('./stores/ecoli')
+        >>> store = NapistuDataStore('.store')
         """
         self.store_dir = Path(store_dir)
         self.registry_path = self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
@@ -177,6 +186,8 @@ class NapistuDataStore:
         napistu_data_dir.mkdir(exist_ok=True)
         vertex_tensors_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.VERTEX_TENSORS
         vertex_tensors_dir.mkdir(exist_ok=True)
+        pandas_dfs_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS
+        pandas_dfs_dir.mkdir(exist_ok=True)
         if copy_to_store:
             napistu_raw_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_RAW
             napistu_raw_dir.mkdir(exist_ok=True)
@@ -220,6 +231,7 @@ class NapistuDataStore:
             NAPISTU_DATA_STORE.NAPISTU_RAW: napistu_entry,
             NAPISTU_DATA_STORE.NAPISTU_DATA: {},
             NAPISTU_DATA_STORE.VERTEX_TENSORS: {},
+            NAPISTU_DATA_STORE.PANDAS_DFS: {},
         }
 
         # Save registry
@@ -251,6 +263,17 @@ class NapistuDataStore:
             List of VertexTensor names in the store
         """
         return list(self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS].keys())
+
+    def list_pandas_dfs(self) -> list[str]:
+        """
+        List all pandas DataFrame names in the store.
+
+        Returns
+        -------
+        list[str]
+            List of pandas DataFrame names in the store
+        """
+        return list(self.registry[NAPISTU_DATA_STORE.PANDAS_DFS].keys())
 
     def load_sbml_dfs(self) -> SBML_dfs:
         """Load the SBML_dfs from disk."""
@@ -352,6 +375,43 @@ class NapistuDataStore:
         # Load and return
         logger.info(f"Loading VertexTensor from {filepath}")
         return VertexTensor.load(filepath, map_location=map_location)
+
+    def pd_load(self, name: str) -> pd.DataFrame:
+        """
+        Load a pandas DataFrame from the store.
+
+        Parameters
+        ----------
+        name : str
+            Name of the pandas DataFrame to load
+
+        Returns
+        -------
+        pd.DataFrame
+            The loaded pandas DataFrame
+
+        Raises
+        ------
+        KeyError
+            If name not found in registry
+        FileNotFoundError
+            If the .parquet file doesn't exist
+        """
+        # Check if name exists in registry
+        if name not in self.registry[NAPISTU_DATA_STORE.PANDAS_DFS]:
+            raise KeyError(
+                f"pandas DataFrame '{name}' not found in registry. "
+                f"Available: {list(self.registry[NAPISTU_DATA_STORE.PANDAS_DFS].keys())}"
+            )
+
+        # Get filename from registry
+        entry = self.registry[NAPISTU_DATA_STORE.PANDAS_DFS][name]
+        filename = entry[NAPISTU_DATA_STORE.FILENAME]
+        filepath = self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS / filename
+
+        # Load and return
+        logger.info(f"Loading pandas DataFrame from {filepath}")
+        return pd.read_parquet(filepath)
 
     def save_napistu_data(
         self,
@@ -483,6 +543,58 @@ class NapistuDataStore:
         self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS][name] = entry
         self._save_registry()
 
+    def pd_save(
+        self,
+        df: pd.DataFrame,
+        name: str,
+        overwrite: bool = False,
+    ) -> None:
+        """
+        Save a pandas DataFrame to the store.
+
+        Parameters
+        ----------
+        dataframe : pd.DataFrame
+            The pandas DataFrame to save
+        name : str
+            Name for storage (registry key and filename stem).
+        overwrite : bool, default=False
+            If True, overwrite existing entry with same name
+            If False, raise FileExistsError if name already exists
+
+        Raises
+        ------
+        FileExistsError
+            If name already exists in registry and overwrite=False
+        """
+        # Check if name already exists
+        if name in self.registry[NAPISTU_DATA_STORE.PANDAS_DFS] and not overwrite:
+            raise FileExistsError(
+                f"pandas DataFrame '{name}' already exists in registry. "
+                f"Use overwrite=True to replace it."
+            )
+
+        # Save the pandas DataFrame
+        pandas_dfs_dir = self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS
+        pandas_dfs_dir.mkdir(exist_ok=True)
+        filename = NAPISTU_DATA_STORE.PARQUET_TEMPLATE.format(name=name)
+        filepath = pandas_dfs_dir / filename
+
+        logger.info(f"Saving pandas DataFrame to {filepath}")
+        df.to_parquet(filepath)
+
+        # Create registry entry
+        entry = {
+            NAPISTU_DATA_STORE.FILENAME: filename,
+            NAPISTU_DATA_STORE.CREATED: datetime.now().isoformat(),
+            "shape": df.shape,
+            "columns": list(df.columns),
+        }
+
+        # Update registry
+        self.registry[NAPISTU_DATA_STORE.PANDAS_DFS][name] = entry
+        self._save_registry()
+
     def summary(self) -> dict:
         """
         Get a summary of the store contents.
@@ -498,8 +610,10 @@ class NapistuDataStore:
             "vertex_tensors_count": len(
                 self.registry[NAPISTU_DATA_STORE.VERTEX_TENSORS]
             ),
+            "pandas_dfs_count": len(self.registry[NAPISTU_DATA_STORE.PANDAS_DFS]),
             "napistu_data_names": self.list_napistu_datas(),
             "vertex_tensor_names": self.list_vertex_tensors(),
+            "pandas_df_names": self.list_pandas_dfs(),
             "last_modified": self.registry.get(NAPISTU_DATA_STORE.LAST_MODIFIED),
         }
 

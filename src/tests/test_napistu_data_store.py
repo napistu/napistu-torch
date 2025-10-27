@@ -3,6 +3,8 @@
 import tempfile
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -35,6 +37,20 @@ def temp_napistu_data_store():
         )
 
         yield store
+
+
+@pytest.fixture(scope="function")
+def test_dataframe_with_nans():
+    """Create a test pandas DataFrame with NaN values for testing."""
+    return pd.DataFrame(
+        {
+            "gene_id": ["GENE1", "GENE2", "GENE3", "GENE4"],
+            "expression": [1.5, 2.3, np.nan, 3.1],
+            "p_value": [0.01, pd.NA, 0.1, 0.001],
+            "log_fold_change": [0.5, 1.2, -0.3, pd.NA],
+            "significant": [True, True, False, True],
+        }
+    )
 
 
 def _verify_napistu_data_equality(original, loaded):
@@ -267,15 +283,20 @@ def test_list_vertex_tensors(temp_napistu_data_store, comprehensive_source_membe
 
 
 def test_summary(
-    temp_napistu_data_store, supervised_napistu_data, comprehensive_source_membership
+    temp_napistu_data_store,
+    supervised_napistu_data,
+    comprehensive_source_membership,
+    test_dataframe_with_nans,
 ):
     """Test store summary method."""
     # Initially empty
     summary = temp_napistu_data_store.summary()
     assert summary["napistu_data_count"] == 0
     assert summary["vertex_tensors_count"] == 0
+    assert summary["pandas_dfs_count"] == 0
     assert summary["napistu_data_names"] == []
     assert summary["vertex_tensor_names"] == []
+    assert summary["pandas_df_names"] == []
     assert "store_dir" in summary
     assert "last_modified" in summary
 
@@ -284,10 +305,33 @@ def test_summary(
     temp_napistu_data_store.save_vertex_tensor(
         comprehensive_source_membership, name="test_tensor", overwrite=True
     )
+    temp_napistu_data_store.pd_save(test_dataframe_with_nans, "test_df", overwrite=True)
 
     # Check updated summary
     summary = temp_napistu_data_store.summary()
     assert summary["napistu_data_count"] == 1
     assert summary["vertex_tensors_count"] == 1
+    assert summary["pandas_dfs_count"] == 1
     assert supervised_napistu_data.name in summary["napistu_data_names"]
     assert "test_tensor" in summary["vertex_tensor_names"]
+    assert "test_df" in summary["pandas_df_names"]
+
+
+def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
+    """Test pandas DataFrame save/load round-trip, listing, and error handling."""
+    df = test_dataframe_with_nans
+    df_name = "test_nan_data"
+
+    # Save DataFrame
+    temp_napistu_data_store.pd_save(df, df_name, overwrite=True)
+
+    # Load and verify data integrity
+    loaded_df = temp_napistu_data_store.pd_load(df_name)
+    pd.testing.assert_frame_equal(df, loaded_df, check_dtype=False)
+
+    # Test listing
+    assert df_name in temp_napistu_data_store.list_pandas_dfs()
+
+    # Test loading missing entry
+    with pytest.raises(KeyError, match="not found in registry"):
+        temp_napistu_data_store.pd_load("missing_df")

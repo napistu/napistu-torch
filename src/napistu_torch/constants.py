@@ -33,6 +33,7 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     NAPISTU_RAW="napistu_raw",
     NAPISTU_DATA="napistu_data",
     VERTEX_TENSORS="vertex_tensors",
+    PANDAS_DFS="pandas_dfs",
     # attributes
     SBML_DFS="sbml_dfs",
     NAPISTU_GRAPH="napistu_graph",
@@ -42,6 +43,7 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     CREATED="created",
     FILENAME="filename",
     PT_TEMPLATE="{name}.pt",
+    PARQUET_TEMPLATE="{name}.parquet",
 )
 
 NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
@@ -50,6 +52,7 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     NAPISTU_RAW=NAPISTU_DATA_STORE.NAPISTU_RAW,
     NAPISTU_DATA=NAPISTU_DATA_STORE.NAPISTU_DATA,
     VERTEX_TENSORS=NAPISTU_DATA_STORE.VERTEX_TENSORS,
+    PANDAS_DFS=NAPISTU_DATA_STORE.PANDAS_DFS,
 )
 
 TASKS = SimpleNamespace(
