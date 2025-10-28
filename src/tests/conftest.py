@@ -43,7 +43,9 @@ logging.getLogger("napistu.utils").setLevel(logging.ERROR)
 def pytest_configure(config):
     config.addinivalue_line("markers", "skip_on_windows: mark test to skip on Windows")
     config.addinivalue_line("markers", "skip_on_macos: mark test to skip on macOS")
-    config.addinivalue_line("unix_only: mark test to run only on Unix/Linux systems")
+    config.addinivalue_line(
+        "markers", "unix_only: mark test to run only on Unix/Linux systems"
+    )
 
 
 # Define platform conditions
