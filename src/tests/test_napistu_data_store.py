@@ -379,6 +379,7 @@ def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
 
 
 # Tests for ensure_artifacts
+@pytest.mark.skip_on_windows
 def test_ensure_artifacts_comprehensive(
     temp_napistu_data_store_with_real_data,
     napistu_graph,
@@ -439,6 +440,7 @@ def test_ensure_artifacts_comprehensive(
     assert len(store.list_napistu_datas()) == initial_napistu_data_count
 
 
+@pytest.mark.skip_on_windows
 def test_ensure_artifacts_error_handling(temp_napistu_data_store_with_real_data):
     """Test error handling in ensure_artifacts.
 
@@ -458,6 +460,7 @@ def test_ensure_artifacts_error_handling(temp_napistu_data_store_with_real_data)
         store.ensure_artifacts(["unsupervised"], artifact_registry={}, overwrite=False)
 
 
+@pytest.mark.skip_on_windows
 def test_ensure_artifacts_with_custom_registry(
     temp_napistu_data_store_with_real_data, sbml_dfs, napistu_graph
 ):

@@ -353,6 +353,7 @@ def test_edge_prediction_trainer_gpu_if_available(
     assert has_gpu_params, "Model parameters should be on GPU"
 
 
+@pytest.mark.skip_on_windows
 def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     """Test trainer using NapistuDataStore-based approach."""
 
