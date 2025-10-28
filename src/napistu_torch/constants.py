@@ -106,7 +106,8 @@ DATA_CONFIG = SimpleNamespace(
     NAPISTU_GRAPH_PATH="napistu_graph_path",
     COPY_TO_STORE="copy_to_store",
     OVERWRITE="overwrite",
-    REQUIRED_ARTIFACTS="required_artifacts",
+    NAPISTU_DATA_NAME="napistu_data_name",
+    OTHER_ARTIFACTS="other_artifacts",
 )
 
 MODEL_CONFIG = SimpleNamespace(

@@ -422,6 +422,7 @@ class NapistuDataStore:
     def from_config(
         cls,
         config: DataConfig,
+        ensure_artifacts: bool = True,
     ) -> "NapistuDataStore":
         """
         Create or load a NapistuDataStore from a DataConfig.
@@ -431,18 +432,21 @@ class NapistuDataStore:
         2. If store doesn't exist or config.overwrite: create new store
         - Uses sbml_dfs_path and napistu_graph_path from config
         - Copies to store if config.copy_to_store is True
-        3. Ensure required_artifacts exist (always, regardless of store creation)
+        3. Ensure napistu_data_name and other_artifacts exist (always, regardless of store creation)
 
         Parameters
         ----------
         config : DataConfig
             Configuration with store location, artifact paths, and requirements.
             Must include sbml_dfs_path and napistu_graph_path.
+        ensure_artifacts : bool, default=True
+            Whether to ensure that napistu_data_name and other_artifacts exist.
+            Set to False when side-loading napistu_data directly (e.g., during testing).
 
         Returns
         -------
         NapistuDataStore
-            Ready-to-use store with all required artifacts
+            Ready-to-use store with all required artifacts (if ensure_artifacts=True)
 
         Raises
         ------
@@ -460,7 +464,8 @@ class NapistuDataStore:
         ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
         ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),
         ...     copy_to_store=True,
-        ...     required_artifacts=["unsupervised", "edge_prediction"]
+        ...     napistu_data_name="edge_prediction",
+        ...     other_artifacts=["unsupervised"]
         ... )
         >>> store = NapistuDataStore.from_config(config)
         """
@@ -497,15 +502,12 @@ class NapistuDataStore:
                 overwrite=config.overwrite,
             )
 
-        # ALWAYS ensure required artifacts exist, regardless of whether
-        # we just created the store or loaded an existing one
-        if config.required_artifacts:
-            logger.info(
-                f"Ensuring required artifacts exist: {config.required_artifacts}"
-            )
-            store.ensure_artifacts(
-                config.required_artifacts, overwrite=config.overwrite
-            )
+        # Conditionally ensure required artifacts exist
+        if ensure_artifacts:
+            required_artifacts = [config.napistu_data_name] + config.other_artifacts
+            if required_artifacts:
+                logger.info(f"Ensuring required artifacts exist: {required_artifacts}")
+                store.ensure_artifacts(required_artifacts, overwrite=config.overwrite)
 
         return store
 

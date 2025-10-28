@@ -23,7 +23,7 @@ def stub_data_config():
         name="stubbed_config",
         sbml_dfs_path=Path("stub_sbml.pkl"),
         napistu_graph_path=Path("stub_graph.pkl"),
-        required_artifacts=["edge_prediction"],
+        napistu_data_name="edge_prediction",
     )
 
 
@@ -42,11 +42,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
     )
 
     # Create data module with direct napistu_data
-    dm = NapistuDataModule(
-        stub_data_config,
-        napistu_data_name="test",
-        napistu_data=edge_masked_napistu_data,
-    )
+    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
 
     # Create encoder and head
     encoder = GNNEncoder(
@@ -111,7 +107,6 @@ def test_edge_prediction_trainer_fit_with_callbacks(
     # Create data module with direct napistu_data (backward compatibility)
     dm = NapistuDataModule(
         stub_data_config,
-        napistu_data_name="test",
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -180,7 +175,6 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
     # Create data module with direct napistu_data (backward compatibility)
     dm = NapistuDataModule(
         stub_data_config,
-        napistu_data_name="test",
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -318,7 +312,6 @@ def test_edge_prediction_trainer_gpu_if_available(
 
     dm = NapistuDataModule(
         stub_data_config,
-        napistu_data_name="test",
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -375,9 +368,7 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     )
 
     # Create data module using NapistuDataStore approach
-    dm = NapistuDataModule(
-        temp_data_config_with_store, napistu_data_name="edge_prediction"
-    )
+    dm = NapistuDataModule(temp_data_config_with_store)
 
     # Create encoder and head
     encoder = GNNEncoder(

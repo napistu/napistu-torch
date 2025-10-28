@@ -188,19 +188,21 @@ def experiment_config():
         data=DataConfig(
             sbml_dfs_path=Path("stub_sbml.pkl"),
             napistu_graph_path=Path("stub_graph.pkl"),
+            napistu_data_name="edge_prediction",
         ),
     )
 
 
 @pytest.fixture
 def data_config():
-    """Create a basic data config for testing."""
+    """Create a basic data config for testing with side-loaded data."""
 
     return DataConfig(
         name="test_data",
         sbml_dfs_path=Path("test_sbml.pkl"),
         napistu_graph_path=Path("test_graph.pkl"),
-        required_artifacts=["unsupervised"],
+        napistu_data_name="unsupervised",
+        other_artifacts=[],  # No other artifacts when side-loading
     )
 
 
@@ -253,5 +255,8 @@ def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
         store_dir=store.store_dir,
         sbml_dfs_path=store.sbml_dfs_path,
         napistu_graph_path=store.napistu_graph_path,
-        required_artifacts=["edge_prediction"],
+        napistu_data_name="edge_prediction",
+        other_artifacts=[
+            "unsupervised"
+        ],  # This fixture has a real store, so it can have other artifacts
     )

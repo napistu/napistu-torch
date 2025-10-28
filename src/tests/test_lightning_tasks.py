@@ -31,9 +31,7 @@ def test_edge_prediction_lightning_integration(
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(
-        data_config, napistu_data_name="test", napistu_data=edge_masked_napistu_data
-    )
+    dm = NapistuDataModule(data_config, napistu_data=edge_masked_napistu_data)
     dm.setup()
 
     # Test training step

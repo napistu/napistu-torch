@@ -158,7 +158,8 @@ class TestDataConfig:
         assert DATA_CONFIG.NAPISTU_GRAPH_PATH in model_fields
         assert DATA_CONFIG.COPY_TO_STORE in model_fields
         assert DATA_CONFIG.OVERWRITE in model_fields
-        assert DATA_CONFIG.REQUIRED_ARTIFACTS in model_fields
+        assert DATA_CONFIG.NAPISTU_DATA_NAME in model_fields
+        assert DATA_CONFIG.OTHER_ARTIFACTS in model_fields
 
     def test_default_values(self):
         """Test that default values are set correctly."""
@@ -172,7 +173,8 @@ class TestDataConfig:
         assert config.store_dir == Path(".store")
         assert config.copy_to_store is False
         assert config.overwrite is False
-        assert config.required_artifacts == []
+        assert config.napistu_data_name == "edge_prediction"
+        assert config.other_artifacts == []
 
     def test_custom_values(self):
         """Test that fields can be customized."""
@@ -184,7 +186,8 @@ class TestDataConfig:
             napistu_graph_path=Path("custom_graph.pkl"),
             copy_to_store=True,
             overwrite=True,
-            required_artifacts=["unsupervised", "edge_prediction"],
+            napistu_data_name="unsupervised",
+            other_artifacts=["edge_prediction", "composite_edge_strata"],
         )
 
         assert config.name == "custom_name"
@@ -193,7 +196,8 @@ class TestDataConfig:
         assert config.napistu_graph_path == Path("custom_graph.pkl")
         assert config.copy_to_store is True
         assert config.overwrite is True
-        assert config.required_artifacts == ["unsupervised", "edge_prediction"]
+        assert config.napistu_data_name == "unsupervised"
+        assert config.other_artifacts == ["edge_prediction", "composite_edge_strata"]
 
     def test_path_objects(self):
         """Test that Path objects are properly handled."""
@@ -584,7 +588,7 @@ class TestConfigIntegration:
             name="custom_dataset",
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
-            required_artifacts=["unsupervised"],
+            napistu_data_name="unsupervised",
         )
 
         task_config = TaskConfig(
@@ -615,7 +619,7 @@ class TestConfigIntegration:
         assert experiment_config.data.name == "custom_dataset"
         assert experiment_config.data.sbml_dfs_path == Path("custom_sbml.pkl")
         assert experiment_config.data.napistu_graph_path == Path("custom_graph.pkl")
-        assert experiment_config.data.required_artifacts == ["unsupervised"]
+        assert experiment_config.data.napistu_data_name == "unsupervised"
         assert experiment_config.task.task == TASKS.NODE_CLASSIFICATION
         assert experiment_config.training.optimizer == OPTIMIZERS.ADAMW
         assert experiment_config.wandb.project == "custom-project"
@@ -666,7 +670,8 @@ class TestConfigIntegration:
         # Customize component configs
         original_config.model.hidden_channels = 512
         original_config.data.name = "roundtrip_data"
-        original_config.data.required_artifacts = ["unsupervised", "edge_prediction"]
+        original_config.data.napistu_data_name = "unsupervised"
+        original_config.data.other_artifacts = ["edge_prediction"]
         original_config.task.neg_sampling_ratio = 3.0
         original_config.training.lr = 0.005
         original_config.wandb.project = "roundtrip-project"
@@ -685,10 +690,8 @@ class TestConfigIntegration:
             assert loaded_config.fast_dev_run is True
             assert loaded_config.model.hidden_channels == 512
             assert loaded_config.data.name == "roundtrip_data"
-            assert loaded_config.data.required_artifacts == [
-                "unsupervised",
-                "edge_prediction",
-            ]
+            assert loaded_config.data.napistu_data_name == "unsupervised"
+            assert loaded_config.data.other_artifacts == ["edge_prediction"]
             assert loaded_config.task.neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"

@@ -92,9 +92,13 @@ class DataConfig(BaseModel):
     overwrite: bool = Field(default=False)
 
     # named artifacts which are needed for the experiment
-    required_artifacts: List[str] = Field(
+    napistu_data_name: str = Field(
+        default="edge_prediction",
+        description="Name of the NapistuData artifact to use for training.",
+    )
+    other_artifacts: List[str] = Field(
         default_factory=list,
-        description="List of artifact names that must exist in the store",
+        description="List of additional artifact names that must exist in the store.",
     )
 
     class Config:

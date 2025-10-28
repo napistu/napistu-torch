@@ -60,19 +60,21 @@ class NapistuDataModule(pl.LightningDataModule):
     ----------
     config : DataConfig
         Pydantic data configuration
-    napistu_data_name : str
+    napistu_data_name : Optional[str]
         Name of the NapistuData artifact to use for training.
+        If None, uses config.napistu_data_name.
         Can be either:
         - A standard artifact from the registry (e.g., "unsupervised", "edge_prediction")
         - A custom artifact already saved in the store
-    store : Optional[NapistuDataStore]
-        Pre-initialized store. If None, will be created from config.
-    napistu_data : Optional[NapistuData]
-        Direct NapistuData object for testing/backward compatibility.
-        If provided, store and napistu_data_name are ignored.
     other_artifacts : Optional[List[str]]
         List of other artifact names needed for the experiment.
+        If None, uses config.other_artifacts.
         If None, no other artifacts will be loaded.
+    napistu_data : Optional[NapistuData]
+        Direct NapistuData object for testing/backward compatibility.
+        If provided, napistu_data_name will be ignored and store will be ignored if other_artifacts is None.
+    store : Optional[NapistuDataStore]
+        Pre-initialized store. If None, will be created from config.
     artifact_registry : Optional[Dict[str, ArtifactDefinition]]
         Registry of artifact definitions. If None, the default registry will be used.
     overwrite_artifacts : bool, default=False
@@ -85,25 +87,26 @@ class NapistuDataModule(pl.LightningDataModule):
     ...     store_dir=".store/ecoli",
     ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
     ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),
-    ...     required_artifacts=["edge_prediction"]
+    ...     napistu_data_name="edge_prediction",
+    ...     other_artifacts=["unsupervised"]
     ... )
-    >>> dm = NapistuDataModule(config, napistu_data_name="edge_prediction")
+    >>> dm = NapistuDataModule(config)
     >>>
     >>> # Using pre-initialized store
     >>> store = NapistuDataStore.from_config(config)
-    >>> dm = NapistuDataModule(config, napistu_data_name="unsupervised", store=store)
+    >>> dm = NapistuDataModule(config, store=store)
     >>>
     >>> # Using direct napistu_data (for testing/backward compatibility)
-    >>> dm = NapistuDataModule(config, napistu_data_name="test", napistu_data=my_napistu_data)
+    >>> dm = NapistuDataModule(config, napistu_data=my_napistu_data)
     """
 
     def __init__(
         self,
         config: DataConfig,
-        napistu_data_name: str,
-        store: Optional[NapistuDataStore] = None,
-        napistu_data: Optional[NapistuData] = None,
+        napistu_data_name: Optional[str] = None,
         other_artifacts: Optional[List[str]] = None,
+        napistu_data: Optional[NapistuData] = None,
+        store: Optional[NapistuDataStore] = None,
         artifact_registry: Optional[
             Dict[str, ArtifactDefinition]
         ] = DEFAULT_ARTIFACT_REGISTRY,
@@ -112,15 +115,29 @@ class NapistuDataModule(pl.LightningDataModule):
         super().__init__()
         self.config = config
 
+        # Use DataConfig values if not provided explicitly (for backward compatibility)
+        if napistu_data_name is None:
+            napistu_data_name = config.napistu_data_name
+        if other_artifacts is None:
+            other_artifacts = config.other_artifacts
+
         # Create or load the store from config
         if store is None:
-            # do we need it?
-            if (napistu_data is None) or (other_artifacts is not None):
+            # Determine if we need a store
+            need_store = (napistu_data is None) or (len(other_artifacts) > 0)
+
+            if need_store:
                 logger.info("Creating/loading store from config")
-                need_store = True
-                napistu_data_store = NapistuDataStore.from_config(config)
+                # Only ensure artifacts if we're not side-loading napistu_data OR we need other_artifacts
+                ensure_artifacts = (napistu_data is None) or (len(other_artifacts) > 0)
+                napistu_data_store = NapistuDataStore.from_config(
+                    config, ensure_artifacts=ensure_artifacts
+                )
             else:
-                need_store = False
+                logger.info(
+                    "No store needed - side-loading napistu_data with no other artifacts"
+                )
+                napistu_data_store = None
         else:
             if not isinstance(store, NapistuDataStore):
                 raise ValueError("store must be a NapistuDataStore object")
@@ -132,7 +149,7 @@ class NapistuDataModule(pl.LightningDataModule):
         if napistu_data is not None:
             logger.info("Using provided napistu_data directly")
             self.napistu_data = napistu_data
-            required_artifacts = other_artifacts or []
+            required_artifacts = other_artifacts
         else:
             # Validate that we can either load or create this artifact
             # This uses the store's validation method which checks both
@@ -143,7 +160,7 @@ class NapistuDataModule(pl.LightningDataModule):
                 required_type=ARTIFACT_TYPES.NAPISTU_DATA,
             )
 
-            required_artifacts = [napistu_data_name] + (other_artifacts or [])
+            required_artifacts = [napistu_data_name] + other_artifacts
 
         # Ensure all required artifacts exist on disk
         if need_store:
