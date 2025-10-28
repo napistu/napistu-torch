@@ -7,7 +7,7 @@ functions before passing the data to this DataModule (prevents data leakage).
 """
 
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Dataset
@@ -70,6 +70,9 @@ class NapistuDataModule(pl.LightningDataModule):
     napistu_data : Optional[NapistuData]
         Direct NapistuData object for testing/backward compatibility.
         If provided, store and napistu_data_name are ignored.
+    other_artifacts : Optional[List[str]]
+        List of other artifact names needed for the experiment.
+        If None, no other artifacts will be loaded.
     artifact_registry : Optional[Dict[str, ArtifactDefinition]]
         Registry of artifact definitions. If None, the default registry will be used.
     overwrite_artifacts : bool, default=False
@@ -100,6 +103,7 @@ class NapistuDataModule(pl.LightningDataModule):
         napistu_data_name: str,
         store: Optional[NapistuDataStore] = None,
         napistu_data: Optional[NapistuData] = None,
+        other_artifacts: Optional[List[str]] = None,
         artifact_registry: Optional[
             Dict[str, ArtifactDefinition]
         ] = DEFAULT_ARTIFACT_REGISTRY,
@@ -107,40 +111,58 @@ class NapistuDataModule(pl.LightningDataModule):
     ):
         super().__init__()
         self.config = config
-        self.napistu_data_name = napistu_data_name
-        self.artifact_registry = artifact_registry
-        self.overwrite_artifacts = overwrite_artifacts
+
+        # Create or load the store from config
+        if store is None:
+            # do we need it?
+            if (napistu_data is None) or (other_artifacts is not None):
+                logger.info("Creating/loading store from config")
+                need_store = True
+                napistu_data_store = NapistuDataStore.from_config(config)
+            else:
+                need_store = False
+        else:
+            if not isinstance(store, NapistuDataStore):
+                raise ValueError("store must be a NapistuDataStore object")
+            logger.info("Using provided store")
+            napistu_data_store = store
+            need_store = True
 
         # Handle direct napistu_data input (for testing/backward compatibility)
         if napistu_data is not None:
             logger.info("Using provided napistu_data directly")
-            self.store = None  # No store needed when data is provided directly
-            self.data = napistu_data
+            self.napistu_data = napistu_data
+            required_artifacts = other_artifacts or []
         else:
-            # Create/load store
-            if store is None:
-                logger.info("Creating/loading store from config")
-                self.store = NapistuDataStore.from_config(config)
-            else:
-                logger.info("Using provided store")
-                self.store = store
-
             # Validate that we can either load or create this artifact
             # This uses the store's validation method which checks both
             # store and registry, and validates the artifact type
-            self.store.validate_artifact_name(
-                self.napistu_data_name,
-                artifact_registry=self.artifact_registry,
+            napistu_data_store.validate_artifact_name(
+                napistu_data_name,
+                artifact_registry=artifact_registry,
                 required_type=ARTIFACT_TYPES.NAPISTU_DATA,
             )
 
-            logger.info(f"Artifact '{self.napistu_data_name}' validated successfully")
+            required_artifacts = [napistu_data_name] + (other_artifacts or [])
 
-            # Load the data immediately
-            self._load_data()
+        # Ensure all required artifacts exist on disk
+        if need_store:
+            napistu_data_store.ensure_artifacts(
+                required_artifacts,
+                artifact_registry=artifact_registry,
+                overwrite=overwrite_artifacts,
+            )
 
-        # Set up train/val/test splits
-        self._setup_splits()
+        # Load napistu_data from store if not provided directly
+        if napistu_data is None:
+            logger.info(f"Loading napistu_data '{napistu_data_name}' from store")
+            self.napistu_data = napistu_data_store.load_napistu_data(napistu_data_name)
+
+        # This ensures hasattr() works correctly and setup() can check them
+        self.data = None
+        self.train_data = None
+        self.val_data = None
+        self.test_data = None
 
     @property
     def num_node_features(self) -> int:
@@ -161,29 +183,45 @@ class NapistuDataModule(pl.LightningDataModule):
         >>> in_channels = dm.num_node_features
         >>> encoder = GNNEncoder.from_config(model_config, in_channels=in_channels)
         """
+
         # Determine splitting strategy from the data itself
-        if isinstance(self.data, dict):
+        if isinstance(self.napistu_data, dict):
             # For inductive splits, get features from training data
-            return self.data[TRAINING.TRAIN].num_node_features
-        elif isinstance(self.data, NapistuData):
+            return self.napistu_data[TRAINING.TRAIN].num_node_features
+        elif isinstance(self.napistu_data, NapistuData):
             # For transductive splits, get features from the single data object
-            return self.data.num_node_features
+            return self.napistu_data.num_node_features
         else:
             raise ValueError(
                 f"data must be either a NapistuData object or a dictionary "
                 f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, "
-                f"but got {type(self.data)}"
+                f"but got {type(self.napistu_data)}"
             )
 
     def setup(self, stage: Optional[str] = None):
         """
-        Set up NapistuData object(s) - data is already loaded during __init__.
+        Set up NapistuData object(s) from the provided data.
 
-        This method is kept for Lightning compatibility but does nothing
-        since data loading happens during initialization.
+        Uses the pre-processed NapistuData object(s) passed to the constructor.
+        No data creation or processing happens here - just assignment.
         """
-        # Data is already loaded and splits are already set up in __init__
-        pass
+        if hasattr(self, "data") and self.data is not None:
+            return  # Already set up
+        if hasattr(self, "train_data") and self.train_data is not None:
+            return  # Already set up
+
+        if isinstance(self.napistu_data, dict):
+            # Inductive split - use separate data for each split
+            self.train_data = self.napistu_data[TRAINING.TRAIN]
+            self.val_data = self.napistu_data.get(TRAINING.VALIDATION)
+            self.test_data = self.napistu_data.get(TRAINING.TEST)
+        elif isinstance(self.napistu_data, NapistuData):
+            # Single graph with masks (transductive)
+            self.data = self.napistu_data
+        else:
+            raise ValueError(
+                f"napistu_data must be a dictionary or a NapistuData object, but got {type(self.napistu_data)}"
+            )
 
     def train_dataloader(self):
         """
@@ -200,13 +238,7 @@ class NapistuDataModule(pl.LightningDataModule):
             # Transductive split - use single graph with masks
             dataset = SingleGraphDataset(self.data)
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,  # No shuffling for single graph
-            collate_fn=identity_collate,  # Don't use PyG's batching
-            num_workers=0,  # Single graph, no benefit from workers
-        )
+        return _get_dataloader(dataset)
 
     def val_dataloader(self):
         """Return a DataLoader for validation."""
@@ -217,13 +249,7 @@ class NapistuDataModule(pl.LightningDataModule):
             # Transductive split - use single graph with masks
             dataset = SingleGraphDataset(self.data)
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=identity_collate,
-            num_workers=0,
-        )
+        return _get_dataloader(dataset)
 
     def test_dataloader(self):
         """Return a DataLoader for testing."""
@@ -234,13 +260,7 @@ class NapistuDataModule(pl.LightningDataModule):
             # Transductive split - use single graph with masks
             dataset = SingleGraphDataset(self.data)
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=identity_collate,
-            num_workers=0,
-        )
+        return _get_dataloader(dataset)
 
     def predict_dataloader(self):
         """Return a DataLoader for prediction."""
@@ -251,51 +271,7 @@ class NapistuDataModule(pl.LightningDataModule):
             # Transductive split - use single graph with masks
             dataset = SingleGraphDataset(self.data)
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            collate_fn=identity_collate,
-            num_workers=0,
-        )
-
-    # private methods
-
-    def _load_data(self) -> None:
-        """Load data from the store."""
-        # Check if artifact exists in store
-        if self.napistu_data_name not in self.store.list_napistu_datas():
-            # Not in store - create it using registry
-            logger.info(f"Creating artifact '{self.napistu_data_name}' from registry")
-            self.store.ensure_artifacts(
-                [self.napistu_data_name],
-                artifact_registry=self.artifact_registry,
-                overwrite=self.overwrite_artifacts,
-            )
-
-        # Load it (now guaranteed to exist)
-        logger.info(f"Loading artifact '{self.napistu_data_name}' from store")
-        self.data = self.store.load_napistu_data(self.napistu_data_name)
-
-    def _setup_splits(self) -> None:
-        """Set up train/val/test splits based on data type."""
-        if isinstance(self.data, dict):
-            # Separate graphs for each split (inductive)
-            self.train_data = self.data[TRAINING.TRAIN]
-            self.val_data = self.data.get(TRAINING.VALIDATION)
-            self.test_data = self.data.get(TRAINING.TEST)
-        elif isinstance(self.data, NapistuData):
-            # Single graph with masks (transductive)
-            # train_data, val_data, test_data remain None - will use self.data
-            self.train_data = None
-            self.val_data = None
-            self.test_data = None
-        else:
-            raise ValueError(
-                f"data must be either a NapistuData object or a dictionary "
-                f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, "
-                f"but got {type(self.data)}"
-            )
+        return _get_dataloader(dataset)
 
 
 def identity_collate(batch):
@@ -313,3 +289,14 @@ def identity_collate(batch):
         batch[0], NapistuData
     ), f"Expected NapistuData, got {type(batch[0])}"
     return batch[0]
+
+
+def _get_dataloader(dataset: SingleGraphDataset) -> DataLoader:
+
+    return DataLoader(
+        dataset,
+        batch_size=1,
+        shuffle=False,  # No shuffling for single graph
+        collate_fn=identity_collate,  # Don't use PyG's batching
+        num_workers=0,  # Single graph, no benefit from workers
+    )

@@ -361,7 +361,14 @@ def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
 
     # Load and verify data integrity
     loaded_df = temp_napistu_data_store.load_pandas_df(df_name)
-    pd.testing.assert_frame_equal(df, loaded_df, check_dtype=False)
+
+    # Normalize null values to avoid FutureWarning about mismatched <NA> and nan
+    df_normalized = df.replace({pd.NA: np.nan})
+    loaded_df_normalized = loaded_df.replace({pd.NA: np.nan})
+
+    pd.testing.assert_frame_equal(
+        df_normalized, loaded_df_normalized, check_dtype=False
+    )
 
     # Test listing
     assert df_name in temp_napistu_data_store.list_pandas_dfs()
