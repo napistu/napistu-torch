@@ -4,7 +4,6 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.constants import (
-    DATA_CONFIG,
     METRICS,
     OPTIMIZERS,
     TASK_CONFIG,
@@ -15,10 +14,6 @@ from napistu_torch.constants import (
     VALID_TASKS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
-)
-from napistu_torch.load.constants import (
-    SPLITTING_STRATEGIES,
-    VALID_SPLITTING_STRATEGIES,
 )
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
@@ -88,20 +83,23 @@ class DataConfig(BaseModel):
     """Data loading and splitting configuration. These parameters are used to setup the NapistuDataStore object and construct the NapistuData object."""
 
     name: str = "default"
-    store_dir: Path = Field(default=Path(".store"))
-    splitting_strategy: str = Field(default=SPLITTING_STRATEGIES.NO_MASK)
-    train_size: float = Field(default=0.7, gt=0.0, lt=1.0)
-    val_size: float = Field(default=0.15, gt=0.0, lt=1.0)
-    test_size: float = Field(default=0.15, gt=0.0, lt=1.0)
 
-    @field_validator(DATA_CONFIG.SPLITTING_STRATEGY)
-    @classmethod
-    def validate_splitting_strategy(cls, v):
-        if v not in VALID_SPLITTING_STRATEGIES:
-            raise ValueError(
-                f"Invalid splitting strategy: {v}. Valid strategies are: {VALID_SPLITTING_STRATEGIES}"
-            )
-        return v
+    # config for defining the NapistuDataStore
+    store_dir: Path = Field(default=Path(".store"))
+    sbml_dfs_path: Path = Field()
+    napistu_graph_path: Path = Field()
+    copy_to_store: bool = Field(default=False)
+    overwrite: bool = Field(default=False)
+
+    # named artifacts which are needed for the experiment
+    napistu_data_name: str = Field(
+        default="edge_prediction",
+        description="Name of the NapistuData artifact to use for training.",
+    )
+    other_artifacts: List[str] = Field(
+        default_factory=list,
+        description="List of additional artifact names that must exist in the store.",
+    )
 
     class Config:
         extra = "forbid"

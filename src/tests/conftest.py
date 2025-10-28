@@ -2,6 +2,8 @@
 
 import logging
 import os
+import sys
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -10,6 +12,10 @@ from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
+from napistu_torch.configs import (
+    DataConfig,
+    ExperimentConfig,
+)
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.load.constants import (
     ENCODING_MANAGER,
@@ -31,6 +37,38 @@ logging.getLogger("napistu.ingestion").setLevel(logging.ERROR)
 logging.getLogger("napistu.sbml_dfs_core").setLevel(logging.ERROR)
 logging.getLogger("napistu.sbml_dfs_utils").setLevel(logging.ERROR)
 logging.getLogger("napistu.utils").setLevel(logging.ERROR)
+
+
+# Define custom markers for platforms
+def pytest_configure(config):
+    config.addinivalue_line("markers", "skip_on_windows: mark test to skip on Windows")
+    config.addinivalue_line("markers", "skip_on_macos: mark test to skip on macOS")
+    config.addinivalue_line(
+        "markers", "unix_only: mark test to run only on Unix/Linux systems"
+    )
+
+
+# Define platform conditions
+is_windows = sys.platform == "win32"
+is_macos = sys.platform == "darwin"
+is_unix = not (is_windows or is_macos)
+
+
+# Apply skipping based on platform
+def pytest_runtest_setup(item):
+    # Skip tests marked to be skipped on Windows
+    if is_windows and any(
+        mark.name == "skip_on_windows" for mark in item.iter_markers()
+    ):
+        pytest.skip("Test skipped on Windows")
+
+    # Skip tests marked to be skipped on macOS
+    if is_macos and any(mark.name == "skip_on_macos" for mark in item.iter_markers()):
+        pytest.skip("Test skipped on macOS")
+
+    # Skip tests that should run only on Unix
+    if not is_unix and any(mark.name == "unix_only" for mark in item.iter_markers()):
+        pytest.skip("Test runs only on Unix systems")
 
 
 @pytest.fixture
@@ -138,9 +176,7 @@ def simple_raw_graph_df():
 def augmented_napistu_graph(napistu_graph, sbml_dfs):
     """Create a NapistuGraph that has been augmented with SBML_dfs information."""
     # Augment the graph with SBML_dfs information
-    augment_napistu_graph(sbml_dfs, napistu_graph, inplace=True)
-
-    return napistu_graph
+    return augment_napistu_graph(sbml_dfs, napistu_graph, inplace=False)
 
 
 @pytest.fixture
@@ -167,8 +203,6 @@ def unsupervised_napistu_data(sbml_dfs, napistu_graph):
 @pytest.fixture
 def edge_masked_napistu_data(sbml_dfs, napistu_graph):
     """Create a NapistuData object with train/val/test masks for testing."""
-    from napistu_torch.load.constants import SPLITTING_STRATEGIES
-
     return construct_unsupervised_pyg_data(
         sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK
     )
@@ -177,8 +211,6 @@ def edge_masked_napistu_data(sbml_dfs, napistu_graph):
 @pytest.fixture
 def experiment_config():
     """Create a basic experiment config for testing."""
-    from napistu_torch.configs import ExperimentConfig
-
     return ExperimentConfig(
         name="test_experiment",
         seed=42,
@@ -186,20 +218,24 @@ def experiment_config():
         fast_dev_run=True,
         limit_train_batches=1.0,
         limit_val_batches=1.0,
+        data=DataConfig(
+            sbml_dfs_path=Path("stub_sbml.pkl"),
+            napistu_graph_path=Path("stub_graph.pkl"),
+            napistu_data_name="edge_prediction",
+        ),
     )
 
 
 @pytest.fixture
 def data_config():
-    """Create a basic data config for testing."""
-    from napistu_torch.configs import DataConfig
-    from napistu_torch.load.constants import SPLITTING_STRATEGIES
+    """Create a basic data config for testing with side-loaded data."""
 
     return DataConfig(
-        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
-        train_size=0.6,
-        val_size=0.2,
-        test_size=0.2,
+        name="test_data",
+        sbml_dfs_path=Path("test_sbml.pkl"),
+        napistu_graph_path=Path("test_graph.pkl"),
+        napistu_data_name="unsupervised",
+        other_artifacts=[],  # No other artifacts when side-loading
     )
 
 
@@ -207,3 +243,53 @@ def data_config():
 def comprehensive_source_membership(sbml_dfs, napistu_graph):
     """Create a comprehensive source membership VertexTensor."""
     return get_comprehensive_source_membership(napistu_graph, sbml_dfs)
+
+
+@pytest.fixture
+def temp_napistu_data_store_with_edge_data(
+    sbml_dfs, napistu_graph, edge_masked_napistu_data
+):
+    """Create a temporary NapistuDataStore with edge_masked_napistu_data saved to it."""
+    import tempfile
+
+    from napistu_torch.napistu_data_store import NapistuDataStore
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create real pickle files
+        sbml_dfs_path = Path(temp_dir) / "sbml_dfs.pkl"
+        napistu_graph_path = Path(temp_dir) / "napistu_graph.pkl"
+
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
+
+        # Create the store
+        store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            sbml_dfs_path=sbml_dfs_path,
+            napistu_graph_path=napistu_graph_path,
+            copy_to_store=False,
+        )
+
+        # Save the edge_masked_napistu_data to the store
+        store.save_napistu_data(
+            edge_masked_napistu_data, name="edge_prediction", overwrite=True
+        )
+
+        yield store
+
+
+@pytest.fixture
+def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
+    """Create a DataConfig that points to the temporary store."""
+    store = temp_napistu_data_store_with_edge_data
+
+    return DataConfig(
+        name="test_data_with_store",
+        store_dir=store.store_dir,
+        sbml_dfs_path=store.sbml_dfs_path,
+        napistu_graph_path=store.napistu_graph_path,
+        napistu_data_name="edge_prediction",
+        other_artifacts=[
+            "unsupervised"
+        ],  # This fixture has a real store, so it can have other artifacts
+    )

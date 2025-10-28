@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+ARTIFACT_TYPES = SimpleNamespace(
+    NAPISTU_DATA="napistu_data",
+    VERTEX_TENSOR="vertex_tensor",
+    PANDAS_DFS="pandas_dfs",
+)
+
+VALID_ARTIFACT_TYPES = list(ARTIFACT_TYPES.__dict__.values())
+
 NAPISTU_DATA = SimpleNamespace(
     EDGE_ATTR="edge_attr",
     EDGE_FEATURE_NAMES="edge_feature_names",
@@ -33,6 +41,7 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     NAPISTU_RAW="napistu_raw",
     NAPISTU_DATA="napistu_data",
     VERTEX_TENSORS="vertex_tensors",
+    PANDAS_DFS="pandas_dfs",
     # attributes
     SBML_DFS="sbml_dfs",
     NAPISTU_GRAPH="napistu_graph",
@@ -42,6 +51,7 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     CREATED="created",
     FILENAME="filename",
     PT_TEMPLATE="{name}.pt",
+    PARQUET_TEMPLATE="{name}.parquet",
 )
 
 NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
@@ -50,6 +60,7 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     NAPISTU_RAW=NAPISTU_DATA_STORE.NAPISTU_RAW,
     NAPISTU_DATA=NAPISTU_DATA_STORE.NAPISTU_DATA,
     VERTEX_TENSORS=NAPISTU_DATA_STORE.VERTEX_TENSORS,
+    PANDAS_DFS=NAPISTU_DATA_STORE.PANDAS_DFS,
 )
 
 TASKS = SimpleNamespace(
@@ -91,10 +102,12 @@ VALID_WANDB_MODES = list(WANDB_MODES.__dict__.values())
 DATA_CONFIG = SimpleNamespace(
     NAME="name",
     STORE_DIR="store_dir",
-    SPLITTING_STRATEGY="splitting_strategy",
-    TRAIN_SIZE="train_size",
-    VAL_SIZE="val_size",
-    TEST_SIZE="test_size",
+    SBML_DFS_PATH="sbml_dfs_path",
+    NAPISTU_GRAPH_PATH="napistu_graph_path",
+    COPY_TO_STORE="copy_to_store",
+    OVERWRITE="overwrite",
+    NAPISTU_DATA_NAME="napistu_data_name",
+    OTHER_ARTIFACTS="other_artifacts",
 )
 
 MODEL_CONFIG = SimpleNamespace(
