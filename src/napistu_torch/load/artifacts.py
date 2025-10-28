@@ -34,6 +34,7 @@ from napistu_torch.evaluation.stratification import create_composite_edge_strata
 from napistu_torch.labeling.constants import LABEL_TYPE
 from napistu_torch.load.constants import (
     ARTIFACT_DEFS,
+    DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
 )
 from napistu_torch.load.napistu_graphs import (
@@ -388,37 +389,37 @@ def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFram
 # Define artifacts as a list (single source of truth for names)
 DEFAULT_ARTIFACTS = [
     ArtifactDefinition(
-        name="unsupervised",
+        name=DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_unsupervised_data,
         description="Unsupervised learning data without masking",
     ),
     ArtifactDefinition(
-        name="edge_prediction",
+        name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_edge_prediction_data,
         description="Edge prediction task with edge masking",
     ),
     ArtifactDefinition(
-        name="supervised_species_type",
+        name=DEFAULT_ARTIFACTS_NAMES.SUPERVISED_SPECIES_TYPE,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_supervised_species_type_data,
         description="Node classification for species types with vertex masking",
     ),
     ArtifactDefinition(
-        name="comprehensive_pathway_memberships",
+        name=DEFAULT_ARTIFACTS_NAMES.COMPREHENSIVE_PATHWAY_MEMBERSHIPS,
         artifact_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         creation_func=_create_comprehensive_pathway_memberships,
         description="Comprehensive pathway membership features",
     ),
     ArtifactDefinition(
-        name="edge_strata_by_node_species_type",
+        name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_species_type,
         description="Edge strata by node + species type",
     ),
     ArtifactDefinition(
-        name="edge_strata_by_node_type",
+        name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_type,
         description="Edge strata by node type",

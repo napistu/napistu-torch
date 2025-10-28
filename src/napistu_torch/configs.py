@@ -109,8 +109,11 @@ class TaskConfig(BaseModel):
     """Task-specific configuration"""
 
     task: str = Field(default=TASKS.EDGE_PREDICTION)
-    neg_sampling_ratio: float = Field(default=1.0, gt=0.0)
     metrics: List[str] = Field(default_factory=lambda: [METRICS.AUC, METRICS.AP])
+
+    edge_prediction_neg_sampling_ratio: float = Field(default=1.0, gt=0.0)
+    edge_prediction_neg_sampling_stratify_by: str = Field(default="node_species_type")
+    edge_prediction_neg_sampling_strategy: str = Field(default="degree_weighted")
 
     @field_validator(TASK_CONFIG.TASK)
     @classmethod
