@@ -26,6 +26,7 @@ from napistu_torch.constants import (
     ARTIFACT_TYPES,
     VALID_ARTIFACT_TYPES,
 )
+from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import (
     get_comprehensive_source_membership,
 )
@@ -342,7 +343,9 @@ def _create_comprehensive_pathway_memberships(
     return get_comprehensive_source_membership(napistu_graph, sbml_dfs)
 
 
-def _create_composite_edge_strata(napistu_graph: NapistuGraph) -> pd.DataFrame:
+def _create_edge_strata_by_node_species_type(
+    napistu_graph: NapistuGraph,
+) -> pd.DataFrame:
     """
     Create edge strata.
 
@@ -356,7 +359,28 @@ def _create_composite_edge_strata(napistu_graph: NapistuGraph) -> pd.DataFrame:
     pd.DataFrame
         Edge strata
     """
-    return create_composite_edge_strata(napistu_graph).to_frame(name="edge_strata")
+    return create_composite_edge_strata(
+        napistu_graph, stratify_by=STRATIFY_BY.NODE_SPECIES_TYPE
+    ).to_frame(name="edge_strata")
+
+
+def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFrame:
+    """
+    Create edge strata.
+
+    Parameters
+    ----------
+    napistu_graph : NapistuGraph
+        Napistu graph
+
+    Returns
+    -------
+    pd.DataFrame
+        Edge strata
+    """
+    return create_composite_edge_strata(
+        napistu_graph, stratify_by=STRATIFY_BY.NODE_TYPE
+    ).to_frame(name="edge_strata")
 
 
 # artifact registry
@@ -388,10 +412,16 @@ DEFAULT_ARTIFACTS = [
         description="Comprehensive pathway membership features",
     ),
     ArtifactDefinition(
-        name="composite_edge_strata",
+        name="edge_strata_by_node_species_type",
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
-        creation_func=_create_composite_edge_strata,
-        description="Composite edge strata",
+        creation_func=_create_edge_strata_by_node_species_type,
+        description="Edge strata by node + species type",
+    ),
+    ArtifactDefinition(
+        name="edge_strata_by_node_type",
+        artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
+        creation_func=_create_edge_strata_by_node_type,
+        description="Edge strata by node type",
     ),
 ]
 

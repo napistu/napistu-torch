@@ -187,7 +187,7 @@ class TestDataConfig:
             copy_to_store=True,
             overwrite=True,
             napistu_data_name="unsupervised",
-            other_artifacts=["edge_prediction", "composite_edge_strata"],
+            other_artifacts=["edge_prediction", "edge_strata_by_node_species_type"],
         )
 
         assert config.name == "custom_name"
@@ -197,7 +197,10 @@ class TestDataConfig:
         assert config.copy_to_store is True
         assert config.overwrite is True
         assert config.napistu_data_name == "unsupervised"
-        assert config.other_artifacts == ["edge_prediction", "composite_edge_strata"]
+        assert config.other_artifacts == [
+            "edge_prediction",
+            "edge_strata_by_node_species_type",
+        ]
 
     def test_path_objects(self):
         """Test that Path objects are properly handled."""

@@ -388,7 +388,7 @@ def test_ensure_artifacts_comprehensive(
 
     Tests:
     1. Creating missing NapistuData artifact (unsupervised)
-    2. Creating multiple missing artifacts in one call (edge_prediction, comprehensive_pathway_memberships, composite_edge_strata)
+    2. Creating multiple missing artifacts in one call (edge_prediction, comprehensive_pathway_memberships, edge_strata_by_node_species_type)
     3. Skipping existing artifacts when overwrite=False
     4. Overwriting existing artifacts when overwrite=True
     """
@@ -409,7 +409,7 @@ def test_ensure_artifacts_comprehensive(
         [
             "edge_prediction",
             "comprehensive_pathway_memberships",
-            "composite_edge_strata",
+            "edge_strata_by_node_species_type",
         ],
         overwrite=False,
     )
@@ -417,7 +417,7 @@ def test_ensure_artifacts_comprehensive(
     # Verify all were created
     assert "edge_prediction" in store.list_napistu_datas()
     assert "comprehensive_pathway_memberships" in store.list_vertex_tensors()
-    assert "composite_edge_strata" in store.list_pandas_dfs()
+    assert "edge_strata_by_node_species_type" in store.list_pandas_dfs()
 
     # Test 5: Loading and verifying data integrity
     edge_pred = store.load_napistu_data("edge_prediction")
@@ -426,7 +426,7 @@ def test_ensure_artifacts_comprehensive(
     pathway_membership = store.load_vertex_tensor("comprehensive_pathway_memberships")
     assert pathway_membership.data.shape[0] == napistu_graph.vcount()
 
-    edge_strata = store.load_pandas_df("composite_edge_strata")
+    edge_strata = store.load_pandas_df("edge_strata_by_node_species_type")
     assert len(edge_strata) == napistu_graph.ecount()
 
     # Test 6: Skipping existing artifacts (should not recreate)
