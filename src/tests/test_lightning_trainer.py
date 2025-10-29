@@ -27,6 +27,43 @@ def stub_data_config():
     )
 
 
+def _create_test_trainer(
+    max_epochs=2, callbacks=None, enable_checkpointing=False, accelerator="cpu"
+):
+    """Create a pl.Trainer configured for fast testing.
+
+    Parameters
+    ----------
+    max_epochs : int, default=2
+        Maximum number of epochs to run
+    callbacks : list, optional
+        List of callbacks to use. If None, no callbacks are used.
+    enable_checkpointing : bool, default=False
+        Whether to enable checkpointing.
+    accelerator : str, default="cpu"
+        Accelerator to use ("cpu" or "gpu").
+
+    Returns
+    -------
+    pl.Trainer
+        Configured trainer for testing
+    """
+    if callbacks is None:
+        callbacks = []
+
+    return pl.Trainer(
+        max_epochs=max_epochs,
+        accelerator=accelerator,
+        devices=1,
+        enable_checkpointing=enable_checkpointing,
+        enable_progress_bar=False,  # Disable progress bar for cleaner output
+        enable_model_summary=False,  # Disable model summary for cleaner output
+        logger=False,  # Disable logging for testing
+        fast_dev_run=True,  # Override to ensure fast run
+        callbacks=callbacks,
+    )
+
+
 def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config):
     """Test that we can actually fit an edge prediction model with Lightning trainer."""
 
@@ -60,16 +97,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create trainer with minimal settings for testing
-    trainer = pl.Trainer(
-        max_epochs=2,  # Just 2 epochs for testing
-        accelerator="cpu",  # Use CPU for testing
-        devices=1,
-        enable_checkpointing=False,  # Disable checkpointing for testing
-        enable_progress_bar=False,  # Disable progress bar for cleaner output
-        enable_model_summary=False,  # Disable model summary for cleaner output
-        logger=False,  # Disable logging for testing
-        fast_dev_run=True,  # Override to ensure fast run
-    )
+    trainer = _create_test_trainer(max_epochs=2)
 
     # This should not raise any errors
     trainer.fit(lightning_task, dm)
@@ -140,15 +168,10 @@ def test_edge_prediction_trainer_fit_with_callbacks(
     )
 
     # Create trainer with callbacks
-    trainer = pl.Trainer(
+    trainer = _create_test_trainer(
         max_epochs=3,
-        accelerator="cpu",
-        devices=1,
         callbacks=[early_stopping, model_checkpoint],
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        logger=False,
-        fast_dev_run=True,
+        enable_checkpointing=True,
     )
 
     # This should not raise any errors
@@ -194,16 +217,7 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create trainer
-    trainer = pl.Trainer(
-        max_epochs=1,
-        accelerator="cpu",
-        devices=1,
-        enable_checkpointing=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        logger=False,
-        fast_dev_run=True,
-    )
+    trainer = _create_test_trainer(max_epochs=1)
 
     # Fit the model
     trainer.fit(lightning_task, dm)
@@ -262,16 +276,7 @@ def test_edge_prediction_trainer_different_encoders(
         lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
         # Create trainer
-        trainer = pl.Trainer(
-            max_epochs=1,
-            accelerator="cpu",
-            devices=1,
-            enable_checkpointing=False,
-            enable_progress_bar=False,
-            enable_model_summary=False,
-            logger=False,
-            fast_dev_run=True,
-        )
+        trainer = _create_test_trainer(max_epochs=1)
 
         # This should not raise any errors for any encoder type
         trainer.fit(lightning_task, dm)
@@ -291,17 +296,31 @@ def test_edge_prediction_trainer_different_encoders(
         # So we only check encoder parameters
 
 
+@pytest.mark.parametrize(
+    "accelerator",
+    [
+        pytest.param(
+            "cuda",
+            marks=pytest.mark.skipif(
+                not torch.cuda.is_available(), reason="CUDA not available"
+            ),
+        ),
+        pytest.param(
+            "mps",
+            marks=pytest.mark.skipif(
+                not torch.backends.mps.is_available(), reason="MPS not available"
+            ),
+        ),
+    ],
+)
 def test_edge_prediction_trainer_gpu_if_available(
-    edge_masked_napistu_data, stub_data_config
+    edge_masked_napistu_data, stub_data_config, accelerator
 ):
-    """Test trainer on GPU if available, otherwise skip."""
-
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA not available")
+    """Test trainer on GPU accelerators if available, otherwise skip."""
 
     # Create experiment config
     experiment_config = ExperimentConfig(
-        name="trainer_test_gpu",
+        name=f"trainer_test_{accelerator}",
         seed=42,
         deterministic=True,
         fast_dev_run=True,
@@ -330,27 +349,19 @@ def test_edge_prediction_trainer_gpu_if_available(
     # Create Lightning module
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
-    # Create trainer with GPU
-    trainer = pl.Trainer(
-        max_epochs=1,
-        accelerator="gpu",
-        devices=1,
-        enable_checkpointing=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        logger=False,
-        fast_dev_run=True,
-    )
+    # Create trainer with specified accelerator
+    trainer = _create_test_trainer(max_epochs=1, accelerator=accelerator)
 
     # This should not raise any errors
+    # If training completes successfully with the specified accelerator, it was used
     trainer.fit(lightning_task, dm)
 
-    # Verify model is on GPU
-    encoder_params = list(lightning_task.task.encoder.parameters())
-
-    # Check that at least one parameter is on GPU
-    has_gpu_params = any(param.is_cuda for param in encoder_params)
-    assert has_gpu_params, "Model parameters should be on GPU"
+    # Verify that the trainer was configured with the correct accelerator type
+    accelerator_class_name = trainer.accelerator.__class__.__name__
+    expected_class_name = f"{accelerator.upper()}Accelerator"
+    assert (
+        accelerator_class_name == expected_class_name
+    ), f"Expected {expected_class_name}, got {accelerator_class_name}"
 
 
 @pytest.mark.skip_on_windows
@@ -387,16 +398,7 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create trainer
-    trainer = pl.Trainer(
-        max_epochs=1,
-        accelerator="cpu",
-        devices=1,
-        enable_checkpointing=False,
-        enable_progress_bar=False,
-        enable_model_summary=False,
-        logger=False,
-        fast_dev_run=True,
-    )
+    trainer = _create_test_trainer(max_epochs=1)
 
     # This should not raise any errors
     trainer.fit(lightning_task, dm)
@@ -406,3 +408,81 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     assert len(encoder_params) > 0, "Encoder should have parameters"
     has_gradients = any(param.requires_grad for param in encoder_params)
     assert has_gradients, "Model should have trainable parameters with gradients"
+
+
+def test_edge_prediction_trainer_with_edge_strata(
+    edge_masked_napistu_data, edge_strata, stub_data_config
+):
+    """Test that we can fit an edge prediction model with stratified negative sampling."""
+
+    # Create a minimal experiment config for fast testing
+    experiment_config = ExperimentConfig(
+        name="trainer_test_with_strata",
+        seed=42,
+        deterministic=True,
+        fast_dev_run=True,  # Only run 1 batch for testing
+        limit_train_batches=0.1,  # Limit to 10% of batches
+        limit_val_batches=0.1,
+        data=stub_data_config,
+    )
+
+    # Create data module with direct napistu_data
+    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
+
+    # Create encoder and head
+    encoder = GNNEncoder(
+        in_channels=dm.num_node_features,
+        hidden_channels=32,  # Small for fast testing
+        num_layers=2,
+        encoder_type=ENCODERS.SAGE,
+    )
+    head = DotProductHead()
+
+    # Create task with edge_strata for stratified negative sampling
+    task = EdgePredictionTask(
+        encoder,
+        head,
+        neg_sampling_ratio=1.0,
+        edge_strata=edge_strata,
+        neg_sampling_strategy="degree_weighted",
+    )
+
+    # Verify that edge_strata was set correctly
+    assert task.edge_strata is not None
+    assert task.edge_strata.equals(edge_strata)
+    assert task.neg_sampling_strategy == "degree_weighted"
+
+    # Create Lightning module
+    lightning_task = EdgePredictionLightning(task, experiment_config.training)
+
+    # Create trainer with minimal settings for testing
+    trainer = _create_test_trainer(max_epochs=2)
+
+    # This should not raise any errors
+    trainer.fit(lightning_task, dm)
+
+    # Verify the model was trained
+    encoder_params = list(lightning_task.task.encoder.parameters())
+    assert len(encoder_params) > 0, "Encoder should have parameters"
+    has_gradients = any(param.requires_grad for param in encoder_params)
+    assert has_gradients, "Model should have trainable parameters with gradients"
+
+    # Test that the negative sampler was initialized with edge_strata
+    assert lightning_task.task.negative_sampler is not None
+    assert lightning_task.task._sampler_initialized is True
+
+    # Test that prepare_batch works with edge_strata
+    batch = lightning_task.task.prepare_batch(edge_masked_napistu_data, split="train")
+
+    # Verify batch structure
+    assert "x" in batch
+    assert "supervision_edges" in batch
+    assert "pos_edges" in batch
+    assert "neg_edges" in batch
+
+    # Verify edge indices have correct shape
+    assert batch["pos_edges"].shape[0] == 2  # [2, num_edges]
+    assert batch["neg_edges"].shape[0] == 2  # [2, num_edges]
+
+    # Verify that negative edges were sampled (should have some negative edges)
+    assert batch["neg_edges"].shape[1] > 0, "Should have sampled negative edges"

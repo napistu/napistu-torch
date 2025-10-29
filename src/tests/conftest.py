@@ -16,7 +16,9 @@ from napistu_torch.configs import (
     DataConfig,
     ExperimentConfig,
 )
+from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
+from napistu_torch.evaluation.stratification import create_composite_edge_strata
 from napistu_torch.load.constants import (
     ENCODING_MANAGER,
     ENCODINGS,
@@ -293,3 +295,12 @@ def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
             "unsupervised"
         ],  # This fixture has a real store, so it can have other artifacts
     )
+
+
+@pytest.fixture
+def edge_strata(napistu_graph) -> pd.DataFrame:
+    """Create edge strata for testing stratified negative sampling."""
+    strata_series = create_composite_edge_strata(
+        napistu_graph, stratify_by=STRATIFY_BY.NODE_TYPE
+    )
+    return strata_series.to_frame("edge_strata")
