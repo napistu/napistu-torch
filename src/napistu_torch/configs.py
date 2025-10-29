@@ -56,6 +56,13 @@ class ModelConfig(BaseModel):
         default=0.1, ge=0.0, lt=1.0
     )  # For node classification head
 
+    # Edge encoder fields (optional, with defaults)
+    use_edge_encoder: Optional[bool] = False  # Whether to use edge encoder
+    edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
+    edge_encoder_dropout: Optional[float] = Field(
+        default=0.1, ge=0.0, lt=1.0
+    )  # Edge encoder dropout
+
     @field_validator(MODEL_DEFS.ENCODER)
     @classmethod
     def validate_encoder(cls, v):
