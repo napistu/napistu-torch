@@ -218,7 +218,7 @@ class NapistuDataModule(pl.LightningDataModule):
         --------
         >>> dm = NapistuDataModule(config, napistu_data_name="edge_prediction")
         >>> in_channels = dm.num_node_features
-        >>> encoder = GNNEncoder.from_config(model_config, in_channels=in_channels)
+        >>> encoder = MessagePassingEncoder.from_config(model_config, in_channels=in_channels)
         """
 
         # Determine splitting strategy from the data itself

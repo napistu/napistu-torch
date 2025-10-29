@@ -11,8 +11,8 @@ from napistu_torch.configs import DataConfig, ExperimentConfig
 from napistu_torch.lightning.data_module import NapistuDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.models.constants import ENCODERS
-from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
+from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
@@ -82,7 +82,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
     dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,  # Small for fast testing
         num_layers=2,
@@ -139,7 +139,7 @@ def test_edge_prediction_trainer_fit_with_callbacks(
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -202,7 +202,7 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -261,7 +261,7 @@ def test_edge_prediction_trainer_different_encoders(
         )
 
         # Create encoder and head
-        encoder = GNNEncoder(
+        encoder = MessagePassingEncoder(
             in_channels=dm.num_node_features,
             hidden_channels=16,  # Small for fast testing
             num_layers=1,  # Minimal layers
@@ -335,7 +335,7 @@ def test_edge_prediction_trainer_gpu_if_available(
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -383,7 +383,7 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     dm = NapistuDataModule(temp_data_config_with_store)
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -430,7 +430,7 @@ def test_edge_prediction_trainer_with_edge_strata(
     dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,  # Small for fast testing
         num_layers=2,

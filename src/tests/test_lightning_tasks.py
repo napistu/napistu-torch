@@ -7,8 +7,8 @@ from napistu_torch.lightning.data_module import NapistuDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.models.constants import ENCODERS
-from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
+from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
@@ -16,7 +16,7 @@ def test_edge_prediction_lightning_integration(
     edge_masked_napistu_data, experiment_config, data_config
 ):
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -58,7 +58,7 @@ def test_edge_prediction_task_prepare_batch(edge_masked_napistu_data):
     """Test EdgePredictionTask.prepare_batch method with different splits."""
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -94,7 +94,7 @@ def test_edge_prediction_task_prepare_batch(edge_masked_napistu_data):
 def test_lightning_task_batch_validation(edge_masked_napistu_data, experiment_config):
     """Test that Lightning tasks properly validate batch types."""
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=edge_masked_napistu_data.num_node_features,
         hidden_channels=32,
         num_layers=2,

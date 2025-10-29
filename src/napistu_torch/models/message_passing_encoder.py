@@ -28,7 +28,7 @@ ENCODER_CLASSES = {
 }
 
 
-class GNNEncoder(nn.Module):
+class MessagePassingEncoder(nn.Module):
     """
     Unified Graph Neural Network encoder supporting multiple architectures.
 
@@ -67,11 +67,11 @@ class GNNEncoder(nn.Module):
     Examples
     --------
     >>> # Direct instantiation
-    >>> encoder = GNNEncoder(128, 256, 3, encoder_type='sage', sage_aggregator='mean')
+    >>> encoder = MessagePassingEncoder(128, 256, 3, encoder_type='sage', sage_aggregator='mean')
     >>>
     >>> # From config
     >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
-    >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+    >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128)
     """
 
     def __init__(
@@ -219,9 +219,11 @@ class GNNEncoder(nn.Module):
         return self.forward(x, edge_index)
 
     @classmethod
-    def from_config(cls, config: ModelConfig, in_channels: int) -> "GNNEncoder":
+    def from_config(
+        cls, config: ModelConfig, in_channels: int
+    ) -> "MessagePassingEncoder":
         """
-        Create GNNEncoder from ModelConfig.
+        Create MessagePassingEncoder from ModelConfig.
 
         Parameters
         ----------
@@ -232,13 +234,13 @@ class GNNEncoder(nn.Module):
 
         Returns
         -------
-        GNNEncoder
+        MessagePassingEncoder
             Configured encoder instance
 
         Examples
         --------
         >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
-        >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+        >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128)
         """
 
         encoder_type = getattr(config, MODEL_CONFIG.ENCODER)
