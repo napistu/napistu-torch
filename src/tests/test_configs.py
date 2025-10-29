@@ -21,11 +21,9 @@ from napistu_torch.constants import (
     OPTIMIZERS,
     SCHEDULERS,
     TASK_CONFIG,
-    TASKS,
     TRAINING_CONFIG,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
-    VALID_TASKS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
     WANDB_MODES,
@@ -37,6 +35,10 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
+)
+from napistu_torch.tasks.constants import (
+    TASKS,
+    VALID_TASKS,
 )
 
 

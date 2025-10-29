@@ -7,17 +7,19 @@ functions before passing the data to this DataModule (prevents data leakage).
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader, Dataset
 
-from napistu_torch.configs import DataConfig
+from napistu_torch.configs import DataConfig, TaskConfig
 from napistu_torch.constants import ARTIFACT_TYPES
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
+from napistu_torch.load.constants import STRATIFY_BY_ARTIFACT_NAMES
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.napistu_data_store import NapistuDataStore
+from napistu_torch.tasks.constants import TASKS
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +62,8 @@ class NapistuDataModule(pl.LightningDataModule):
     ----------
     config : DataConfig
         Pydantic data configuration
+    task_config : Optional[TaskConfig]
+        Pydantic task configuration
     napistu_data_name : Optional[str]
         Name of the NapistuData artifact to use for training.
         If None, uses config.napistu_data_name.
@@ -103,6 +107,7 @@ class NapistuDataModule(pl.LightningDataModule):
     def __init__(
         self,
         config: DataConfig,
+        task_config: Optional[TaskConfig] = None,
         napistu_data_name: Optional[str] = None,
         other_artifacts: Optional[List[str]] = None,
         napistu_data: Optional[NapistuData] = None,
@@ -120,6 +125,13 @@ class NapistuDataModule(pl.LightningDataModule):
             napistu_data_name = config.napistu_data_name
         if other_artifacts is None:
             other_artifacts = config.other_artifacts
+
+        # Add additional artifacts required by the task
+        if task_config is not None:
+            task_artifacts = _task_config_to_artifact_names(task_config)
+            other_artifacts = list[str](
+                set[str](other_artifacts) | set[str](task_artifacts)
+            )
 
         # Create or load the store from config
         if store is None:
@@ -174,6 +186,14 @@ class NapistuDataModule(pl.LightningDataModule):
         if napistu_data is None:
             logger.info(f"Loading napistu_data '{napistu_data_name}' from store")
             self.napistu_data = napistu_data_store.load_napistu_data(napistu_data_name)
+
+        # load the other artifacts from the store
+        self.other_artifacts = dict[str, Any]()
+        for artifact_name in other_artifacts:
+            artifact_type = artifact_registry[artifact_name].artifact_type
+            self.other_artifacts[artifact_name] = napistu_data_store.load_artifact(
+                artifact_name, artifact_type
+            )
 
         # This ensures hasattr() works correctly and setup() can check them
         self.data = None
@@ -317,3 +337,32 @@ def _get_dataloader(dataset: SingleGraphDataset) -> DataLoader:
         collate_fn=identity_collate,  # Don't use PyG's batching
         num_workers=0,  # Single graph, no benefit from workers
     )
+
+
+def _task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
+    """
+    Convert a TaskConfig to a list of artifact names.
+    """
+
+    if task_config.task == TASKS.EDGE_PREDICTION:
+        return _task_config_to_artifact_names_edge_prediction(task_config)
+    else:
+        return list()
+
+
+def _task_config_to_artifact_names_edge_prediction(
+    task_config: TaskConfig,
+) -> List[str]:
+    """
+    Convert a TaskConfig to a list of artifact names for edge prediction.
+    """
+
+    ALL_VALID = {"none"} | STRATIFY_BY_ARTIFACT_NAMES
+    if task_config.edge_prediction_neg_sampling_stratify_by not in ALL_VALID:
+        raise ValueError(
+            f"Invalid stratify_by value: {task_config.edge_prediction_neg_sampling_stratify_by}. Must be one of: {ALL_VALID}"
+        )
+    if task_config.edge_prediction_neg_sampling_stratify_by == "none":
+        return list()
+    else:
+        return [task_config.edge_prediction_neg_sampling_stratify_by]

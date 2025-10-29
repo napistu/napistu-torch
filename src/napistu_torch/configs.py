@@ -7,11 +7,9 @@ from napistu_torch.constants import (
     METRICS,
     OPTIMIZERS,
     TASK_CONFIG,
-    TASKS,
     TRAINING_CONFIG,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
-    VALID_TASKS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
 )
@@ -22,6 +20,10 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
+)
+from napistu_torch.tasks.constants import (
+    TASKS,
+    VALID_TASKS,
 )
 
 
@@ -112,7 +114,7 @@ class TaskConfig(BaseModel):
     metrics: List[str] = Field(default_factory=lambda: [METRICS.AUC, METRICS.AP])
 
     edge_prediction_neg_sampling_ratio: float = Field(default=1.0, gt=0.0)
-    edge_prediction_neg_sampling_stratify_by: str = Field(default="node_species_type")
+    edge_prediction_neg_sampling_stratify_by: str = Field(default="none")
     edge_prediction_neg_sampling_strategy: str = Field(default="degree_weighted")
 
     @field_validator(TASK_CONFIG.TASK)
