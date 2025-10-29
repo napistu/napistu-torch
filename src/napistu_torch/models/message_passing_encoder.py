@@ -5,10 +5,13 @@ Removed edge_weight parameter since it's not used for message passing.
 Edge weights are stored in edge attributes for supervision, not encoding.
 """
 
+import logging
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GCNConv, SAGEConv
+from torch_geometric.nn import GATConv, GCNConv, GraphConv, SAGEConv
 
 from napistu_torch.configs import ModelConfig
 from napistu_torch.constants import MODEL_CONFIG
@@ -21,10 +24,13 @@ from napistu_torch.models.constants import (
     VALID_ENCODERS,
 )
 
+logger = logging.getLogger(__name__)
+
 ENCODER_CLASSES = {
-    ENCODERS.SAGE: SAGEConv,
-    ENCODERS.GCN: GCNConv,
     ENCODERS.GAT: GATConv,
+    ENCODERS.GCN: GCNConv,
+    ENCODERS.GRAPH_CONV: GraphConv,
+    ENCODERS.SAGE: SAGEConv,
 }
 
 
@@ -34,6 +40,13 @@ class MessagePassingEncoder(nn.Module):
 
     This class eliminates boilerplate by providing a single interface for
     SAGE, GCN, and GAT models with consistent behavior and configuration.
+
+    Edge Weight Support
+    -------------------
+    - GCN: ✅ Supports edge_weight parameter
+    - GraphConv: ✅ Supports edge_weight parameter (SAGE-like with edge weights)
+    - SAGE: ❌ Does not support edge_weight (gracefully ignored)
+    - GAT: ❌ Uses learned attention (edge_weight not needed)
 
     Parameters
     ----------
@@ -53,6 +66,8 @@ class MessagePassingEncoder(nn.Module):
         Number of attention heads for GAT, by default 1
     gat_concat : bool, optional
         Whether to concatenate attention heads in GAT, by default True
+    graph_conv_aggregator : str, optional
+        Aggregation method for GraphConv, by default 'add'
 
     Notes
     -----
@@ -81,11 +96,13 @@ class MessagePassingEncoder(nn.Module):
         num_layers: int,
         dropout: float = 0.0,
         encoder_type: str = ENCODERS.SAGE,
-        # SAGE-specific parameters
-        sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
         # GAT-specific parameters
         gat_heads: int = 1,
         gat_concat: bool = True,
+        # GraphConv-specific parameters
+        graph_conv_aggregator: str = ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR,
+        # SAGE-specific parameters
+        sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -100,6 +117,7 @@ class MessagePassingEncoder(nn.Module):
 
         encoder = ENCODER_CLASSES[encoder_type]
         self.convs = nn.ModuleList()
+        self.supports_edge_weight = encoder_type in [ENCODERS.GCN, ENCODERS.GRAPH_CONV]
 
         # Build encoder_kwargs based on encoder using dict comprehension
         param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder_type, {})
@@ -147,7 +165,7 @@ class MessagePassingEncoder(nn.Module):
 
                     self.convs.append(encoder(in_dim, hidden_channels, **layer_kwargs))
                 else:
-                    # SAGE/GCN: hidden_channels -> hidden_channels
+                    # SAGE/GCN/GraphConv: hidden_channels -> hidden_channels
                     self.convs.append(
                         encoder(hidden_channels, hidden_channels, **encoder_kwargs)
                     )
@@ -156,6 +174,7 @@ class MessagePassingEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_weight: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass through the GNN encoder.
@@ -166,6 +185,10 @@ class MessagePassingEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
+        edge_weight : torch.Tensor, optional
+            Edge weights [num_edges] for weighted message passing.
+            Only used if encoder supports it (GCN, GraphConv).
+            Ignored gracefully for SAGE and GAT.
 
         Returns
         -------
@@ -182,8 +205,16 @@ class MessagePassingEncoder(nn.Module):
         - SAGE: Implement custom message passing (not natively supported)
         - GAT: Already uses learned attention (different from edge weights)
         """
+        if not self.supports_edge_weight and edge_weight is not None:
+            logger.warning(
+                f"Edge weights are not supported for {self.encoder_type}. Ignoring edge_weight."
+            )
+
         for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
+            if edge_weight is not None and self.supports_edge_weight:
+                x = conv(x, edge_index, edge_weight=edge_weight)
+            else:
+                x = conv(x, edge_index)
 
             # Apply activation and dropout (except on last layer)
             if i < len(self.convs) - 1:
@@ -200,6 +231,7 @@ class MessagePassingEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_weight: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Alias for forward method for consistency with other models.
@@ -210,13 +242,17 @@ class MessagePassingEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
+        edge_weight : Optional[torch.Tensor]
+            Edge weights [num_edges] for weighted message passing.
+            Only used if encoder supports it (GCN, GraphConv).
+            Ignored gracefully for SAGE and GAT.
 
         Returns
         -------
         torch.Tensor
             Node embeddings [num_nodes, hidden_channels]
         """
-        return self.forward(x, edge_index)
+        return self.forward(x, edge_index, edge_weight)
 
     @classmethod
     def from_config(
@@ -258,6 +294,13 @@ class MessagePassingEncoder(nn.Module):
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_HEADS] = config.gat_heads
         if encoder_type == ENCODERS.GAT and config.gat_concat is not None:
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_CONCAT] = config.gat_concat
+        if (
+            encoder_type == ENCODERS.GRAPH_CONV
+            and config.graph_conv_aggregator is not None
+        ):
+            model_kwargs[ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR] = (
+                config.graph_conv_aggregator
+            )
 
         return cls(
             in_channels=in_channels,

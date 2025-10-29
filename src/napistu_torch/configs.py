@@ -37,9 +37,12 @@ class ModelConfig(BaseModel):
     head: str = Field(default=HEADS.DOT_PRODUCT)
 
     # Model-specific fields (optional, with defaults)
-    sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
     gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
     gat_concat: Optional[bool] = True  # For GAT
+    graph_conv_aggregator: Optional[str] = (
+        ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR
+    )  # For GraphConv
+    sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
 
     # Head-specific fields (optional, with defaults)
     mlp_hidden_dim: Optional[int] = 64  # For MLP head
