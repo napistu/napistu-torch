@@ -117,8 +117,10 @@ MODEL_CONFIG = SimpleNamespace(
 
 TASK_CONFIG = SimpleNamespace(
     TASK="task",
-    NEG_SAMPLING_RATIO="neg_sampling_ratio",
     METRICS="metrics",
+    EDGE_PREDICTION_NEG_SAMPLING_RATIO="edge_prediction_neg_sampling_ratio",
+    EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY="edge_prediction_neg_sampling_stratify_by",
+    EDGE_PREDICTION_NEG_SAMPLING_STRATEGY="edge_prediction_neg_sampling_strategy",
 )
 
 TRAINING_CONFIG = SimpleNamespace(

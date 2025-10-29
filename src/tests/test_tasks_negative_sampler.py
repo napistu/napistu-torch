@@ -1,0 +1,182 @@
+import pytest
+import torch
+
+from napistu_torch.tasks.negative_sampler import NegativeSampler
+
+
+@pytest.fixture(autouse=True)
+def set_random_seed():
+    """Set random seed before each test for reproducibility."""
+    torch.manual_seed(42)
+    yield
+
+
+def test_basic_sampling():
+    """Test that sampler returns correct shape and respects basic constraints"""
+    # Create simple graph: 10 nodes, 2 categories
+    edge_index = torch.tensor(
+        [
+            [0, 1, 2, 3, 4, 5, 6, 7],
+            [5, 6, 7, 8, 9, 6, 7, 8],
+        ]
+    )
+    edge_categories = torch.tensor([0, 0, 0, 0, 1, 1, 1, 1])
+
+    sampler = NegativeSampler(edge_index, edge_categories)
+
+    # Sample negatives
+    num_neg = 100
+    neg_edges = sampler.sample(num_neg)
+
+    # Check shape
+    assert neg_edges.shape == (2, num_neg)
+    assert neg_edges.dtype == torch.long
+
+    # Check no self-loops
+    assert (neg_edges[0] == neg_edges[1]).sum() == 0
+
+
+def test_no_collision_with_positives():
+    """Test that sampled negatives don't overlap with positive edges"""
+    # Create graph
+    edge_index = torch.tensor(
+        [
+            [0, 1, 2, 3, 4, 5],
+            [5, 6, 7, 8, 9, 6],
+        ]
+    )
+    edge_categories = torch.zeros(6, dtype=torch.long)
+
+    sampler = NegativeSampler(edge_index, edge_categories)
+    neg_edges = sampler.sample(500)
+
+    # Convert to sets for comparison
+    pos_edges = set(tuple(e) for e in edge_index.t().tolist())
+    neg_edges_set = set(tuple(e) for e in neg_edges.t().tolist())
+
+    # Check no overlap
+    overlap = pos_edges & neg_edges_set
+    assert len(overlap) == 0, f"Found {len(overlap)} positive edges in negatives"
+
+
+def test_category_constraints():
+    """Test that negatives respect edge category structure"""
+    # Create graph with distinct categories
+    # Category 0: nodes 0-2 -> nodes 5-7
+    # Category 1: nodes 3-4 -> nodes 8-9
+    edge_index = torch.tensor(
+        [
+            [0, 1, 2, 3, 4],
+            [5, 6, 7, 8, 9],
+        ]
+    )
+    edge_categories = torch.tensor([0, 0, 0, 1, 1])
+
+    sampler = NegativeSampler(edge_index, edge_categories)
+    neg_edges = sampler.sample(200)
+
+    # Check each negative belongs to a valid category
+    for src, dst in neg_edges.t():
+        src_item, dst_item = src.item(), dst.item()
+
+        # Should be in category 0 (0-2 -> 5-7) or category 1 (3-4 -> 8-9)
+        valid_cat0 = (src_item in [0, 1, 2]) and (dst_item in [5, 6, 7])
+        valid_cat1 = (src_item in [3, 4]) and (dst_item in [8, 9])
+
+        assert (
+            valid_cat0 or valid_cat1
+        ), f"Edge ({src_item}, {dst_item}) doesn't match any category"
+
+
+def test_degree_weighted_sampling():
+    """Test that degree-weighted strategy differs from uniform"""
+    # Create a larger, sparser graph with clear degree differences
+    # Nodes 0-4 are sources, nodes 10-19 are destinations
+    # Node 0 has high out-degree (5 edges), nodes 1-4 have low out-degree (1 edge each)
+    edge_index = torch.tensor(
+        [
+            [0, 0, 0, 0, 0, 1, 2, 3, 4],  # node 0: degree 5  # nodes 1-4: degree 1 each
+            [10, 11, 12, 13, 14, 15, 16, 17, 18],
+        ]
+    )
+    edge_categories = torch.zeros(9, dtype=torch.long)
+
+    # Uniform sampling
+    sampler_uniform = NegativeSampler(
+        edge_index, edge_categories, sampling_strategy="uniform"
+    )
+
+    # Degree-weighted sampling
+    sampler_degree = NegativeSampler(
+        edge_index, edge_categories, sampling_strategy="degree_weighted"
+    )
+
+    # Sample large batch (graph has plenty of room: 5 sources × 10 destinations = 50 possible edges, only 9 exist)
+    neg_uniform = sampler_uniform.sample(500)
+    neg_degree = sampler_degree.sample(500)
+
+    # Count how often node 0 appears as source
+    count_uniform = (neg_uniform[0] == 0).sum().item()
+    count_degree = (neg_degree[0] == 0).sum().item()
+
+    # Node 0 has 5/9 ≈ 56% of edges, so in degree-weighted sampling it should appear
+    # much more frequently than in uniform (where it's 1/5 = 20%)
+    # Uniform: expect ~100 out of 500 (20%)
+    # Degree-weighted: expect ~280 out of 500 (56%)
+    assert count_degree > count_uniform * 1.5, (
+        f"Degree-weighted should sample high-degree nodes more frequently: "
+        f"uniform={count_uniform} ({count_uniform/500:.1%}), "
+        f"degree={count_degree} ({count_degree/500:.1%})"
+    )
+
+
+def test_oversample_ratio_adaptation():
+    """Test that oversample ratio adapts and persists across calls"""
+    # Create a DENSE graph to force high collision rate
+    # 20 nodes, but densely connected (50% of possible edges)
+
+    num_cat0_nodes_src = 10
+    num_cat0_nodes_dst = 10
+
+    # Create dense category 0: most edges between two groups exist
+    src_nodes = []
+    dst_nodes = []
+    for s in range(num_cat0_nodes_src):
+        for d in range(num_cat0_nodes_src, num_cat0_nodes_src + num_cat0_nodes_dst):
+            # Include 70% of possible edges to create high saturation
+            if torch.rand(1).item() < 0.7:
+                src_nodes.append(s)
+                dst_nodes.append(d)
+
+    edge_index = torch.tensor([src_nodes, dst_nodes])
+    edge_categories = torch.zeros(len(src_nodes), dtype=torch.long)
+
+    # Start with low oversample ratio
+    sampler = NegativeSampler(
+        edge_index,
+        edge_categories,
+        oversample_ratio=1.1,  # Very low to force adaptation
+        max_oversample_ratio=2.0,
+    )
+
+    initial_ratio = sampler.oversample_ratio
+    assert initial_ratio == 1.1
+
+    # Sample large batch - should trigger adaptation due to high collision rate
+    sampler.sample(500)
+    ratio_after_first = sampler.oversample_ratio
+
+    # Ratio MUST have increased due to dense graph
+    assert (
+        ratio_after_first > initial_ratio
+    ), f"Dense graph should trigger adaptation: {initial_ratio} -> {ratio_after_first}"
+
+    # Sample again - ratio should persist (not reset)
+    sampler.sample(500)
+    ratio_after_second = sampler.oversample_ratio
+
+    # Should stay elevated or increase further
+    assert ratio_after_second >= ratio_after_first
+
+    # Should respect max
+    assert sampler.oversample_ratio <= 2.0

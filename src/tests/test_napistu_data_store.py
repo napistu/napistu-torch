@@ -15,7 +15,12 @@ from napistu_torch.constants import (
     NAPISTU_DATA_STORE,
     VERTEX_TENSOR,
 )
-from napistu_torch.load.constants import SPLITTING_STRATEGIES
+from napistu_torch.load.artifacts import ArtifactDefinition
+from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
+    SPLITTING_STRATEGIES,
+)
+from napistu_torch.load.napistu_graphs import construct_unsupervised_pyg_data
 from napistu_torch.napistu_data_store import NapistuDataStore
 
 
@@ -388,7 +393,7 @@ def test_ensure_artifacts_comprehensive(
 
     Tests:
     1. Creating missing NapistuData artifact (unsupervised)
-    2. Creating multiple missing artifacts in one call (edge_prediction, comprehensive_pathway_memberships, composite_edge_strata)
+    2. Creating multiple missing artifacts in one call (edge_prediction, comprehensive_pathway_memberships, edge_strata_by_node_species_type)
     3. Skipping existing artifacts when overwrite=False
     4. Overwriting existing artifacts when overwrite=True
     """
@@ -407,35 +412,45 @@ def test_ensure_artifacts_comprehensive(
     # Test 2 & 3 & 4: Create multiple artifacts of different types
     store.ensure_artifacts(
         [
-            "edge_prediction",
-            "comprehensive_pathway_memberships",
-            "composite_edge_strata",
+            DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
+            DEFAULT_ARTIFACTS_NAMES.COMPREHENSIVE_PATHWAY_MEMBERSHIPS,
+            DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
         ],
         overwrite=False,
     )
 
     # Verify all were created
-    assert "edge_prediction" in store.list_napistu_datas()
-    assert "comprehensive_pathway_memberships" in store.list_vertex_tensors()
-    assert "composite_edge_strata" in store.list_pandas_dfs()
+    assert DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION in store.list_napistu_datas()
+    assert (
+        DEFAULT_ARTIFACTS_NAMES.COMPREHENSIVE_PATHWAY_MEMBERSHIPS
+        in store.list_vertex_tensors()
+    )
+    assert (
+        DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE
+        in store.list_pandas_dfs()
+    )
 
     # Test 5: Loading and verifying data integrity
-    edge_pred = store.load_napistu_data("edge_prediction")
+    edge_pred = store.load_napistu_data(DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION)
     assert edge_pred.splitting_strategy == SPLITTING_STRATEGIES.EDGE_MASK
 
-    pathway_membership = store.load_vertex_tensor("comprehensive_pathway_memberships")
+    pathway_membership = store.load_vertex_tensor(
+        DEFAULT_ARTIFACTS_NAMES.COMPREHENSIVE_PATHWAY_MEMBERSHIPS
+    )
     assert pathway_membership.data.shape[0] == napistu_graph.vcount()
 
-    edge_strata = store.load_pandas_df("composite_edge_strata")
+    edge_strata = store.load_pandas_df(
+        DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE
+    )
     assert len(edge_strata) == napistu_graph.ecount()
 
     # Test 6: Skipping existing artifacts (should not recreate)
     initial_napistu_data_count = len(store.list_napistu_datas())
-    store.ensure_artifacts(["unsupervised"], overwrite=False)
+    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED], overwrite=False)
     assert len(store.list_napistu_datas()) == initial_napistu_data_count
 
     # Test 7: Overwriting existing artifact
-    store.ensure_artifacts(["unsupervised"], overwrite=True)
+    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED], overwrite=True)
     # Should still have same count but artifact was recreated
     assert len(store.list_napistu_datas()) == initial_napistu_data_count
 
@@ -457,7 +472,11 @@ def test_ensure_artifacts_error_handling(temp_napistu_data_store_with_real_data)
     # Test 2: Invalid registry (empty dict)
 
     with pytest.raises(ValueError, match="cannot be empty"):
-        store.ensure_artifacts(["unsupervised"], artifact_registry={}, overwrite=False)
+        store.ensure_artifacts(
+            [DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED],
+            artifact_registry={},
+            overwrite=False,
+        )
 
 
 @pytest.mark.skip_on_windows
@@ -466,12 +485,6 @@ def test_ensure_artifacts_with_custom_registry(
 ):
     """Test ensure_artifacts with a custom artifact registry."""
     store = temp_napistu_data_store_with_real_data
-
-    # Import required classes
-    from napistu_torch.constants import ARTIFACT_TYPES
-    from napistu_torch.load.artifacts import ArtifactDefinition
-    from napistu_torch.load.constants import SPLITTING_STRATEGIES
-    from napistu_torch.load.napistu_graphs import construct_unsupervised_pyg_data
 
     # Create a minimal custom registry with just one artifact
     def custom_unsupervised(sbml_dfs, napistu_graph):
@@ -535,11 +548,11 @@ def test_validate_artifact_name(temp_napistu_data_store, supervised_napistu_data
     store = temp_napistu_data_store
 
     # Test 1: Valid artifact name from registry (not in store)
-    store.validate_artifact_name("unsupervised")  # Should pass
+    store.validate_artifact_name(DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED)  # Should pass
 
     # Test 2: Valid artifact name with required type
     store.validate_artifact_name(
-        "unsupervised", required_type=ARTIFACT_TYPES.NAPISTU_DATA
+        DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED, required_type=ARTIFACT_TYPES.NAPISTU_DATA
     )  # Should pass
 
     # Test 3: Invalid artifact name (not in registry)
@@ -549,7 +562,8 @@ def test_validate_artifact_name(temp_napistu_data_store, supervised_napistu_data
     # Test 4: Wrong type requirement
     with pytest.raises(KeyError, match="is a napistu_data, not a vertex_tensor"):
         store.validate_artifact_name(
-            "unsupervised", required_type=ARTIFACT_TYPES.VERTEX_TENSOR
+            DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED,
+            required_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         )
 
     # Test 5: Artifact already in store

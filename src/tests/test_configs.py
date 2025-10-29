@@ -21,11 +21,9 @@ from napistu_torch.constants import (
     OPTIMIZERS,
     SCHEDULERS,
     TASK_CONFIG,
-    TASKS,
     TRAINING_CONFIG,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
-    VALID_TASKS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
     WANDB_MODES,
@@ -37,6 +35,10 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
+)
+from napistu_torch.tasks.constants import (
+    TASKS,
+    VALID_TASKS,
 )
 
 
@@ -187,7 +189,7 @@ class TestDataConfig:
             copy_to_store=True,
             overwrite=True,
             napistu_data_name="unsupervised",
-            other_artifacts=["edge_prediction", "composite_edge_strata"],
+            other_artifacts=["edge_prediction", "edge_strata_by_node_species_type"],
         )
 
         assert config.name == "custom_name"
@@ -197,7 +199,10 @@ class TestDataConfig:
         assert config.copy_to_store is True
         assert config.overwrite is True
         assert config.napistu_data_name == "unsupervised"
-        assert config.other_artifacts == ["edge_prediction", "composite_edge_strata"]
+        assert config.other_artifacts == [
+            "edge_prediction",
+            "edge_strata_by_node_species_type",
+        ]
 
     def test_path_objects(self):
         """Test that Path objects are properly handled."""
@@ -238,20 +243,22 @@ class TestTaskConfig:
         assert "Invalid task" in str(exc_info.value)
 
     def test_neg_sampling_ratio_validation(self):
-        """Test neg_sampling_ratio validation with valid and invalid values."""
+        """Test edge_prediction_neg_sampling_ratio validation with valid and invalid values."""
         # Test valid values
         valid_ratios = [0.1, 1.0, 2.0, 5.0, 10.0]
         for ratio in valid_ratios:
-            config = TaskConfig(neg_sampling_ratio=ratio)
-            assert hasattr(config, TASK_CONFIG.NEG_SAMPLING_RATIO)
-            assert config.neg_sampling_ratio == ratio
+            config = TaskConfig(edge_prediction_neg_sampling_ratio=ratio)
+            assert hasattr(config, TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_RATIO)
+            assert config.edge_prediction_neg_sampling_ratio == ratio
 
         # Test invalid values
         with pytest.raises(ValidationError):
-            TaskConfig(neg_sampling_ratio=0.0)  # At minimum (should be > 0.0)
+            TaskConfig(
+                edge_prediction_neg_sampling_ratio=0.0
+            )  # At minimum (should be > 0.0)
 
         with pytest.raises(ValidationError):
-            TaskConfig(neg_sampling_ratio=-1.0)  # Negative value
+            TaskConfig(edge_prediction_neg_sampling_ratio=-1.0)  # Negative value
 
     def test_metrics_validation(self):
         """Test metrics validation with valid and invalid values."""
@@ -273,17 +280,23 @@ class TestTaskConfig:
 
         # Test that all fields exist
         assert hasattr(config, TASK_CONFIG.TASK)
-        assert hasattr(config, TASK_CONFIG.NEG_SAMPLING_RATIO)
+        assert hasattr(config, TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_RATIO)
+        assert hasattr(config, TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY)
+        assert hasattr(config, TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY)
         assert hasattr(config, TASK_CONFIG.METRICS)
 
         # Test that they can be customized
         config = TaskConfig(
             task=TASKS.NODE_CLASSIFICATION,
-            neg_sampling_ratio=3.0,
+            edge_prediction_neg_sampling_ratio=3.0,
+            edge_prediction_neg_sampling_stratify_by="node_type",
+            edge_prediction_neg_sampling_strategy="uniform",
             metrics=[METRICS.AUC],
         )
         assert config.task == TASKS.NODE_CLASSIFICATION
-        assert config.neg_sampling_ratio == 3.0
+        assert config.edge_prediction_neg_sampling_ratio == 3.0
+        assert config.edge_prediction_neg_sampling_stratify_by == "node_type"
+        assert config.edge_prediction_neg_sampling_strategy == "uniform"
         assert config.metrics == [METRICS.AUC]
 
 
@@ -593,7 +606,9 @@ class TestConfigIntegration:
 
         task_config = TaskConfig(
             task=TASKS.NODE_CLASSIFICATION,
-            neg_sampling_ratio=2.0,
+            edge_prediction_neg_sampling_ratio=2.0,
+            edge_prediction_neg_sampling_stratify_by="node_species_type",
+            edge_prediction_neg_sampling_strategy="degree_weighted",
             metrics=[METRICS.AUC],
         )
 
@@ -672,7 +687,7 @@ class TestConfigIntegration:
         original_config.data.name = "roundtrip_data"
         original_config.data.napistu_data_name = "unsupervised"
         original_config.data.other_artifacts = ["edge_prediction"]
-        original_config.task.neg_sampling_ratio = 3.0
+        original_config.task.edge_prediction_neg_sampling_ratio = 3.0
         original_config.training.lr = 0.005
         original_config.wandb.project = "roundtrip-project"
 
@@ -692,6 +707,6 @@ class TestConfigIntegration:
             assert loaded_config.data.name == "roundtrip_data"
             assert loaded_config.data.napistu_data_name == "unsupervised"
             assert loaded_config.data.other_artifacts == ["edge_prediction"]
-            assert loaded_config.task.neg_sampling_ratio == 3.0
+            assert loaded_config.task.edge_prediction_neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"
