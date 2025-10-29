@@ -4,6 +4,8 @@ from typing import Literal, Optional
 import numpy as np
 import torch
 
+from napistu_torch.tasks.constants import NEGATIVE_SAMPLING_STRATEGIES
+
 logger = logging.getLogger(__name__)
 
 
@@ -11,15 +13,18 @@ class NegativeSampler:
     """
     Efficient negative edge sampler using vectorized collision detection.
 
-    Uses category-constrained sampling with fast np.isin() for collision detection.
+    Uses strata-constrained sampling with fast np.isin() for collision detection.
     Inspired by PyTorch Geometric's negative_sampling implementation.
     """
 
     def __init__(
         self,
         edge_index: torch.Tensor,
-        edge_categories: torch.Tensor,
-        sampling_strategy: Literal["uniform", "degree_weighted"] = "uniform",
+        edge_strata: torch.Tensor,
+        sampling_strategy: Literal[
+            NEGATIVE_SAMPLING_STRATEGIES.UNIFORM,
+            NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
+        ] = NEGATIVE_SAMPLING_STRATEGIES.UNIFORM,
         oversample_ratio: float = 1.2,
         max_oversample_ratio: float = 2.0,
     ):
@@ -30,10 +35,12 @@ class NegativeSampler:
         ----------
         edge_index : torch.Tensor
             Training edges [2, num_edges]
-        edge_categories : torch.Tensor
-            Category label for each edge [num_edges]
+        edge_strata : torch.Tensor
+            Strata label for each edge [num_edges]
         sampling_strategy : {'uniform', 'degree_weighted'}
-            How to sample nodes within each category
+            How to sample nodes within each strata. Either:
+            - 'uniform': Sample nodes uniformly within each strata
+            - 'degree_weighted': Sample nodes according to their out- and in-degree within each strata
         oversample_ratio : float
             Initial over-sampling factor (1.2 = 20% extra to account for collisions).
             Will be adaptively increased if needed and maintained across calls.
@@ -47,10 +54,10 @@ class NegativeSampler:
 
         # Move to CPU for initialization
         edge_index_cpu = edge_index.cpu()
-        edge_categories_cpu = edge_categories.cpu()
+        edge_strata_cpu = edge_strata.cpu()
 
         # Build structures
-        self._build_category_structure(edge_index_cpu, edge_categories_cpu)
+        self._build_strata_structure(edge_index_cpu, edge_strata_cpu)
 
         if sampling_strategy == "degree_weighted":
             self._build_degree_distributions(edge_index_cpu)
@@ -59,7 +66,7 @@ class NegativeSampler:
 
         logger.info(
             f"NegativeSampler initialized: "
-            f"{len(self.category_structure)} categories, "
+            f"{len(self.strata_structure)} strata, "
             f"{self.num_nodes} nodes, "
             f"{edge_index.size(1)} edges, "
             f"strategy={sampling_strategy}"
@@ -71,38 +78,38 @@ class NegativeSampler:
         self.edge_linear_idx.sort()
         logger.debug(f"Built edge hash with {len(self.edge_linear_idx)} edges")
 
-    def _build_category_structure(self, edge_index, edge_categories):
-        """Extract valid (from_nodes, to_nodes) pairs for each category."""
-        self.category_structure = {}
-        unique_categories = torch.unique(edge_categories)
+    def _build_strata_structure(self, edge_index, edge_strata):
+        """Extract valid (from_nodes, to_nodes) pairs for each strata."""
+        self.strata_structure = {}
+        unique_strata = torch.unique(edge_strata)
 
-        for cat in unique_categories:
-            cat_mask = edge_categories == cat
-            cat_edges = edge_index[:, cat_mask]
+        for strata in unique_strata:
+            strata_mask = edge_strata == strata
+            strata_edges = edge_index[:, strata_mask]
 
-            self.category_structure[cat.item()] = {
-                "from_nodes": torch.unique(cat_edges[0]),
-                "to_nodes": torch.unique(cat_edges[1]),
-                "count": cat_mask.sum().item(),
+            self.strata_structure[strata.item()] = {
+                "from_nodes": torch.unique(strata_edges[0]),
+                "to_nodes": torch.unique(strata_edges[1]),
+                "count": strata_mask.sum().item(),
             }
 
-        # Category sampling probabilities (proportional to frequency)
-        total = sum(s["count"] for s in self.category_structure.values())
-        self.category_probs = torch.tensor(
+        # Strata sampling probabilities (proportional to frequency)
+        total = sum(s["count"] for s in self.strata_structure.values())
+        self.strata_probs = torch.tensor(
             [
-                self.category_structure[cat]["count"] / total
-                for cat in sorted(self.category_structure.keys())
+                self.strata_structure[strata]["count"] / total
+                for strata in sorted(self.strata_structure.keys())
             ]
         )
-        self.categories = torch.tensor(sorted(self.category_structure.keys()))
+        self.strata = torch.tensor(sorted(self.strata_structure.keys()))
 
     def _build_degree_distributions(self, edge_index):
-        """Build degree-weighted sampling distributions per category."""
+        """Build degree-weighted sampling distributions per strata."""
         # Compute OUT-degree (as source) and IN-degree (as destination)
         out_degrees = torch.bincount(edge_index[0], minlength=self.num_nodes).float()
         in_degrees = torch.bincount(edge_index[1], minlength=self.num_nodes).float()
 
-        for structure in self.category_structure.values():
+        for structure in self.strata_structure.values():
             # Use OUT-degree for source nodes
             from_nodes = structure["from_nodes"]
             from_degrees = out_degrees[from_nodes]
@@ -227,33 +234,35 @@ class NegativeSampler:
         return torch.from_numpy(valid_mask)
 
     def _sample_candidates(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
-        """Sample candidate edges respecting category structure."""
-        sampled_categories = self.categories[
-            torch.multinomial(self.category_probs, batch_size, replacement=True)
+        """Sample candidate edges respecting strata structure."""
+        sampled_strata = self.strata[
+            torch.multinomial(self.strata_probs, batch_size, replacement=True)
         ]
 
         src_nodes = torch.empty(batch_size, dtype=torch.long)
         dst_nodes = torch.empty(batch_size, dtype=torch.long)
 
-        for cat in self.categories:
-            mask = sampled_categories == cat
+        for strata in self.strata:
+            mask = sampled_strata == strata
             count = mask.sum().item()
 
             if count == 0:
                 continue
 
-            structure = self.category_structure[cat.item()]
+            structure = self.strata_structure[strata.item()]
             from_nodes = structure["from_nodes"]
             to_nodes = structure["to_nodes"]
 
-            if self.sampling_strategy == "uniform":
+            if self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.UNIFORM:
                 src_idx = torch.randint(0, len(from_nodes), (count,))
                 dst_idx = torch.randint(0, len(to_nodes), (count,))
-            else:
+            elif self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED:
                 from_probs = structure["from_probs"]
                 to_probs = structure["to_probs"]
                 src_idx = torch.multinomial(from_probs, count, replacement=True)
                 dst_idx = torch.multinomial(to_probs, count, replacement=True)
+            else:
+                raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
 
             src_nodes[mask] = from_nodes[src_idx]
             dst_nodes[mask] = to_nodes[dst_idx]

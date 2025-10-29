@@ -256,39 +256,39 @@ class EdgePredictionTask(BaseTask):
             f"Initializing negative sampler with strategy: {self.neg_sampling_strategy}"
         )
 
-        # Get encoded edge strata (or single category if None)
+        # Get encoded edge strata (or single strata if None)
         encoded_edge_strata = _get_encoded_edge_strata(data, self.edge_strata)
 
-        # Get training edges and their categories
+        # Get training edges and their strata
         if hasattr(data, "train_mask"):
             # Transductive
             train_mask_cpu = data.train_mask.cpu()
             train_edges = data.edge_index[:, train_mask_cpu].cpu()
-            edge_categories = encoded_edge_strata[train_mask_cpu]
+            edge_strata = encoded_edge_strata[train_mask_cpu]
         else:
             # Inductive (data is already train split)
             train_edges = data.edge_index.cpu()
-            edge_categories = encoded_edge_strata
+            edge_strata = encoded_edge_strata
 
         # Initialize sampler (always, even without strata)
         self.negative_sampler = NegativeSampler(
             edge_index=train_edges,
-            edge_categories=edge_categories,
+            edge_strata=edge_strata,
             sampling_strategy=self.neg_sampling_strategy,
             oversample_ratio=1.2,
             max_oversample_ratio=2.0,
         )
 
-        num_categories = self.negative_sampler.categories.numel()
-        if num_categories == 1:
+        num_strata = self.negative_sampler.strata.numel()
+        if num_strata == 1:
             logger.info(
-                f"Initialized negative sampler: single category, "
+                f"Initialized negative sampler: single strata, "
                 f"{self.neg_sampling_strategy} strategy"
             )
         else:
             logger.info(
-                f"Initialized category-constrained negative sampler: "
-                f"{num_categories} categories, {self.neg_sampling_strategy} strategy"
+                f"Initialized strata-constrained negative sampler: "
+                f"{num_strata} strata, {self.neg_sampling_strategy} strategy"
             )
 
         self._sampler_initialized = True

@@ -13,3 +13,13 @@ SUPERVISION = SimpleNamespace(
     SUPERVISED="supervised",
     UNSUPERVISED="unsupervised",
 )
+
+
+NEGATIVE_SAMPLING_STRATEGIES = SimpleNamespace(
+    UNIFORM="uniform",
+    DEGREE_WEIGHTED="degree_weighted",
+)
+
+VALID_NEGATIVE_SAMPLING_STRATEGIES = list(
+    NEGATIVE_SAMPLING_STRATEGIES.__dict__.values()
+)
