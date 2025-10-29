@@ -62,8 +62,7 @@ class BaseLightningTask(pl.LightningModule):
                 optimizer,
                 mode="max",
                 factor=0.5,
-                patience=10,
-                verbose=True,
+                patience=self.config.early_stopping_patience,
             )
             return {
                 "optimizer": optimizer,

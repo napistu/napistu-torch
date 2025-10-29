@@ -63,14 +63,6 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     PANDAS_DFS=NAPISTU_DATA_STORE.PANDAS_DFS,
 )
 
-TASKS = SimpleNamespace(
-    EDGE_PREDICTION="edge_prediction",
-    NETWORK_EMBEDDING="network_embedding",
-    NODE_CLASSIFICATION="node_classification",
-)
-
-VALID_TASKS = list(TASKS.__dict__.values())
-
 METRICS = SimpleNamespace(
     AUC="auc",
     AP="ap",
@@ -113,6 +105,10 @@ DATA_CONFIG = SimpleNamespace(
 MODEL_CONFIG = SimpleNamespace(
     ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
     HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
+    USE_EDGE_ENCODER="use_edge_encoder",
+    EDGE_IN_CHANNELS="edge_in_channels",
+    EDGE_ENCODER_DIM="edge_encoder_dim",
+    EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
 )
 
 TASK_CONFIG = SimpleNamespace(

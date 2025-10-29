@@ -202,6 +202,39 @@ class NapistuDataModule(pl.LightningDataModule):
         self.test_data = None
 
     @property
+    def num_edge_features(self) -> int:
+        """
+        Get the number of edge features from the data.
+
+        This works before setup() is called by accessing the raw napistu_data.
+        For inductive splits, returns the number of features from the training data.
+
+        Returns
+        -------
+        int
+            Number of edge features (edge_in_channels for encoders)
+
+        Examples
+        --------
+        >>> dm = NapistuDataModule(config, napistu_data_name="edge_prediction")
+        >>> edge_in_channels = dm.num_edge_features
+        >>> encoder = MessagePassingEncoder.from_config(model_config, in_channels = dm.num_node_features, edge_in_channels=edge_in_channels)
+        """
+        # Determine splitting strategy from the data itself
+        if isinstance(self.napistu_data, dict):
+            # For inductive splits, get features from training data
+            return self.napistu_data[TRAINING.TRAIN].num_edge_features
+        elif isinstance(self.napistu_data, NapistuData):
+            # For transductive splits, get features from the single data object
+            return self.napistu_data.num_edge_features
+        else:
+            raise ValueError(
+                f"data must be either a NapistuData object or a dictionary "
+                f"with keys {TRAINING.TRAIN}, {TRAINING.VALIDATION}, {TRAINING.TEST}, "
+                f"but got {type(self.napistu_data)}"
+            )
+
+    @property
     def num_node_features(self) -> int:
         """
         Get the number of node features from the data.

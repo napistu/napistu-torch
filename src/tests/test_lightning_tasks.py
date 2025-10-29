@@ -81,7 +81,7 @@ def test_edge_prediction_task_prepare_batch(edge_masked_napistu_data):
             "supervision_edges",
             "pos_edges",
             "neg_edges",
-            "edge_weight",
+            "edge_data",
         ]
         for key in expected_keys:
             assert key in batch
@@ -131,23 +131,23 @@ def test_edge_prediction_with_edge_encoder(edge_masked_napistu_data, experiment_
         edge_encoder_dropout=0.1,
     )
 
-    # Create encoder and head
-    encoder = MessagePassingEncoder.from_config(
-        model_config, in_channels=edge_masked_napistu_data.num_node_features
-    )
-    head = DotProductHead()
-
     # Add dummy edge attributes to test data
     edge_masked_napistu_data.edge_attr = torch.randn(
         edge_masked_napistu_data.edge_index.size(1), 10
     )
 
-    # Create task using factory function
-    task = EdgePredictionTask.create(
+    # Create encoder and head with edge encoder
+    encoder = MessagePassingEncoder.from_config(
+        model_config,
+        in_channels=edge_masked_napistu_data.num_node_features,
+        edge_in_channels=edge_masked_napistu_data.num_edge_features,
+    )
+    head = DotProductHead()
+
+    # Create task directly
+    task = EdgePredictionTask(
         encoder=encoder,
         head=head,
-        model_config=model_config,
-        edge_dim=10,  # Must match edge_attr dimension
     )
 
     # Create Lightning module
@@ -164,7 +164,31 @@ def test_edge_prediction_with_edge_encoder(edge_masked_napistu_data, experiment_
     assert "auc" in metrics
     assert "ap" in metrics
 
-    # Verify edge encoder was created
+    # Verify edge encoder was created and integrated
     assert task.edge_encoder is not None
     assert task.edge_encoder.edge_dim == 10
     assert task.edge_encoder.hidden_dim == 16
+
+    # Verify edge encoder is properly integrated into the MessagePassingEncoder
+    assert hasattr(encoder, "edge_encoder")
+    assert encoder.edge_encoder is not None
+    assert encoder.weight_edges_by is not None
+    assert encoder.weight_edges_by is encoder.edge_encoder
+
+    # Verify that the encoder uses the edge encoder during forward pass
+    # by checking that it requires edge_data when edge encoder is present
+    with pytest.raises(
+        ValueError, match="edge_data required when using learnable edge encoder"
+    ):
+        encoder.forward(edge_masked_napistu_data.x, edge_masked_napistu_data.edge_index)
+
+    # Test that forward pass works with edge_data
+    output = encoder.forward(
+        edge_masked_napistu_data.x,
+        edge_masked_napistu_data.edge_index,
+        edge_masked_napistu_data.edge_attr,
+    )
+    assert output.shape == (
+        edge_masked_napistu_data.x.shape[0],
+        32,
+    )  # hidden_channels=32

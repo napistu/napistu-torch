@@ -5,14 +5,12 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from napistu_torch.configs import ModelConfig
 from napistu_torch.evaluation.stratification import (
     ensure_strata_series,
     validate_edge_strata_alignment,
 )
 from napistu_torch.labeling.create import _prepare_discrete_labels
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
-from napistu_torch.models.edge_encoder import EdgeEncoder
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
 from napistu_torch.tasks.constants import NEGATIVE_SAMPLING_STRATEGIES
@@ -74,7 +72,6 @@ class EdgePredictionTask(BaseTask):
         edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
         neg_sampling_strategy: str = NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
         metrics: List[str] = None,
-        edge_encoder: Optional[EdgeEncoder] = None,
     ):
         super().__init__(encoder, head)
         self.loss_fn = nn.BCEWithLogitsLoss()
@@ -82,56 +79,13 @@ class EdgePredictionTask(BaseTask):
         self.edge_strata = edge_strata
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or ["auc", "ap"]
-        self.edge_encoder = edge_encoder
+
+        # Extract edge encoder from the encoder if it has one
+        self.edge_encoder = getattr(encoder, "edge_encoder", None)
 
         # Negative sampler (initialized lazily on first prepare_batch call)
         self.negative_sampler = None
         self._sampler_initialized = False
-
-    @classmethod
-    def create(
-        cls,
-        encoder: nn.Module,
-        head: nn.Module,
-        model_config: ModelConfig,
-        neg_sampling_ratio: float = 1.0,
-        edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
-        neg_sampling_strategy: str = NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
-        metrics: List[str] = None,
-        edge_dim: Optional[int] = None,
-    ) -> "EdgePredictionTask":
-        """
-        Class method factory to create EdgePredictionTask with optional EdgeEncoder.
-        """
-        if model_config.use_edge_encoder:
-            if edge_dim is None:
-                raise ValueError(
-                    "edge_dim must be specified when use_edge_encoder=True"
-                )
-
-            edge_encoder = EdgeEncoder(
-                edge_dim=edge_dim,
-                hidden_dim=model_config.edge_encoder_dim,
-                dropout=model_config.edge_encoder_dropout,
-            )
-
-            logger.info(
-                f"Created EdgeEncoder: edge_dim={edge_dim}, "
-                f"hidden_dim={model_config.edge_encoder_dim}, "
-                f"dropout={model_config.edge_encoder_dropout}"
-            )
-        else:
-            edge_encoder = None
-
-        return cls(
-            encoder=encoder,
-            head=head,
-            neg_sampling_ratio=neg_sampling_ratio,
-            edge_strata=edge_strata,
-            neg_sampling_strategy=neg_sampling_strategy,
-            metrics=metrics,
-            edge_encoder=edge_encoder,
-        )
 
     def prepare_batch(
         self, data: NapistuData, split: str = TRAINING.TRAIN
@@ -151,8 +105,7 @@ class EdgePredictionTask(BaseTask):
             - supervision_edges: Edges for message passing
             - pos_edges: Positive edges to predict
             - neg_edges: Negative edges to predict
-            - edge_weight: Edge weights (optional)
-            - edge_attr: Edge attributes for edge encoder (optional)
+            - edge_data: Edge data for supervision edges (attributes for learnable encoders, weights for static weighting)
         """
         # Lazy initialization on first call
         self._ensure_negative_sampler(data)
@@ -171,25 +124,27 @@ class EdgePredictionTask(BaseTask):
             num_neg=num_neg, device=str(pos_edge_index.device)
         )
 
-        # Compute edge weights for supervision edges if edge encoder is available
+        # Handle edge data based on encoder type
+        edge_data = None
         if (
-            self.edge_encoder is not None
-            and hasattr(data, "edge_attr")
-            and data.edge_attr is not None
+            hasattr(self.encoder, "weight_edges_by")
+            and self.encoder.weight_edges_by is not None
         ):
-            supervision_edge_weights = self.edge_encoder(
-                data.edge_attr[data.train_mask]
-            )
-        else:
-            supervision_edge_weights = None
+            if isinstance(self.encoder.weight_edges_by, torch.nn.Module):
+                # Learnable edge encoder - pass edge attributes for supervision edges
+                edge_attr = getattr(data, "edge_attr", None)
+                if edge_attr is not None:
+                    edge_data = edge_attr[data.train_mask]
+            else:
+                # Static edge weights - pass weights for supervision edges
+                edge_data = self.encoder.static_edge_weights[data.train_mask]
 
         return {
             "x": data.x,
             "supervision_edges": supervision_edges,
             "pos_edges": pos_edge_index,
             "neg_edges": neg_edge_index,
-            "edge_weight": supervision_edge_weights,
-            "edge_attr": getattr(data, "edge_attr", None),
+            "edge_data": edge_data,
         }
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -201,14 +156,11 @@ class EdgePredictionTask(BaseTask):
         2. Score positive and negative edges
         3. Compute binary cross-entropy loss
         """
-        # Use pre-computed edge weights for supervision edges
-        edge_weight = batch.get("edge_weight", None)
-
-        # Encode nodes
+        # Encode nodes with edge data
         z = self.encoder.encode(
             batch["x"],
             batch["supervision_edges"],
-            edge_weight,
+            batch.get("edge_data", None),
         )
 
         # Score positive and negative edges
@@ -242,6 +194,7 @@ class EdgePredictionTask(BaseTask):
             z = self.encoder.encode(
                 batch["x"],
                 batch["supervision_edges"],
+                batch.get("edge_data", None),
             )
 
             # Score positive and negative edges
@@ -297,14 +250,20 @@ class EdgePredictionTask(BaseTask):
         """
         self.eval()
         with torch.no_grad():
-            # Get edge weights if edge encoder is available
-            edge_weight = _get_edge_weight(data, self.edge_encoder)
+            # load a fixed tensor for weights if one exists
+            if (
+                hasattr(self.encoder, "static_edge_weights")
+                and self.encoder.static_edge_weights is not None
+            ):
+                edge_data = self.encoder.static_edge_weights
+            else:
+                edge_data = getattr(data, "edge_attr", None)
 
             # Encode nodes
             z = self.encoder.encode(
                 data.x,
                 data.edge_index,
-                edge_weight,
+                edge_data,
             )
 
             # Score the specified edges
@@ -370,14 +329,19 @@ class EdgePredictionTask(BaseTask):
 
         This is for inference - no training, no negative sampling.
         """
-        # Get edge weights if edge encoder is available
-        edge_weight = _get_edge_weight(data, self.edge_encoder)
+        if (
+            hasattr(self.encoder, "static_edge_weights")
+            and self.encoder.static_edge_weights is not None
+        ):
+            edge_data = self.encoder.static_edge_weights
+        else:
+            edge_data = getattr(data, "edge_attr", None)
 
         # Encode nodes using all edges
         z = self.encoder.encode(
             data.x,
             data.edge_index,
-            edge_weight,
+            edge_data,
         )
 
         # Score all edges
@@ -468,20 +432,3 @@ def _get_encoded_edge_strata(
         logger.info(f"Encoded {len(unique_categories)} unique edge strata")
 
     return encoded_strata
-
-
-def _get_edge_weight(
-    data: NapistuData, edge_encoder: Optional[EdgeEncoder]
-) -> Optional[torch.Tensor]:
-    """
-    Get edge weights from edge attributes using edge encoder.
-
-    Returns None if edge encoder is not available or edge attributes don't exist.
-    """
-    if (
-        edge_encoder is not None
-        and hasattr(data, "edge_attr")
-        and data.edge_attr is not None
-    ):
-        return edge_encoder(data.edge_attr)
-    return None

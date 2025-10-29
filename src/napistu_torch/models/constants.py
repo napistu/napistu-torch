@@ -66,3 +66,9 @@ HEAD_SPECIFIC_ARGS = SimpleNamespace(
     NC_NUM_CLASSES="nc_num_classes",
     NC_DROPOUT="nc_dropout",
 )
+
+EDGE_ENCODER_ARGS = SimpleNamespace(
+    EDGE_IN_CHANNELS="edge_in_channels",
+    EDGE_ENCODER_DIM="edge_encoder_dim",
+    EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
+)

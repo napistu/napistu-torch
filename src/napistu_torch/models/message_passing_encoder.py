@@ -6,7 +6,7 @@ Edge weights are stored in edge attributes for supervision, not encoding.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, Union
 
 import torch
 import torch.nn as nn
@@ -23,6 +23,7 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     VALID_ENCODERS,
 )
+from napistu_torch.models.edge_encoder import EdgeEncoder
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,8 @@ class MessagePassingEncoder(nn.Module):
         num_layers: int,
         dropout: float = 0.0,
         encoder_type: str = ENCODERS.SAGE,
+        # Edge weighting
+        weight_edges_by: Optional[Union[torch.Tensor, nn.Module]] = None,
         # GAT-specific parameters
         gat_heads: int = 1,
         gat_concat: bool = True,
@@ -118,6 +121,19 @@ class MessagePassingEncoder(nn.Module):
         encoder = ENCODER_CLASSES[encoder_type]
         self.convs = nn.ModuleList()
         self.supports_edge_weight = encoder_type in [ENCODERS.GCN, ENCODERS.GRAPH_CONV]
+
+        # Handle edge weighting
+        self.weight_edges_by = weight_edges_by
+        if weight_edges_by is not None:
+            if self.supports_edge_weight:
+                if isinstance(weight_edges_by, nn.Module):
+                    self.edge_encoder = weight_edges_by
+                    self.static_edge_weights = None
+                else:
+                    self.edge_encoder = None
+                    self.static_edge_weights = weight_edges_by
+            else:
+                logger.warning(f"Edge weighting is not supported for {encoder_type}")
 
         # Build encoder_kwargs based on encoder using dict comprehension
         param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder_type, {})
@@ -174,7 +190,7 @@ class MessagePassingEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_weight: Optional[torch.Tensor] = None,
+        edge_data: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass through the GNN encoder.
@@ -185,10 +201,9 @@ class MessagePassingEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
-        edge_weight : torch.Tensor, optional
-            Edge weights [num_edges] for weighted message passing.
-            Only used if encoder supports it (GCN, GraphConv).
-            Ignored gracefully for SAGE and GAT.
+        edge_data : torch.Tensor, optional
+            Edge data [num_edges, edge_dim] for edge weighting.
+            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
 
         Returns
         -------
@@ -197,14 +212,31 @@ class MessagePassingEncoder(nn.Module):
 
         Notes
         -----
-        This method does NOT use edge weights or edge attributes for message passing.
-        All encoders use unweighted/uniform message passing (or attention in GAT's case).
-
-        If you need edge-weighted message passing in the future:
-        - GCN: Add edge_weight parameter and pass to GCNConv
-        - SAGE: Implement custom message passing (not natively supported)
-        - GAT: Already uses learned attention (different from edge weights)
+        Edge weighting is handled based on the weight_edges_by parameter:
+        - None: No edge weighting (uniform message passing)
+        - torch.Tensor: Static edge weights
+        - nn.Module: Learnable edge encoder (requires edge_data)
         """
+        # Compute edge weights based on weight_edges_by setting
+        if self.weight_edges_by is not None:
+            if isinstance(self.weight_edges_by, nn.Module):
+                # Learnable edge encoder - requires edge_data (edge attributes)
+                if edge_data is None:
+                    raise ValueError(
+                        "edge_data required when using learnable edge encoder"
+                    )
+                edge_weight = self.edge_encoder(edge_data)
+            else:
+                # Static edge weights - use pre-masked weights from edge_data
+                if edge_data is None:
+                    raise ValueError(
+                        "edge_data required when using static edge weights"
+                    )
+                edge_weight = edge_data
+        else:
+            edge_weight = None
+
+        # Warn if edge weights are provided but not supported
         if not self.supports_edge_weight and edge_weight is not None:
             logger.warning(
                 f"Edge weights are not supported for {self.encoder_type}. Ignoring edge_weight."
@@ -231,7 +263,7 @@ class MessagePassingEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
-        edge_weight: Optional[torch.Tensor] = None,
+        edge_data: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Alias for forward method for consistency with other models.
@@ -242,21 +274,23 @@ class MessagePassingEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
-        edge_weight : Optional[torch.Tensor]
-            Edge weights [num_edges] for weighted message passing.
-            Only used if encoder supports it (GCN, GraphConv).
-            Ignored gracefully for SAGE and GAT.
+        edge_data : Optional[torch.Tensor]
+            Edge data [num_edges, edge_dim] for edge weighting.
+            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
 
         Returns
         -------
         torch.Tensor
             Node embeddings [num_nodes, hidden_channels]
         """
-        return self.forward(x, edge_index, edge_weight)
+        return self.forward(x, edge_index, edge_data)
 
     @classmethod
     def from_config(
-        cls, config: ModelConfig, in_channels: int
+        cls,
+        config: ModelConfig,
+        in_channels: int,
+        edge_in_channels: Optional[int] = None,
     ) -> "MessagePassingEncoder":
         """
         Create MessagePassingEncoder from ModelConfig.
@@ -267,6 +301,8 @@ class MessagePassingEncoder(nn.Module):
             Model configuration containing encoder, hidden_channels, etc.
         in_channels : int
             Number of input node features (not in config as it depends on data)
+        edge_in_channels : int, optional
+            Number of input edge features. Required if use_edge_encoder=True.
 
         Returns
         -------
@@ -277,6 +313,10 @@ class MessagePassingEncoder(nn.Module):
         --------
         >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
         >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128)
+        >>>
+        >>> # With edge encoder
+        >>> config = ModelConfig(encoder='gcn', use_edge_encoder=True, edge_encoder_dim=32)
+        >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128, edge_in_channels=10)
         """
 
         encoder_type = getattr(config, MODEL_CONFIG.ENCODER)
@@ -302,11 +342,28 @@ class MessagePassingEncoder(nn.Module):
                 config.graph_conv_aggregator
             )
 
+        # Handle edge encoder creation
+        if getattr(config, "use_edge_encoder", False):
+            if edge_in_channels is None:
+                raise ValueError(
+                    "edge_in_channels must be provided when use_edge_encoder=True"
+                )
+
+            edge_encoder = EdgeEncoder(
+                edge_dim=edge_in_channels,
+                hidden_dim=config.edge_encoder_dim,
+                dropout=config.edge_encoder_dropout,
+            )
+            weight_edges_by = edge_encoder
+        else:
+            weight_edges_by = None
+
         return cls(
             in_channels=in_channels,
             hidden_channels=getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
             dropout=getattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT),
             encoder_type=encoder_type,
+            weight_edges_by=weight_edges_by,
             **model_kwargs,
         )
