@@ -137,7 +137,8 @@ class EdgePredictionTask(BaseTask):
             pos_edge_index = data.edge_index[:, mask]
 
         # Always use training edges for message passing (prevents data leakage)
-        supervision_edges = data.edge_index[:, data.train_mask]
+        train_mask_safe = data.train_mask.clone().detach()
+        supervision_edges = data.edge_index[:, train_mask_safe]
 
         # Sample negative edges proportional to batch size
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
@@ -155,29 +156,22 @@ class EdgePredictionTask(BaseTask):
                 # Learnable edge encoder - pass edge attributes for supervision edges
                 edge_attr = getattr(data, "edge_attr", None)
                 if edge_attr is not None:
-                    edge_data = edge_attr[data.train_mask]
+                    edge_data = edge_attr[train_mask_safe]
             else:
                 # Static edge weights - pass weights for supervision edges
-                edge_data = self.encoder.static_edge_weights[data.train_mask]
+                edge_data = self.encoder.static_edge_weights[train_mask_safe]
 
-        print("DEBUG prepare_batch:")
-        print(
-            f"  edge_indices: {edge_indices.shape if edge_indices is not None else None}"
-        )
-        print(f"  data.edge_index.shape: {data.edge_index.shape}")
-        print(f"  data.train_mask.sum(): {data.train_mask.sum()}")
-        print(f"  supervision_edges.shape: {supervision_edges.shape}")
-        if edge_data is not None:
-            print(f"  edge_data.shape: {edge_data.shape}")
-        print(f"  pos_edge_index.shape: {pos_edge_index.shape}")
-
-        return {
+        batch_dict = {
             "x": data.x,
             "supervision_edges": supervision_edges,
             "pos_edges": pos_edge_index,
             "neg_edges": neg_edge_index,
             "edge_data": edge_data,
         }
+
+        self._validate_data_dims(batch_dict, data)
+
+        return batch_dict
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -380,6 +374,46 @@ class EdgePredictionTask(BaseTask):
         scores = torch.sigmoid(self.head(z, data.edge_index))
 
         return scores
+
+    def _validate_data_dims(
+        self, batch_dict: Dict[str, Optional[torch.Tensor]], data: NapistuData
+    ) -> None:
+        """Check that the dimensions of the tensors in the batch_dict are compatible."""
+
+        if batch_dict["x"].shape != (data.num_nodes, data.num_node_features):
+            raise ValueError(
+                f"x shape mismatch: {batch_dict['x'].shape} != ({data.num_nodes}, {data.num_node_features})"
+            )
+
+        n_training_edges = data.train_mask.sum().item()
+        if batch_dict["supervision_edges"].shape != (2, n_training_edges):
+            raise ValueError(
+                f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_training_edges})"
+            )
+
+        n_pos_edges = batch_dict["pos_edges"].shape[1]
+        if batch_dict["pos_edges"].shape != (2, n_pos_edges):
+            raise ValueError(
+                f"pos_edges shape mismatch: {batch_dict['pos_edges'].shape} != (2, {n_pos_edges})"
+            )
+
+        n_neg_edges = batch_dict["neg_edges"].shape[1]
+        if batch_dict["neg_edges"].shape != (2, n_neg_edges):
+            raise ValueError(
+                f"neg_edges shape mismatch: {batch_dict['neg_edges'].shape} != (2, {n_neg_edges})"
+            )
+
+        if n_pos_edges != n_neg_edges:
+            logger.warning(
+                f"pos_edges and neg_edges have different number of edges: {n_pos_edges} != {n_neg_edges}"
+            )
+
+        if batch_dict["edge_data"] is not None:
+            if batch_dict["edge_data"].shape[0] != n_training_edges:
+                raise ValueError(
+                    f"edge_data shape mismatch: {batch_dict['edge_data'].shape[0]} edge_data entries versus {n_training_edges} training edges"
+                )
+        return None
 
 
 def get_edge_strata_from_artifacts(
