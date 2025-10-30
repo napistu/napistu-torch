@@ -8,7 +8,7 @@ import torch
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from napistu_torch.configs import DataConfig, ExperimentConfig
-from napistu_torch.lightning.data_module import NapistuDataModule
+from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.models.constants import ENCODERS
 from napistu_torch.models.heads import DotProductHead
@@ -79,7 +79,9 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
     )
 
     # Create data module with direct napistu_data
-    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(
+        config=stub_data_config, napistu_data=edge_masked_napistu_data
+    )
 
     # Create encoder and head
     encoder = MessagePassingEncoder(
@@ -133,8 +135,8 @@ def test_edge_prediction_trainer_fit_with_callbacks(
     )
 
     # Create data module with direct napistu_data (backward compatibility)
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -196,8 +198,8 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
     )
 
     # Create data module with direct napistu_data (backward compatibility)
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -254,8 +256,8 @@ def test_edge_prediction_trainer_different_encoders(
             data=stub_data_config,
         )
 
-        dm = NapistuDataModule(
-            stub_data_config,
+        dm = FullGraphDataModule(
+            config=stub_data_config,
             napistu_data_name="test",
             napistu_data=edge_masked_napistu_data,
         )
@@ -329,8 +331,8 @@ def test_edge_prediction_trainer_gpu_if_available(
         data=stub_data_config,
     )
 
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -380,7 +382,7 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     )
 
     # Create data module using NapistuDataStore approach
-    dm = NapistuDataModule(temp_data_config_with_store)
+    dm = FullGraphDataModule(config=temp_data_config_with_store)
 
     # Create encoder and head
     encoder = MessagePassingEncoder(
@@ -427,7 +429,9 @@ def test_edge_prediction_trainer_with_edge_strata(
     )
 
     # Create data module with direct napistu_data
-    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(
+        config=stub_data_config, napistu_data=edge_masked_napistu_data
+    )
 
     # Create encoder and head
     encoder = MessagePassingEncoder(

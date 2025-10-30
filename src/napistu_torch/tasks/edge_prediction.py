@@ -120,7 +120,7 @@ class EdgePredictionTask(BaseTask):
 
         # Sample negative edges
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
-        neg_edge_index = self.negative_sampler.sample(
+        neg_edge_index, _ = self.negative_sampler.sample(
             num_neg=num_neg, device=str(pos_edge_index.device)
         )
 

@@ -26,11 +26,12 @@ def test_basic_sampling():
 
     # Sample negatives
     num_neg = 100
-    neg_edges = sampler.sample(num_neg)
+    neg_edges, neg_edge_attr = sampler.sample(num_neg)
 
     # Check shape
     assert neg_edges.shape == (2, num_neg)
     assert neg_edges.dtype == torch.long
+    assert neg_edge_attr is None  # No edge_attr provided
 
     # Check no self-loops
     assert (neg_edges[0] == neg_edges[1]).sum() == 0
@@ -48,7 +49,7 @@ def test_no_collision_with_positives():
     edge_categories = torch.zeros(6, dtype=torch.long)
 
     sampler = NegativeSampler(edge_index, edge_categories)
-    neg_edges = sampler.sample(500)
+    neg_edges, _ = sampler.sample(500)
 
     # Convert to sets for comparison
     pos_edges = set(tuple(e) for e in edge_index.t().tolist())
@@ -73,7 +74,7 @@ def test_category_constraints():
     edge_categories = torch.tensor([0, 0, 0, 1, 1])
 
     sampler = NegativeSampler(edge_index, edge_categories)
-    neg_edges = sampler.sample(200)
+    neg_edges, neg_edge_attr = sampler.sample(200)
 
     # Check each negative belongs to a valid category
     for src, dst in neg_edges.t():
@@ -112,8 +113,8 @@ def test_degree_weighted_sampling():
     )
 
     # Sample large batch (graph has plenty of room: 5 sources × 10 destinations = 50 possible edges, only 9 exist)
-    neg_uniform = sampler_uniform.sample(500)
-    neg_degree = sampler_degree.sample(500)
+    neg_uniform, _ = sampler_uniform.sample(500)
+    neg_degree, _ = sampler_degree.sample(500)
 
     # Count how often node 0 appears as source
     count_uniform = (neg_uniform[0] == 0).sum().item()
@@ -180,3 +181,36 @@ def test_oversample_ratio_adaptation():
 
     # Should respect max
     assert sampler.oversample_ratio <= 2.0
+
+
+def test_edge_attr_sampling(napistu_data):
+    """Test that sampler can generate edge attributes for negative samples."""
+    # Extract edge data from napistu_data fixture
+    edge_index = napistu_data.edge_index
+    edge_attr = napistu_data.edge_attr
+
+    # Create simple edge categories (all same category for simplicity)
+    edge_categories = torch.zeros(edge_index.size(1), dtype=torch.long)
+
+    # Create sampler with edge attributes
+    sampler = NegativeSampler(edge_index, edge_categories, edge_attr=edge_attr)
+
+    # Sample negatives with edge attributes
+    num_neg = 50
+    neg_edges, neg_edge_attr = sampler.sample(num_neg, return_edge_attr=True)
+
+    # Check basic properties
+    assert neg_edges.shape == (2, num_neg)
+    assert neg_edges.dtype == torch.long
+    assert neg_edge_attr is not None
+    assert neg_edge_attr.shape == (num_neg, edge_attr.shape[1])
+    assert neg_edge_attr.dtype == edge_attr.dtype
+
+    # Check no self-loops
+    assert (neg_edges[0] == neg_edges[1]).sum() == 0
+
+    # Check that edge attributes are reasonable (not all zeros or identical)
+    assert not torch.all(neg_edge_attr == 0), "Edge attributes should not be all zeros"
+    assert not torch.all(
+        neg_edge_attr == neg_edge_attr[0]
+    ), "Edge attributes should vary"

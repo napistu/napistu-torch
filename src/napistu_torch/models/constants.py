@@ -31,7 +31,7 @@ VALID_ENCODER_NAMED_ARGS = list(ENCODER_SPECIFIC_ARGS.__dict__.values())
 
 # defaults and other miscellaneous encoder definitions
 ENCODER_DEFS = SimpleNamespace(
-    GRAPH_CONV_DEFAULT_AGGREGATOR="add",
+    GRAPH_CONV_DEFAULT_AGGREGATOR="mean",
     SAGE_DEFAULT_AGGREGATOR="mean",
 )
 

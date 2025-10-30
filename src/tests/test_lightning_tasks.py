@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from napistu_torch.configs import ModelConfig
-from napistu_torch.lightning.data_module import NapistuDataModule
+from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.models.constants import ENCODERS
@@ -32,7 +32,7 @@ def test_edge_prediction_lightning_integration(
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = NapistuDataModule(data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(data_config, napistu_data=edge_masked_napistu_data)
     dm.setup()
 
     # Test training step
