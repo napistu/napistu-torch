@@ -111,10 +111,16 @@ def test_lightning_task_batch_validation(edge_masked_napistu_data, experiment_co
     lightning_task.training_step(edge_masked_napistu_data, batch_idx=0)
 
     # Test with invalid batch type
-    with pytest.raises(AssertionError, match="Expected NapistuData"):
+    with pytest.raises(
+        ValueError,
+        match="Unexpected batch type in training: <class 'list'>. Expected NapistuData or torch.Tensor.",
+    ):
         lightning_task.training_step([edge_masked_napistu_data], batch_idx=0)
 
-    with pytest.raises(AssertionError, match="Expected NapistuData"):
+    with pytest.raises(
+        ValueError,
+        match="Unexpected batch type in training: <class 'str'>. Expected NapistuData or torch.Tensor.",
+    ):
         lightning_task.training_step("invalid_batch", batch_idx=0)
 
 

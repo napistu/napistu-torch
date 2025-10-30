@@ -88,37 +88,58 @@ class EdgePredictionTask(BaseTask):
         self._sampler_initialized = False
 
     def prepare_batch(
-        self, data: NapistuData, split: str = TRAINING.TRAIN
+        self,
+        data: NapistuData,
+        split: str = TRAINING.TRAIN,
+        edge_indices: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Prepare batch for edge prediction.
 
         For transductive (mask-based) splits, this:
-        1. Gets positive edges from the split mask
+        1. Gets positive edges from the split mask (or edge_indices subset)
         2. Gets supervision edges (for message passing)
         3. Samples negative edges
+
+        Parameters
+        ----------
+        data : NapistuData
+            Full graph data
+        split : str
+            Which split ('train', 'val', 'test')
+        edge_indices : torch.Tensor, optional
+            Indices into data.edge_index for this mini-batch.
+            If None, uses all edges from the split mask (full-batch mode).
+            If provided, uses only these edges (mini-batch mode).
 
         Returns
         -------
         Dict with keys:
             - x: Node features
-            - supervision_edges: Edges for message passing
-            - pos_edges: Positive edges to predict
-            - neg_edges: Negative edges to predict
-            - edge_data: Edge data for supervision edges (attributes for learnable encoders, weights for static weighting)
+            - supervision_edges: Edges for message passing (always full training graph)
+            - pos_edges: Positive edges to predict (from edge_indices or split mask)
+            - neg_edges: Negative edges to predict (sampled)
+            - edge_data: Edge data for supervision edges (attributes for learnable encoders,
+                        weights for static weighting)
         """
         # Lazy initialization on first call
         self._ensure_negative_sampler(data)
 
-        # Get the right mask for this split
-        mask_attr = SPLIT_TO_MASK[split]
-        mask = getattr(data, mask_attr)
-        pos_edge_index = data.edge_index[:, mask]
+        # Get positive edges for this batch
+        if edge_indices is not None:
+            # Mini-batch mode: use provided edge indices and make sure they are on the data's device
+            edge_indices = edge_indices.to(data.edge_index.device)
+            pos_edge_index = data.edge_index[:, edge_indices]
+        else:
+            # Full-batch mode: use all edges from split mask
+            mask_attr = SPLIT_TO_MASK[split]
+            mask = getattr(data, mask_attr)
+            pos_edge_index = data.edge_index[:, mask]
 
         # Always use training edges for message passing (prevents data leakage)
         supervision_edges = data.edge_index[:, data.train_mask]
 
-        # Sample negative edges
+        # Sample negative edges proportional to batch size
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
         neg_edge_index, _ = self.negative_sampler.sample(
             num_neg=num_neg, device=str(pos_edge_index.device)
@@ -138,6 +159,17 @@ class EdgePredictionTask(BaseTask):
             else:
                 # Static edge weights - pass weights for supervision edges
                 edge_data = self.encoder.static_edge_weights[data.train_mask]
+
+        print("DEBUG prepare_batch:")
+        print(
+            f"  edge_indices: {edge_indices.shape if edge_indices is not None else None}"
+        )
+        print(f"  data.edge_index.shape: {data.edge_index.shape}")
+        print(f"  data.train_mask.sum(): {data.train_mask.sum()}")
+        print(f"  supervision_edges.shape: {supervision_edges.shape}")
+        if edge_data is not None:
+            print(f"  edge_data.shape: {edge_data.shape}")
+        print(f"  pos_edge_index.shape: {pos_edge_index.shape}")
 
         return {
             "x": data.x,

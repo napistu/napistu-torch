@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from torch.utils.data import DataLoader
 
 from napistu_torch.configs import DataConfig, TaskConfig
+from napistu_torch.data.data_utils import create_single_graph_dataloader
 from napistu_torch.data.dataset import SingleGraphDataset
 from napistu_torch.lightning.datamodule import NapistuDataModule
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
@@ -90,7 +91,7 @@ class FullGraphDataModule(NapistuDataModule):
             # Transductive split
             dataset = SingleGraphDataset(self.data)
 
-        return _get_dataloader(dataset)
+        return create_single_graph_dataloader(dataset)
 
     def val_dataloader(self) -> DataLoader:
         """Return validation dataloader."""
@@ -99,7 +100,7 @@ class FullGraphDataModule(NapistuDataModule):
         else:
             dataset = SingleGraphDataset(self.data)
 
-        return _get_dataloader(dataset)
+        return create_single_graph_dataloader(dataset)
 
     def test_dataloader(self) -> DataLoader:
         """Return test dataloader."""
@@ -108,7 +109,7 @@ class FullGraphDataModule(NapistuDataModule):
         else:
             dataset = SingleGraphDataset(self.data)
 
-        return _get_dataloader(dataset)
+        return create_single_graph_dataloader(dataset)
 
     def predict_dataloader(self) -> DataLoader:
         """Return prediction dataloader."""
@@ -117,29 +118,4 @@ class FullGraphDataModule(NapistuDataModule):
         else:
             dataset = SingleGraphDataset(self.data)
 
-        return _get_dataloader(dataset)
-
-
-def identity_collate(batch):
-    """
-    Custom collate function that returns NapistuData unchanged.
-
-    For single-graph training, we don't want PyG's batching behavior.
-    """
-    assert isinstance(batch, list), f"Expected list, got {type(batch)}"
-    assert len(batch) == 1, f"Expected batch of size 1, got {len(batch)}"
-    assert isinstance(
-        batch[0], NapistuData
-    ), f"Expected NapistuData, got {type(batch[0])}"
-    return batch[0]
-
-
-def _get_dataloader(dataset: SingleGraphDataset) -> DataLoader:
-    """Create dataloader for single graph dataset."""
-    return DataLoader(
-        dataset,
-        batch_size=1,
-        shuffle=False,
-        collate_fn=identity_collate,
-        num_workers=0,
-    )
+        return create_single_graph_dataloader(dataset)

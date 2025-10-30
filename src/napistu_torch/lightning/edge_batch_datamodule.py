@@ -14,7 +14,8 @@ import torch
 from torch.utils.data import DataLoader
 
 from napistu_torch.configs import DataConfig, TaskConfig
-from napistu_torch.data.dataset import EdgeBatchDataset
+from napistu_torch.data.data_utils import create_single_graph_dataloader
+from napistu_torch.data.dataset import EdgeBatchDataset, SingleGraphDataset
 from napistu_torch.lightning.datamodule import NapistuDataModule
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
 from napistu_torch.napistu_data import NapistuData
@@ -126,40 +127,37 @@ class EdgeBatchDataModule(NapistuDataModule):
         )
 
     def val_dataloader(self) -> DataLoader:
-        """Validation uses all validation edges (no batching)."""
-        val_edge_indices = torch.where(self.data.val_mask)[0]
-        dataset = EdgeBatchDataset(val_edge_indices, batches_per_epoch=1)
+        """
+        Validation uses full graph (same as FullGraphDataModule).
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            num_workers=0,
-            collate_fn=lambda x: x[0],
-        )
+        Returns
+        -------
+        DataLoader
+            DataLoader that yields complete NapistuData object.
+        """
+        dataset = SingleGraphDataset(self.data)
+        return create_single_graph_dataloader(dataset)
 
     def test_dataloader(self) -> DataLoader:
-        """Test uses all test edges (no batching)."""
-        test_edge_indices = torch.where(self.data.test_mask)[0]
-        dataset = EdgeBatchDataset(test_edge_indices, batches_per_epoch=1)
+        """
+        Test uses full graph (same as FullGraphDataModule).
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            num_workers=0,
-            collate_fn=lambda x: x[0],
-        )
+        Returns
+        -------
+        DataLoader
+            DataLoader that yields complete NapistuData object.
+        """
+        dataset = SingleGraphDataset(self.data)
+        return create_single_graph_dataloader(dataset)
 
     def predict_dataloader(self) -> DataLoader:
-        """Prediction uses all test edges (no batching)."""
-        test_edge_indices = torch.where(self.data.test_mask)[0]
-        dataset = EdgeBatchDataset(test_edge_indices, batches_per_epoch=1)
+        """
+        Prediction uses full graph (same as FullGraphDataModule).
 
-        return DataLoader(
-            dataset,
-            batch_size=1,
-            shuffle=False,
-            num_workers=0,
-            collate_fn=lambda x: x[0],
-        )
+        Returns
+        -------
+        DataLoader
+            DataLoader that yields complete NapistuData object.
+        """
+        dataset = SingleGraphDataset(self.data)
+        return create_single_graph_dataloader(dataset)
