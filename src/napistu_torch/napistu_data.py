@@ -462,6 +462,27 @@ class NapistuData(Data):
         selected_features = self.x[:, indices]
         return selected_features, matching_feature_names
 
+    def get_train_mask(self) -> torch.Tensor:
+        """
+        Get a 1-use training mask.
+
+        For unclear reasons (and possibly an MPS-specific issue), indexing a vector with a mask can result in changing the mask inplace.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Napistu data object
+
+        Returns
+        -------
+        torch.Tensor
+            Safe train mask
+        """
+
+        if not hasattr(self, "train_mask") or self.train_mask is None:
+            raise ValueError("train_mask not found in NapistuData")
+        return self.train_mask.clone().detach()
+
     def get_vertex_feature_names(self) -> Optional[List[str]]:
         """
         Get the names of vertex features.

@@ -137,8 +137,8 @@ class EdgePredictionTask(BaseTask):
             pos_edge_index = data.edge_index[:, mask]
 
         # Always use training edges for message passing (prevents data leakage)
-        train_mask_safe = data.train_mask.clone().detach()
-        supervision_edges = data.edge_index[:, train_mask_safe]
+        train_indices = torch.where(data.train_mask)[0]
+        supervision_edges = data.edge_index[:, train_indices]
 
         # Sample negative edges proportional to batch size
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
@@ -156,10 +156,10 @@ class EdgePredictionTask(BaseTask):
                 # Learnable edge encoder - pass edge attributes for supervision edges
                 edge_attr = getattr(data, "edge_attr", None)
                 if edge_attr is not None:
-                    edge_data = edge_attr[train_mask_safe]
+                    edge_data = edge_attr[train_indices]
             else:
                 # Static edge weights - pass weights for supervision edges
-                edge_data = self.encoder.static_edge_weights[train_mask_safe]
+                edge_data = self.encoder.static_edge_weights[train_indices]
 
         batch_dict = {
             "x": data.x,
@@ -385,10 +385,10 @@ class EdgePredictionTask(BaseTask):
                 f"x shape mismatch: {batch_dict['x'].shape} != ({data.num_nodes}, {data.num_node_features})"
             )
 
-        n_training_edges = data.train_mask.sum().item()
-        if batch_dict["supervision_edges"].shape != (2, n_training_edges):
+        n_supervision_edges = data.get_train_mask().sum().item()
+        if batch_dict["supervision_edges"].shape != (2, n_supervision_edges):
             raise ValueError(
-                f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_training_edges})"
+                f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_supervision_edges})"
             )
 
         n_pos_edges = batch_dict["pos_edges"].shape[1]
@@ -409,9 +409,9 @@ class EdgePredictionTask(BaseTask):
             )
 
         if batch_dict["edge_data"] is not None:
-            if batch_dict["edge_data"].shape[0] != n_training_edges:
+            if batch_dict["edge_data"].shape[0] != n_supervision_edges:
                 raise ValueError(
-                    f"edge_data shape mismatch: {batch_dict['edge_data'].shape[0]} edge_data entries versus {n_training_edges} training edges"
+                    f"edge_data shape mismatch: {batch_dict['edge_data'].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
                 )
         return None
 
