@@ -20,7 +20,7 @@ from typing import Callable, List, Union
 import pandas as pd
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from napistu_torch.constants import (
     ARTIFACT_TYPES,
@@ -73,8 +73,7 @@ class ArtifactDefinition(BaseModel):
             raise ValueError(f"Invalid artifact type: {v}")
         return v
 
-    class Config:
-        arbitrary_types_allowed = True  # Needed for Callable
+    model_config = ConfigDict(arbitrary_types_allowed=True)  # Needed for Callable
 
 
 def create_artifact(

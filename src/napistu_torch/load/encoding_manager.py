@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     RootModel,
     ValidationError,
@@ -551,7 +552,7 @@ class TransformConfig(BaseModel):
             )
         return v
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class EncodingConfig(RootModel[Dict[str, TransformConfig]]):

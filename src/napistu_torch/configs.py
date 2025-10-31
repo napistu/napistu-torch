@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from napistu_torch.constants import (
     METRICS,
@@ -87,8 +87,7 @@ class ModelConfig(BaseModel):
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
 
-    class Config:
-        extra = "forbid"  # Catch typos
+    model_config = ConfigDict(extra="forbid")  # Catch typos
 
 
 class DataConfig(BaseModel):
@@ -113,8 +112,7 @@ class DataConfig(BaseModel):
         description="List of additional artifact names that must exist in the store.",
     )
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class TaskConfig(BaseModel):
@@ -134,8 +132,7 @@ class TaskConfig(BaseModel):
             raise ValueError(f"Invalid task: {v}. Valid tasks are: {VALID_TASKS}")
         return v
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class TrainingConfig(BaseModel):
@@ -181,8 +178,7 @@ class TrainingConfig(BaseModel):
             )
         return v
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class WandBConfig(BaseModel):
@@ -224,8 +220,7 @@ class WandBConfig(BaseModel):
         )
         return enhanced_tags
 
-    class Config:
-        extra = "forbid"
+    model_config = ConfigDict(extra="forbid")
 
 
 class ExperimentConfig(BaseModel):
@@ -248,8 +243,7 @@ class ExperimentConfig(BaseModel):
     limit_train_batches: float = 1.0
     limit_val_batches: float = 1.0
 
-    class Config:
-        extra = "forbid"  # Catch config typos!
+    model_config = ConfigDict(extra="forbid")  # Catch config typos!
 
     # Convenience methods
     def to_dict(self):
