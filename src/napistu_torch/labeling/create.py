@@ -179,7 +179,7 @@ def _prepare_discrete_labels(
     dtype = labels.dtype
 
     # Handle categorical dtype
-    if pd.api.types.is_categorical_dtype(dtype):
+    if isinstance(dtype, pd.CategoricalDtype):
         labels = labels.astype(object)
 
     # Check if dtype is supported

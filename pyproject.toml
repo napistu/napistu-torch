@@ -16,3 +16,12 @@ lint.ignore = ["E501"]
 torch-sparse = ["torch"]
 torch-scatter = ["torch"]
 torch-geometric = ["torch"]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore:Deprecated call to `pkg_resources.declare_namespace.*:DeprecationWarning",
+    "ignore::UserWarning:pytorch_lightning",
+    "ignore:GPU available but not used:UserWarning",
+    "ignore:.*does not have many workers.*:UserWarning",
+    "ignore:.*Trying to infer the `batch_size`.*:UserWarning",
+]
