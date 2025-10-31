@@ -83,8 +83,8 @@ def test_dataframe_with_nans():
         {
             "gene_id": ["GENE1", "GENE2", "GENE3", "GENE4"],
             "expression": [1.5, 2.3, np.nan, 3.1],
-            "p_value": [0.01, pd.NA, 0.1, 0.001],
-            "log_fold_change": [0.5, 1.2, -0.3, pd.NA],
+            "p_value": [0.01, np.nan, 0.1, 0.001],
+            "log_fold_change": [0.5, 1.2, -0.3, None],
             "significant": [True, True, False, True],
         }
     )
@@ -367,13 +367,7 @@ def test_pandas_dataframe_io(temp_napistu_data_store, test_dataframe_with_nans):
     # Load and verify data integrity
     loaded_df = temp_napistu_data_store.load_pandas_df(df_name)
 
-    # Normalize null values to avoid FutureWarning about mismatched <NA> and nan
-    df_normalized = df.replace({pd.NA: np.nan})
-    loaded_df_normalized = loaded_df.replace({pd.NA: np.nan})
-
-    pd.testing.assert_frame_equal(
-        df_normalized, loaded_df_normalized, check_dtype=False
-    )
+    pd.testing.assert_frame_equal(df, loaded_df, check_dtype=False)
 
     # Test listing
     assert df_name in temp_napistu_data_store.list_pandas_dfs()
