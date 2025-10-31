@@ -2,7 +2,7 @@
 
 import torch
 
-from napistu_torch.lightning.data_module import NapistuDataModule
+from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.ml.constants import (
     SPLIT_TO_MASK,
     TRAINING,
@@ -11,9 +11,9 @@ from napistu_torch.napistu_data import NapistuData
 
 
 def test_datamodule_returns_dataloaders(edge_masked_napistu_data, data_config):
-    """Test that NapistuDataModule returns proper DataLoader objects."""
+    """Test that FullGraphDataModule returns proper DataLoader objects."""
 
-    dm = NapistuDataModule(data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(config=data_config, napistu_data=edge_masked_napistu_data)
     dm.setup()
 
     # Test that dataloaders return DataLoader objects
@@ -42,7 +42,7 @@ def test_datamodule_returns_dataloaders(edge_masked_napistu_data, data_config):
 
 def test_datamodule_num_node_features(edge_masked_napistu_data, data_config):
     """Test that num_node_features property works correctly."""
-    dm = NapistuDataModule(data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(config=data_config, napistu_data=edge_masked_napistu_data)
 
     # Should work before setup
     expected_features = edge_masked_napistu_data.num_node_features
@@ -55,7 +55,7 @@ def test_datamodule_num_node_features(edge_masked_napistu_data, data_config):
 
 def test_datamodule_setup_idempotent(edge_masked_napistu_data, data_config):
     """Test that setup can be called multiple times safely."""
-    dm = NapistuDataModule(data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(config=data_config, napistu_data=edge_masked_napistu_data)
 
     # First setup
     dm.setup()

@@ -5,10 +5,13 @@ Removed edge_weight parameter since it's not used for message passing.
 Edge weights are stored in edge attributes for supervision, not encoding.
 """
 
+import logging
+from typing import Optional, Union
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATConv, GCNConv, SAGEConv
+from torch_geometric.nn import GATConv, GCNConv, GraphConv, SAGEConv
 
 from napistu_torch.configs import ModelConfig
 from napistu_torch.constants import MODEL_CONFIG
@@ -20,20 +23,31 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     VALID_ENCODERS,
 )
+from napistu_torch.models.edge_encoder import EdgeEncoder
+
+logger = logging.getLogger(__name__)
 
 ENCODER_CLASSES = {
-    ENCODERS.SAGE: SAGEConv,
-    ENCODERS.GCN: GCNConv,
     ENCODERS.GAT: GATConv,
+    ENCODERS.GCN: GCNConv,
+    ENCODERS.GRAPH_CONV: GraphConv,
+    ENCODERS.SAGE: SAGEConv,
 }
 
 
-class GNNEncoder(nn.Module):
+class MessagePassingEncoder(nn.Module):
     """
     Unified Graph Neural Network encoder supporting multiple architectures.
 
     This class eliminates boilerplate by providing a single interface for
     SAGE, GCN, and GAT models with consistent behavior and configuration.
+
+    Edge Weight Support
+    -------------------
+    - GCN: ✅ Supports edge_weight parameter
+    - GraphConv: ✅ Supports edge_weight parameter (SAGE-like with edge weights)
+    - SAGE: ❌ Does not support edge_weight (gracefully ignored)
+    - GAT: ❌ Uses learned attention (edge_weight not needed)
 
     Parameters
     ----------
@@ -53,6 +67,8 @@ class GNNEncoder(nn.Module):
         Number of attention heads for GAT, by default 1
     gat_concat : bool, optional
         Whether to concatenate attention heads in GAT, by default True
+    graph_conv_aggregator : str, optional
+        Aggregation method for GraphConv, by default 'add'
 
     Notes
     -----
@@ -67,11 +83,11 @@ class GNNEncoder(nn.Module):
     Examples
     --------
     >>> # Direct instantiation
-    >>> encoder = GNNEncoder(128, 256, 3, encoder_type='sage', sage_aggregator='mean')
+    >>> encoder = MessagePassingEncoder(128, 256, 3, encoder_type='sage', sage_aggregator='mean')
     >>>
     >>> # From config
     >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
-    >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+    >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128)
     """
 
     def __init__(
@@ -81,11 +97,15 @@ class GNNEncoder(nn.Module):
         num_layers: int,
         dropout: float = 0.0,
         encoder_type: str = ENCODERS.SAGE,
-        # SAGE-specific parameters
-        sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
+        # Edge weighting
+        weight_edges_by: Optional[Union[torch.Tensor, nn.Module]] = None,
         # GAT-specific parameters
         gat_heads: int = 1,
         gat_concat: bool = True,
+        # GraphConv-specific parameters
+        graph_conv_aggregator: str = ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR,
+        # SAGE-specific parameters
+        sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -100,6 +120,20 @@ class GNNEncoder(nn.Module):
 
         encoder = ENCODER_CLASSES[encoder_type]
         self.convs = nn.ModuleList()
+        self.supports_edge_weight = encoder_type in [ENCODERS.GCN, ENCODERS.GRAPH_CONV]
+
+        # Handle edge weighting
+        self.weight_edges_by = weight_edges_by
+        if weight_edges_by is not None:
+            if self.supports_edge_weight:
+                if isinstance(weight_edges_by, nn.Module):
+                    self.edge_encoder = weight_edges_by
+                    self.static_edge_weights = None
+                else:
+                    self.edge_encoder = None
+                    self.static_edge_weights = weight_edges_by
+            else:
+                logger.warning(f"Edge weighting is not supported for {encoder_type}")
 
         # Build encoder_kwargs based on encoder using dict comprehension
         param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder_type, {})
@@ -147,7 +181,7 @@ class GNNEncoder(nn.Module):
 
                     self.convs.append(encoder(in_dim, hidden_channels, **layer_kwargs))
                 else:
-                    # SAGE/GCN: hidden_channels -> hidden_channels
+                    # SAGE/GCN/GraphConv: hidden_channels -> hidden_channels
                     self.convs.append(
                         encoder(hidden_channels, hidden_channels, **encoder_kwargs)
                     )
@@ -156,6 +190,7 @@ class GNNEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_data: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Forward pass through the GNN encoder.
@@ -166,6 +201,9 @@ class GNNEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
+        edge_data : torch.Tensor, optional
+            Edge data [num_edges, edge_dim] for edge weighting.
+            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
 
         Returns
         -------
@@ -174,16 +212,41 @@ class GNNEncoder(nn.Module):
 
         Notes
         -----
-        This method does NOT use edge weights or edge attributes for message passing.
-        All encoders use unweighted/uniform message passing (or attention in GAT's case).
-
-        If you need edge-weighted message passing in the future:
-        - GCN: Add edge_weight parameter and pass to GCNConv
-        - SAGE: Implement custom message passing (not natively supported)
-        - GAT: Already uses learned attention (different from edge weights)
+        Edge weighting is handled based on the weight_edges_by parameter:
+        - None: No edge weighting (uniform message passing)
+        - torch.Tensor: Static edge weights
+        - nn.Module: Learnable edge encoder (requires edge_data)
         """
+        # Compute edge weights based on weight_edges_by setting
+        if self.weight_edges_by is not None:
+            if isinstance(self.weight_edges_by, nn.Module):
+                # Learnable edge encoder - requires edge_data (edge attributes)
+                if edge_data is None:
+                    raise ValueError(
+                        "edge_data required when using learnable edge encoder"
+                    )
+                edge_weight = self.edge_encoder(edge_data)
+            else:
+                # Static edge weights - use pre-masked weights from edge_data
+                if edge_data is None:
+                    raise ValueError(
+                        "edge_data required when using static edge weights"
+                    )
+                edge_weight = edge_data
+        else:
+            edge_weight = None
+
+        # Warn if edge weights are provided but not supported
+        if not self.supports_edge_weight and edge_weight is not None:
+            logger.warning(
+                f"Edge weights are not supported for {self.encoder_type}. Ignoring edge_weight."
+            )
+
         for i, conv in enumerate(self.convs):
-            x = conv(x, edge_index)
+            if edge_weight is not None and self.supports_edge_weight:
+                x = conv(x, edge_index, edge_weight=edge_weight)
+            else:
+                x = conv(x, edge_index)
 
             # Apply activation and dropout (except on last layer)
             if i < len(self.convs) - 1:
@@ -200,6 +263,7 @@ class GNNEncoder(nn.Module):
         self,
         x: torch.Tensor,
         edge_index: torch.Tensor,
+        edge_data: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Alias for forward method for consistency with other models.
@@ -210,18 +274,26 @@ class GNNEncoder(nn.Module):
             Node feature matrix [num_nodes, in_channels]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
+        edge_data : Optional[torch.Tensor]
+            Edge data [num_edges, edge_dim] for edge weighting.
+            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
 
         Returns
         -------
         torch.Tensor
             Node embeddings [num_nodes, hidden_channels]
         """
-        return self.forward(x, edge_index)
+        return self.forward(x, edge_index, edge_data)
 
     @classmethod
-    def from_config(cls, config: ModelConfig, in_channels: int) -> "GNNEncoder":
+    def from_config(
+        cls,
+        config: ModelConfig,
+        in_channels: int,
+        edge_in_channels: Optional[int] = None,
+    ) -> "MessagePassingEncoder":
         """
-        Create GNNEncoder from ModelConfig.
+        Create MessagePassingEncoder from ModelConfig.
 
         Parameters
         ----------
@@ -229,16 +301,22 @@ class GNNEncoder(nn.Module):
             Model configuration containing encoder, hidden_channels, etc.
         in_channels : int
             Number of input node features (not in config as it depends on data)
+        edge_in_channels : int, optional
+            Number of input edge features. Required if use_edge_encoder=True.
 
         Returns
         -------
-        GNNEncoder
+        MessagePassingEncoder
             Configured encoder instance
 
         Examples
         --------
         >>> config = ModelConfig(encoder='sage', hidden_channels=256, num_layers=3)
-        >>> encoder = GNNEncoder.from_config(config, in_channels=128)
+        >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128)
+        >>>
+        >>> # With edge encoder
+        >>> config = ModelConfig(encoder='gcn', use_edge_encoder=True, edge_encoder_dim=32)
+        >>> encoder = MessagePassingEncoder.from_config(config, in_channels=128, edge_in_channels=10)
         """
 
         encoder_type = getattr(config, MODEL_CONFIG.ENCODER)
@@ -256,6 +334,29 @@ class GNNEncoder(nn.Module):
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_HEADS] = config.gat_heads
         if encoder_type == ENCODERS.GAT and config.gat_concat is not None:
             model_kwargs[ENCODER_SPECIFIC_ARGS.GAT_CONCAT] = config.gat_concat
+        if (
+            encoder_type == ENCODERS.GRAPH_CONV
+            and config.graph_conv_aggregator is not None
+        ):
+            model_kwargs[ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR] = (
+                config.graph_conv_aggregator
+            )
+
+        # Handle edge encoder creation
+        if getattr(config, "use_edge_encoder", False):
+            if edge_in_channels is None:
+                raise ValueError(
+                    "edge_in_channels must be provided when use_edge_encoder=True"
+                )
+
+            edge_encoder = EdgeEncoder(
+                edge_dim=edge_in_channels,
+                hidden_dim=config.edge_encoder_dim,
+                dropout=config.edge_encoder_dropout,
+            )
+            weight_edges_by = edge_encoder
+        else:
+            weight_edges_by = None
 
         return cls(
             in_channels=in_channels,
@@ -263,5 +364,6 @@ class GNNEncoder(nn.Module):
             num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
             dropout=getattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT),
             encoder_type=encoder_type,
+            weight_edges_by=weight_edges_by,
             **model_kwargs,
         )

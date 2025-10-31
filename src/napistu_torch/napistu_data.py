@@ -5,6 +5,7 @@ This class extends PyG's Data class with Napistu-specific functionality
 including safe save/load methods and additional utilities.
 """
 
+import copy
 import logging
 import re
 from pathlib import Path
@@ -233,6 +234,12 @@ class NapistuData(Data):
         params.update({k: v for k, v in kwargs.items() if v is not None})
 
         super().__init__(**params)
+
+    def copy(self) -> "NapistuData":
+        """
+        Create a deep copy of the NapistuData object.
+        """
+        return copy.deepcopy(self)
 
     def save(self, filepath: Union[str, Path]) -> None:
         """
@@ -523,6 +530,108 @@ class NapistuData(Data):
         }
 
         return summary_dict
+
+    def trim(
+        self,
+        keep_edge_attr: bool = True,
+        keep_labels: bool = True,
+        keep_masks: bool = True,
+        inplace: bool = False,
+    ) -> "NapistuData":
+        """
+        Create a memory-optimized copy with only essential training attributes.
+
+        This method creates a new NapistuData object with only the core attributes
+        needed for training, stripping away all metadata and debugging information.
+
+        **What's Always Kept:**
+        - x (node features)
+        - edge_index (graph structure)
+        - edge_weight (if present)
+
+        **What's Always Removed:**
+        - ng_vertex_names, ng_edge_names (pandas objects)
+        - vertex_feature_names, edge_feature_names (metadata)
+        - name, splitting_strategy, labeling_manager (metadata)
+
+        Parameters
+        ----------
+        keep_edge_attr : bool, default=True
+            Whether to keep edge_attr. Set False if not using edge features
+            (e.g., no edge encoder). **Major memory savings for large graphs.**
+        keep_labels : bool, default=True
+            Whether to keep y (node labels). Set False for unsupervised tasks.
+        keep_masks : bool, default=True
+            Whether to keep train_mask, val_mask, test_mask.
+            Set False if using custom splitting.
+        inplace: bool, default=False
+            Whether to modify the current object in place or return a new object.
+
+        Returns
+        -------
+        NapistuData
+            New trimmed NapistuData object with minimal attributes
+
+        Examples
+        --------
+        >>> # Default - keep everything except metadata
+        >>> trimmed = data.trim()
+        >>>
+        >>> # No edge features needed (biggest memory savings)
+        >>> trimmed = data.trim(keep_edge_attr=False)
+        >>>
+        >>> # Unsupervised learning
+        >>> trimmed = data.trim(keep_labels=False)
+        >>>
+        >>> # Check memory savings
+        >>> print(f"Before: {data.estimate_memory():.2f} GB")
+        >>> print(f"After: {trimmed.estimate_memory():.2f} GB")
+        >>>
+        >>> # Minimal for inference (no edge features, labels, or masks)
+        >>> trimmed = data.trim(
+        ...     keep_edge_attr=False,
+        ...     keep_labels=False,
+        ...     keep_masks=False
+        ... )
+
+        Notes
+        -----
+        **Memory Impact (10M edges example):**
+        - Removing edge_attr: saves ~4 GB (100 features) to ~0.4 GB (10 features)
+        - Removing pandas names: saves ~10-100 MB
+        - Removing labels/masks: saves ~10-50 MB
+        """
+
+        new_attrs = {
+            "x": self.x,
+            "edge_index": self.edge_index,
+            "edge_attr": (
+                self.edge_attr if keep_edge_attr else torch.empty((self.num_edges, 0))
+            ),
+            "name": NAPISTU_DATA_DEFAULT_NAME + "_trimmed",
+        }
+
+        # Add edge_weight if present
+        if hasattr(self, "edge_weight") and self.edge_weight is not None:
+            new_attrs["edge_weight"] = self.edge_weight
+
+        # Add labels if requested
+        if keep_labels and hasattr(self, "y") and self.y is not None:
+            new_attrs["y"] = self.y
+
+        # Add masks if requested
+        if keep_masks:
+            for mask_name in ["train_mask", "val_mask", "test_mask"]:
+                if hasattr(self, mask_name):
+                    mask = getattr(self, mask_name)
+                    if mask is not None:
+                        new_attrs[mask_name] = mask
+
+        if inplace:
+            self = NapistuData(**new_attrs)
+            return None
+        else:
+            return NapistuData(**new_attrs)
 
     def unencode_features(
         self,

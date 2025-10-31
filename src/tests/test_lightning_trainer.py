@@ -8,11 +8,12 @@ import torch
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
 from napistu_torch.configs import DataConfig, ExperimentConfig
-from napistu_torch.lightning.data_module import NapistuDataModule
+from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
+from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.models.constants import ENCODERS
-from napistu_torch.models.gnns import GNNEncoder
 from napistu_torch.models.heads import DotProductHead
+from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
@@ -24,6 +25,65 @@ def stub_data_config():
         sbml_dfs_path=Path("stub_sbml.pkl"),
         napistu_graph_path=Path("stub_graph.pkl"),
         napistu_data_name="edge_prediction",
+    )
+
+
+def _create_test_experiment_config(
+    name: str,
+    data_config: DataConfig,
+    limit_train_batches: float = 0.1,
+    limit_val_batches: float = 0.1,
+    fast_dev_run: bool = True,
+    **kwargs,
+) -> ExperimentConfig:
+    """Create a standardized ExperimentConfig for testing.
+
+    This function abstracts away the common ExperimentConfig setup patterns
+    used across multiple tests, reducing duplication and making tests more
+    maintainable.
+
+    Parameters
+    ----------
+    name : str
+        Name for the experiment
+    data_config : DataConfig
+        Data configuration to use
+    limit_train_batches : float, default=0.1
+        Fraction of training batches to use (0.1 = 10%)
+    limit_val_batches : float, default=0.1
+        Fraction of validation batches to use (0.1 = 10%)
+    fast_dev_run : bool, default=True
+        Whether to use fast dev run mode
+    **kwargs
+        Additional keyword arguments to pass to ExperimentConfig
+
+    Returns
+    -------
+    ExperimentConfig
+        Configured experiment config for testing
+
+    Examples
+    --------
+    Basic usage:
+    >>> config = create_test_experiment_config("test", data_config)
+
+    With custom parameters:
+    >>> config = create_test_experiment_config(
+    ...     "test", data_config,
+    ...     fast_dev_run=False,
+    ...     max_epochs=5,
+    ...     limit_train_batches=1.0
+    ... )
+    """
+    return ExperimentConfig(
+        name=name,
+        seed=42,
+        deterministic=True,
+        fast_dev_run=fast_dev_run,
+        limit_train_batches=limit_train_batches,
+        limit_val_batches=limit_val_batches,
+        data=data_config,
+        **kwargs,
     )
 
 
@@ -68,21 +128,20 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
     """Test that we can actually fit an edge prediction model with Lightning trainer."""
 
     # Create a minimal experiment config for fast testing
-    experiment_config = ExperimentConfig(
+    experiment_config = _create_test_experiment_config(
         name="trainer_test",
-        seed=42,
-        deterministic=True,
-        fast_dev_run=True,  # Only run 1 batch for testing
+        data_config=stub_data_config,
         limit_train_batches=0.1,  # Limit to 10% of batches
         limit_val_batches=0.1,
-        data=stub_data_config,
     )
 
     # Create data module with direct napistu_data
-    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(
+        config=stub_data_config, napistu_data=edge_masked_napistu_data
+    )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,  # Small for fast testing
         num_layers=2,
@@ -122,24 +181,21 @@ def test_edge_prediction_trainer_fit_with_callbacks(
     """Test trainer fit with callbacks enabled."""
 
     # Create experiment config
-    experiment_config = ExperimentConfig(
+    experiment_config = _create_test_experiment_config(
         name="trainer_test_with_callbacks",
-        seed=42,
-        deterministic=True,
-        fast_dev_run=True,
+        data_config=stub_data_config,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-        data=stub_data_config,
     )
 
     # Create data module with direct napistu_data (backward compatibility)
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -185,24 +241,21 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
     """Test that we can run test after fitting."""
 
     # Create experiment config
-    experiment_config = ExperimentConfig(
+    experiment_config = _create_test_experiment_config(
         name="trainer_test_eval",
-        seed=42,
-        deterministic=True,
-        fast_dev_run=True,
+        data_config=stub_data_config,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-        data=stub_data_config,
     )
 
     # Create data module with direct napistu_data (backward compatibility)
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -244,24 +297,21 @@ def test_edge_prediction_trainer_different_encoders(
 
     for encoder_type in encoders_to_test:
         # Create experiment config
-        experiment_config = ExperimentConfig(
+        experiment_config = _create_test_experiment_config(
             name=f"trainer_test_{encoder_type}",
-            seed=42,
-            deterministic=True,
-            fast_dev_run=True,
+            data_config=stub_data_config,
             limit_train_batches=0.05,  # Even smaller for multiple tests
             limit_val_batches=0.05,
-            data=stub_data_config,
         )
 
-        dm = NapistuDataModule(
-            stub_data_config,
+        dm = FullGraphDataModule(
+            config=stub_data_config,
             napistu_data_name="test",
             napistu_data=edge_masked_napistu_data,
         )
 
         # Create encoder and head
-        encoder = GNNEncoder(
+        encoder = MessagePassingEncoder(
             in_channels=dm.num_node_features,
             hidden_channels=16,  # Small for fast testing
             num_layers=1,  # Minimal layers
@@ -319,23 +369,20 @@ def test_edge_prediction_trainer_gpu_if_available(
     """Test trainer on GPU accelerators if available, otherwise skip."""
 
     # Create experiment config
-    experiment_config = ExperimentConfig(
+    experiment_config = _create_test_experiment_config(
         name=f"trainer_test_{accelerator}",
-        seed=42,
-        deterministic=True,
-        fast_dev_run=True,
+        data_config=stub_data_config,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-        data=stub_data_config,
     )
 
-    dm = NapistuDataModule(
-        stub_data_config,
+    dm = FullGraphDataModule(
+        config=stub_data_config,
         napistu_data=edge_masked_napistu_data,
     )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -369,21 +416,18 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     """Test trainer using NapistuDataStore-based approach."""
 
     # Create experiment config
-    experiment_config = ExperimentConfig(
+    experiment_config = _create_test_experiment_config(
         name="trainer_test_with_store",
-        seed=42,
-        deterministic=True,
-        fast_dev_run=True,
+        data_config=temp_data_config_with_store,
         limit_train_batches=0.1,
         limit_val_batches=0.1,
-        data=temp_data_config_with_store,
     )
 
     # Create data module using NapistuDataStore approach
-    dm = NapistuDataModule(temp_data_config_with_store)
+    dm = FullGraphDataModule(config=temp_data_config_with_store)
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,
         num_layers=2,
@@ -427,10 +471,12 @@ def test_edge_prediction_trainer_with_edge_strata(
     )
 
     # Create data module with direct napistu_data
-    dm = NapistuDataModule(stub_data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(
+        config=stub_data_config, napistu_data=edge_masked_napistu_data
+    )
 
     # Create encoder and head
-    encoder = GNNEncoder(
+    encoder = MessagePassingEncoder(
         in_channels=dm.num_node_features,
         hidden_channels=32,  # Small for fast testing
         num_layers=2,
@@ -486,3 +532,76 @@ def test_edge_prediction_trainer_with_edge_strata(
 
     # Verify that negative edges were sampled (should have some negative edges)
     assert batch["neg_edges"].shape[1] > 0, "Should have sampled negative edges"
+
+
+def test_edge_prediction_trainer_with_edge_batch_datamodule(
+    edge_masked_napistu_data, stub_data_config
+):
+    """Test full training with EdgeBatchDataModule for mini-batch updates."""
+
+    # Create experiment config
+    experiment_config = _create_test_experiment_config(
+        name="trainer_test_edge_batch",
+        data_config=stub_data_config,
+        fast_dev_run=False,
+        limit_train_batches=1.0,
+        limit_val_batches=1.0,
+    )
+
+    # Create mini-batch datamodule
+    batches_per_epoch = 5
+    dm = EdgeBatchDataModule(
+        config=stub_data_config,
+        napistu_data=edge_masked_napistu_data,
+        batches_per_epoch=batches_per_epoch,
+        shuffle=True,
+    )
+
+    # Create encoder, head, task
+    encoder = MessagePassingEncoder(
+        in_channels=edge_masked_napistu_data.num_node_features,
+        hidden_channels=32,
+        num_layers=2,
+        encoder_type=ENCODERS.SAGE,
+    )
+    head = DotProductHead()
+    task = EdgePredictionTask(encoder, head, neg_sampling_ratio=1.0)
+    lightning_task = EdgePredictionLightning(task, experiment_config.training)
+
+    # Track training steps
+    class StepCounter(pl.Callback):
+        def __init__(self):
+            self.train_steps = 0
+
+        def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+            self.train_steps += 1
+
+    step_counter = StepCounter()
+
+    # Train
+    trainer = pl.Trainer(
+        max_epochs=1,
+        accelerator="cpu",
+        devices=1,
+        enable_checkpointing=False,
+        enable_progress_bar=False,
+        enable_model_summary=False,
+        logger=False,
+        callbacks=[step_counter],
+    )
+    trainer.fit(lightning_task, dm)
+
+    # Verify multiple gradient updates per epoch
+    assert (
+        step_counter.train_steps == batches_per_epoch
+    ), f"Expected {batches_per_epoch} training steps, got {step_counter.train_steps}"
+
+    # Verify model was trained
+    encoder_params = list(lightning_task.task.encoder.parameters())
+    assert len(encoder_params) > 0
+    assert any(param.requires_grad for param in encoder_params)
+
+    # Verify validation works
+    val_results = trainer.validate(lightning_task, dm)
+    assert "val_auc" in val_results[0]
+    assert 0 <= val_results[0]["val_auc"] <= 1

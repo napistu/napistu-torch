@@ -37,9 +37,12 @@ class ModelConfig(BaseModel):
     head: str = Field(default=HEADS.DOT_PRODUCT)
 
     # Model-specific fields (optional, with defaults)
-    sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
     gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
     gat_concat: Optional[bool] = True  # For GAT
+    graph_conv_aggregator: Optional[str] = (
+        ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR
+    )  # For GraphConv
+    sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
 
     # Head-specific fields (optional, with defaults)
     mlp_hidden_dim: Optional[int] = 64  # For MLP head
@@ -52,6 +55,13 @@ class ModelConfig(BaseModel):
     nc_dropout: Optional[float] = Field(
         default=0.1, ge=0.0, lt=1.0
     )  # For node classification head
+
+    # Edge encoder fields (optional, with defaults)
+    use_edge_encoder: Optional[bool] = False  # Whether to use edge encoder
+    edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
+    edge_encoder_dropout: Optional[float] = Field(
+        default=0.1, ge=0.0, lt=1.0
+    )  # Edge encoder dropout
 
     @field_validator(MODEL_DEFS.ENCODER)
     @classmethod

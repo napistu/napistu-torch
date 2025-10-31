@@ -29,7 +29,7 @@ class BaseTask(ABC, nn.Module):
         self.encoder = encoder
         self.head = head
 
-    def forward(self, x, edge_index, edge_weight=None):
+    def forward(self, x, edge_index, edge_weight=None, edge_attr=None):
         """Standard forward pass - encode nodes."""
         return self.encoder.encode(x, edge_index, edge_weight)
 

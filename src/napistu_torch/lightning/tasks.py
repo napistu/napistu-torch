@@ -2,14 +2,21 @@
 Simplified Lightning task adapters that handle single-graph batches correctly.
 """
 
+import gc
+import logging
+
 import pytorch_lightning as pl
+import torch
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
+from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 from napistu_torch.tasks.node_classification import NodeClassificationTask
+
+logger = logging.getLogger(__name__)
 
 
 class BaseLightningTask(pl.LightningModule):
@@ -62,8 +69,7 @@ class BaseLightningTask(pl.LightningModule):
                 optimizer,
                 mode="max",
                 factor=0.5,
-                patience=10,
-                verbose=True,
+                patience=self.config.early_stopping_patience,
             )
             return {
                 "optimizer": optimizer,
@@ -108,17 +114,36 @@ class EdgePredictionLightning(BaseLightningTask):
 
     def training_step(self, batch, batch_idx):
         """
-        Training step - batch should be a NapistuData object.
+        Training step - handles both full-batch and mini-batch modes.
 
-        Our DataModule with identity_collate ensures batch is a NapistuData
-        object directly, not wrapped in any container.
+        Parameters
+        ----------
+        batch : NapistuData or torch.Tensor
+            Either:
+            - NapistuData object (from FullGraphDataModule)
+            - Edge indices tensor (from EdgeBatchDataModule)
+        batch_idx : int
+            Batch index within epoch
+
+        Returns
+        -------
+        torch.Tensor
+            Loss value
         """
-        _validate_is_napistu_data(batch, "training_step")
+        # Detect batch type and extract data
+        data, edge_indices = self._unpack_batch(batch)
 
-        # Delegates to the core task
-        loss = self.task.training_step(batch)
+        # Prepare batch for the task
+        prepared_batch = self.task.prepare_batch(
+            data,
+            split=TRAINING.TRAIN,
+            edge_indices=edge_indices,
+        )
 
-        # Lightning handles logging
+        # Compute loss
+        loss = self.task.compute_loss(prepared_batch)
+
+        # Log
         self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
 
         return loss
@@ -164,6 +189,53 @@ class EdgePredictionLightning(BaseLightningTask):
         """
         _validate_is_napistu_data(batch, "predict_step")
         return self.task.predict(batch)
+
+    def on_batch_end(self):
+        _cleanup()
+
+    def on_train_epoch_end(self):
+        _cleanup()
+
+    def on_validation_epoch_end(self):
+        _cleanup()
+
+    def _unpack_batch(self, batch):
+        """
+        Unpack training batch into (data, edge_indices).
+
+        Only used in training_step. Val/test always receive NapistuData.
+
+        Parameters
+        ----------
+        batch : NapistuData or torch.Tensor
+            Batch from training dataloader
+
+        Returns
+        -------
+        tuple[NapistuData, Optional[torch.Tensor]]
+            (data, edge_indices) where:
+            - data: NapistuData object
+            - edge_indices: None (full-batch) or tensor (mini-batch)
+        """
+        if isinstance(batch, NapistuData):
+            # Full-batch mode (FullGraphDataModule)
+            logger.debug("Full-batch mode: batch is NapistuData")
+            return batch, None
+
+        elif isinstance(batch, torch.Tensor):
+            # Mini-batch mode (EdgeBatchDataModule)
+            logger.debug(f"Mini-batch mode: {len(batch)} edge indices")
+
+            # Get full data from datamodule
+            data = self.trainer.datamodule.data
+
+            return data, batch
+
+        else:
+            raise ValueError(
+                f"Unexpected batch type in training: {type(batch)}. "
+                f"Expected NapistuData or torch.Tensor."
+            )
 
 
 class NodeClassificationLightning(BaseLightningTask):
@@ -225,3 +297,12 @@ def _validate_is_napistu_data(batch, method_name: str):
             f"Expected NapistuData, got {type(batch)}. "
             f"Check your DataModule's collate_fn in {method_name}."
         )
+
+
+def _cleanup():
+    if torch.backends.mps.is_available():
+        torch.mps.synchronize()
+        torch.mps.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()

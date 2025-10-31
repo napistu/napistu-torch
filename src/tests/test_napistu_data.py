@@ -310,3 +310,78 @@ def test_get_features_by_regex(napistu_data):
     # Test 6: Test error case - regex with capturing groups when return_suffixes=True
     with pytest.raises(ValueError, match="already contains capturing groups"):
         napistu_data.get_features_by_regex("ontology(.*)", return_suffixes=True)
+
+
+def test_copy(napistu_data):
+    """Test that copy creates a deep copy that is independent of the original."""
+    copied = napistu_data.copy()
+
+    # Verify it's a NapistuData object
+    assert isinstance(copied, NapistuData)
+
+    # Verify basic properties are the same
+    assert copied.num_nodes == napistu_data.num_nodes
+    assert copied.num_edges == napistu_data.num_edges
+
+    # Verify tensors are equal but not the same object
+    assert torch.equal(copied.x, napistu_data.x)
+    assert copied.x is not napistu_data.x
+
+    # Verify modifications to copy don't affect original
+    copied.x[0, 0] = 999.0
+    assert not torch.equal(copied.x, napistu_data.x)
+    assert copied.x[0, 0] != napistu_data.x[0, 0]
+
+
+def test_trim_default(napistu_data):
+    """Test trim method with default settings keeps essential attributes."""
+    trimmed = napistu_data.trim()
+
+    # Verify core attributes are kept
+    assert torch.equal(trimmed.x, napistu_data.x)
+    assert torch.equal(trimmed.edge_index, napistu_data.edge_index)
+    assert torch.equal(trimmed.edge_attr, napistu_data.edge_attr)
+
+    # Verify edge_weight is preserved if it exists
+    if hasattr(napistu_data, "edge_weight") and napistu_data.edge_weight is not None:
+        assert torch.equal(trimmed.edge_weight, napistu_data.edge_weight)
+
+    # Verify metadata is removed
+    assert not hasattr(trimmed, "ng_vertex_names")
+    assert not hasattr(trimmed, "ng_edge_names")
+    assert not hasattr(trimmed, "vertex_feature_names")
+    assert not hasattr(trimmed, "edge_feature_names")
+
+    # Verify name is set to trimmed
+    assert trimmed.name == "default_trimmed"
+
+
+def test_trim_no_edge_attr(napistu_data):
+    """Test trim method with keep_edge_attr=False removes edge features."""
+    trimmed = napistu_data.trim(keep_edge_attr=False)
+
+    # Verify edge_attr is empty
+    assert trimmed.edge_attr.shape == (napistu_data.num_edges, 0)
+    assert trimmed.num_edge_features == 0
+
+
+def test_trim_no_labels_masks(edge_masked_napistu_data):
+    """Test trim method removes labels and masks when requested."""
+    trimmed = edge_masked_napistu_data.trim(keep_labels=False, keep_masks=False)
+
+    # Verify that trimmed data has core attributes
+    assert hasattr(trimmed, "x")
+    assert hasattr(trimmed, "edge_index")
+    assert hasattr(trimmed, "edge_attr")
+
+    # Verify masks are removed (check original had them, trimmed doesn't)
+    assert hasattr(edge_masked_napistu_data, "train_mask")
+    assert hasattr(edge_masked_napistu_data, "val_mask")
+    assert hasattr(edge_masked_napistu_data, "test_mask")
+    assert not hasattr(trimmed, "train_mask")
+    assert not hasattr(trimmed, "val_mask")
+    assert not hasattr(trimmed, "test_mask")
+
+    # Verify metadata is removed
+    assert not hasattr(trimmed, "vertex_feature_names")
+    assert not hasattr(trimmed, "edge_feature_names")

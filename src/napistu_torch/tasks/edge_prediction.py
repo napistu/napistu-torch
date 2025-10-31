@@ -13,6 +13,7 @@ from napistu_torch.labeling.create import _prepare_discrete_labels
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
+from napistu_torch.tasks.constants import NEGATIVE_SAMPLING_STRATEGIES
 from napistu_torch.tasks.negative_sampler import NegativeSampler
 
 logger = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class EdgePredictionTask(BaseTask):
         head: nn.Module,
         neg_sampling_ratio: float = 1.0,
         edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
-        neg_sampling_strategy: str = "degree_weighted",
+        neg_sampling_strategy: str = NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
         metrics: List[str] = None,
     ):
         super().__init__(encoder, head)
@@ -79,54 +80,98 @@ class EdgePredictionTask(BaseTask):
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or ["auc", "ap"]
 
+        # Extract edge encoder from the encoder if it has one
+        self.edge_encoder = getattr(encoder, "edge_encoder", None)
+
         # Negative sampler (initialized lazily on first prepare_batch call)
         self.negative_sampler = None
         self._sampler_initialized = False
 
     def prepare_batch(
-        self, data: NapistuData, split: str = "train"
+        self,
+        data: NapistuData,
+        split: str = TRAINING.TRAIN,
+        edge_indices: Optional[torch.Tensor] = None,
     ) -> Dict[str, torch.Tensor]:
         """
         Prepare batch for edge prediction.
 
         For transductive (mask-based) splits, this:
-        1. Gets positive edges from the split mask
+        1. Gets positive edges from the split mask (or edge_indices subset)
         2. Gets supervision edges (for message passing)
         3. Samples negative edges
+
+        Parameters
+        ----------
+        data : NapistuData
+            Full graph data
+        split : str
+            Which split ('train', 'val', 'test')
+        edge_indices : torch.Tensor, optional
+            Indices into data.edge_index for this mini-batch.
+            If None, uses all edges from the split mask (full-batch mode).
+            If provided, uses only these edges (mini-batch mode).
 
         Returns
         -------
         Dict with keys:
             - x: Node features
-            - supervision_edges: Edges for message passing
-            - pos_edges: Positive edges to predict
-            - neg_edges: Negative edges to predict
-            - edge_weight: Edge weights (optional)
+            - supervision_edges: Edges for message passing (always full training graph)
+            - pos_edges: Positive edges to predict (from edge_indices or split mask)
+            - neg_edges: Negative edges to predict (sampled)
+            - edge_data: Edge data for supervision edges (attributes for learnable encoders,
+                        weights for static weighting)
         """
         # Lazy initialization on first call
         self._ensure_negative_sampler(data)
 
-        # Get the right mask for this split
-        mask_attr = SPLIT_TO_MASK[split]
-        mask = getattr(data, mask_attr)
-        pos_edge_index = data.edge_index[:, mask]
+        # Get positive edges for this batch
+        if edge_indices is not None:
+            # Mini-batch mode: use provided edge indices and make sure they are on the data's device
+            edge_indices = edge_indices.to(data.edge_index.device)
+            pos_edge_index = data.edge_index[:, edge_indices]
+        else:
+            # Full-batch mode: use all edges from split mask
+            mask_attr = SPLIT_TO_MASK[split]
+            mask = getattr(data, mask_attr)
+            pos_edge_index = data.edge_index[:, mask]
 
         # Always use training edges for message passing (prevents data leakage)
-        supervision_edges = data.edge_index[:, data.train_mask]
+        train_indices = torch.where(data.train_mask)[0]
+        supervision_edges = data.edge_index[:, train_indices]
 
-        # Sample negative edges
+        # Sample negative edges proportional to batch size
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
-        neg_edge_index = self.negative_sampler.sample(
+        neg_edge_index, _ = self.negative_sampler.sample(
             num_neg=num_neg, device=str(pos_edge_index.device)
         )
 
-        return {
+        # Handle edge data based on encoder type
+        edge_data = None
+        if (
+            hasattr(self.encoder, "weight_edges_by")
+            and self.encoder.weight_edges_by is not None
+        ):
+            if isinstance(self.encoder.weight_edges_by, torch.nn.Module):
+                # Learnable edge encoder - pass edge attributes for supervision edges
+                edge_attr = getattr(data, "edge_attr", None)
+                if edge_attr is not None:
+                    edge_data = edge_attr[train_indices]
+            else:
+                # Static edge weights - pass weights for supervision edges
+                edge_data = self.encoder.static_edge_weights[train_indices]
+
+        batch_dict = {
             "x": data.x,
             "supervision_edges": supervision_edges,
             "pos_edges": pos_edge_index,
             "neg_edges": neg_edge_index,
-            "edge_weight": getattr(data, "edge_weight", None),
+            "edge_data": edge_data,
         }
+
+        self._validate_data_dims(batch_dict, data)
+
+        return batch_dict
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -137,10 +182,11 @@ class EdgePredictionTask(BaseTask):
         2. Score positive and negative edges
         3. Compute binary cross-entropy loss
         """
-        # Encode nodes
+        # Encode nodes with edge data
         z = self.encoder.encode(
             batch["x"],
             batch["supervision_edges"],
+            batch.get("edge_data", None),
         )
 
         # Score positive and negative edges
@@ -174,6 +220,7 @@ class EdgePredictionTask(BaseTask):
             z = self.encoder.encode(
                 batch["x"],
                 batch["supervision_edges"],
+                batch.get("edge_data", None),
             )
 
             # Score positive and negative edges
@@ -229,11 +276,20 @@ class EdgePredictionTask(BaseTask):
         """
         self.eval()
         with torch.no_grad():
+            # load a fixed tensor for weights if one exists
+            if (
+                hasattr(self.encoder, "static_edge_weights")
+                and self.encoder.static_edge_weights is not None
+            ):
+                edge_data = self.encoder.static_edge_weights
+            else:
+                edge_data = getattr(data, "edge_attr", None)
+
             # Encode nodes
             z = self.encoder.encode(
                 data.x,
                 data.edge_index,
-                getattr(data, "edge_weight", None),
+                edge_data,
             )
 
             # Score the specified edges
@@ -299,16 +355,65 @@ class EdgePredictionTask(BaseTask):
 
         This is for inference - no training, no negative sampling.
         """
+        if (
+            hasattr(self.encoder, "static_edge_weights")
+            and self.encoder.static_edge_weights is not None
+        ):
+            edge_data = self.encoder.static_edge_weights
+        else:
+            edge_data = getattr(data, "edge_attr", None)
+
         # Encode nodes using all edges
         z = self.encoder.encode(
             data.x,
             data.edge_index,
+            edge_data,
         )
 
         # Score all edges
         scores = torch.sigmoid(self.head(z, data.edge_index))
 
         return scores
+
+    def _validate_data_dims(
+        self, batch_dict: Dict[str, Optional[torch.Tensor]], data: NapistuData
+    ) -> None:
+        """Check that the dimensions of the tensors in the batch_dict are compatible."""
+
+        if batch_dict["x"].shape != (data.num_nodes, data.num_node_features):
+            raise ValueError(
+                f"x shape mismatch: {batch_dict['x'].shape} != ({data.num_nodes}, {data.num_node_features})"
+            )
+
+        n_supervision_edges = data.train_mask.sum().item()
+        if batch_dict["supervision_edges"].shape != (2, n_supervision_edges):
+            raise ValueError(
+                f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_supervision_edges})"
+            )
+
+        n_pos_edges = batch_dict["pos_edges"].shape[1]
+        if batch_dict["pos_edges"].shape != (2, n_pos_edges):
+            raise ValueError(
+                f"pos_edges shape mismatch: {batch_dict['pos_edges'].shape} != (2, {n_pos_edges})"
+            )
+
+        n_neg_edges = batch_dict["neg_edges"].shape[1]
+        if batch_dict["neg_edges"].shape != (2, n_neg_edges):
+            raise ValueError(
+                f"neg_edges shape mismatch: {batch_dict['neg_edges'].shape} != (2, {n_neg_edges})"
+            )
+
+        if n_pos_edges != n_neg_edges:
+            logger.warning(
+                f"pos_edges and neg_edges have different number of edges: {n_pos_edges} != {n_neg_edges}"
+            )
+
+        if batch_dict["edge_data"] is not None:
+            if batch_dict["edge_data"].shape[0] != n_supervision_edges:
+                raise ValueError(
+                    f"edge_data shape mismatch: {batch_dict['edge_data'].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
+                )
+        return None
 
 
 def get_edge_strata_from_artifacts(
