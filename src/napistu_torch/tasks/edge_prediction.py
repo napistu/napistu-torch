@@ -385,7 +385,7 @@ class EdgePredictionTask(BaseTask):
                 f"x shape mismatch: {batch_dict['x'].shape} != ({data.num_nodes}, {data.num_node_features})"
             )
 
-        n_supervision_edges = data.get_train_mask().sum().item()
+        n_supervision_edges = data.train_mask.sum().item()
         if batch_dict["supervision_edges"].shape != (2, n_supervision_edges):
             raise ValueError(
                 f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_supervision_edges})"

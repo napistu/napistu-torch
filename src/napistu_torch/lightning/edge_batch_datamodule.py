@@ -114,7 +114,7 @@ class EdgeBatchDataModule(NapistuDataModule):
             DataLoader that yields edge indices tensors for each mini-batch.
         """
 
-        train_edge_indices = torch.where(self.data.get_train_mask())[0]
+        train_edge_indices = torch.where(self.data.train_mask)[0]
         dataset = EdgeBatchDataset(train_edge_indices, self.batches_per_epoch)
 
         logger.info(f"Creating train dataloader with {self.batches_per_epoch} batches")

@@ -189,6 +189,14 @@ class EdgePredictionLightning(BaseLightningTask):
         _validate_is_napistu_data(batch, "predict_step")
         return self.task.predict(batch)
 
+    def on_train_epoch_end(self):
+        torch.mps.synchronize()
+        torch.mps.empty_cache()
+
+    def on_validation_epoch_end(self):
+        torch.mps.synchronize()
+        torch.mps.empty_cache()
+
     def _unpack_batch(self, batch):
         """
         Unpack training batch into (data, edge_indices).
