@@ -2,6 +2,7 @@
 Simplified Lightning task adapters that handle single-graph batches correctly.
 """
 
+import gc
 import logging
 
 import pytorch_lightning as pl
@@ -189,13 +190,14 @@ class EdgePredictionLightning(BaseLightningTask):
         _validate_is_napistu_data(batch, "predict_step")
         return self.task.predict(batch)
 
+    def on_batch_end(self):
+        _cleanup()
+
     def on_train_epoch_end(self):
-        torch.mps.synchronize()
-        torch.mps.empty_cache()
+        _cleanup()
 
     def on_validation_epoch_end(self):
-        torch.mps.synchronize()
-        torch.mps.empty_cache()
+        _cleanup()
 
     def _unpack_batch(self, batch):
         """
@@ -295,3 +297,12 @@ def _validate_is_napistu_data(batch, method_name: str):
             f"Expected NapistuData, got {type(batch)}. "
             f"Check your DataModule's collate_fn in {method_name}."
         )
+
+
+def _cleanup():
+    if torch.backends.mps.is_available():
+        torch.mps.synchronize()
+        torch.mps.empty_cache()
+    elif torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
