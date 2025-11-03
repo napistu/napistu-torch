@@ -11,7 +11,7 @@ from napistu.network.constants import (
 from napistu.network.ng_core import NapistuGraph
 
 from napistu_torch.constants import NAPISTU_DATA
-from napistu_torch.evaluation.constants import (
+from napistu_torch.load.constants import (
     STRATIFY_BY,
     VALID_STRATIFY_BY,
 )

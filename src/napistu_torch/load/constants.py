@@ -110,3 +110,12 @@ SPLITTING_STRATEGIES = SimpleNamespace(
 )
 
 VALID_SPLITTING_STRATEGIES = list(SPLITTING_STRATEGIES.__dict__.values())
+
+# stratification
+
+STRATIFY_BY = SimpleNamespace(
+    NODE_SPECIES_TYPE="node_species_type",
+    NODE_TYPE="node_type",
+)
+
+VALID_STRATIFY_BY = list(STRATIFY_BY.__dict__.values())

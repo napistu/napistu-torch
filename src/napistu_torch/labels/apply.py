@@ -4,7 +4,7 @@ from typing import List, Optional, Union
 
 import torch
 
-from napistu_torch.labeling.labeling_manager import LabelingManager
+from napistu_torch.labels.labeling_manager import LabelingManager
 
 
 def decode_labels(

@@ -16,13 +16,13 @@ from napistu.network.constants import (
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
-from napistu_torch.labeling.constants import (
+from napistu_torch.labels.constants import (
     LABEL_TYPE,
     LABELING,
     TASK_TYPES,
 )
-from napistu_torch.labeling.create import create_vertex_labels
-from napistu_torch.labeling.labeling_manager import LABELING_MANAGERS, LabelingManager
+from napistu_torch.labels.create import create_vertex_labels
+from napistu_torch.labels.labeling_manager import LABELING_MANAGERS, LabelingManager
 from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
@@ -33,7 +33,7 @@ from napistu_torch.load.constants import (
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import EncodingManager
 from napistu_torch.ml.constants import TRAINING
-from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
+from napistu_torch.ml.splitting import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
 
 # Set up logger

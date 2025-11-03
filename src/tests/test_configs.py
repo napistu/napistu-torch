@@ -28,8 +28,7 @@ from napistu_torch.constants import (
     WANDB_CONFIG,
     WANDB_MODES,
 )
-from napistu_torch.evaluation.constants import STRATIFY_BY
-from napistu_torch.load.constants import DEFAULT_ARTIFACTS_NAMES
+from napistu_torch.load.constants import DEFAULT_ARTIFACTS_NAMES, STRATIFY_BY
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,

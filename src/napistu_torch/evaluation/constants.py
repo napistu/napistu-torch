@@ -12,12 +12,3 @@ PATHWAY_SIMILARITY_DEFS = SimpleNamespace(
     OVERALL="overall",
     OTHER="other",
 )
-
-# stratification
-
-STRATIFY_BY = SimpleNamespace(
-    NODE_SPECIES_TYPE="node_species_type",
-    NODE_TYPE="node_type",
-)
-
-VALID_STRATIFY_BY = list(STRATIFY_BY.__dict__.values())

@@ -2,9 +2,9 @@
 
 import pandas as pd
 
-from napistu_torch.labeling.apply import decode_labels
-from napistu_torch.labeling.constants import LABEL_TYPE
-from napistu_torch.labeling.create import create_vertex_labels
+from napistu_torch.labels.apply import decode_labels
+from napistu_torch.labels.constants import LABEL_TYPE
+from napistu_torch.labels.create import create_vertex_labels
 
 
 def test_species_type_roundtrip_encoding(napistu_graph):

@@ -5,11 +5,11 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from napistu_torch.evaluation.stratification import (
+from napistu_torch.labels.create import _prepare_discrete_labels
+from napistu_torch.load.stratification import (
     ensure_strata_series,
     validate_edge_strata_alignment,
 )
-from napistu_torch.labeling.create import _prepare_discrete_labels
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask

@@ -19,14 +19,13 @@ from napistu_torch.configs import (
     DataConfig,
     ExperimentConfig,
 )
-from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
-from napistu_torch.evaluation.stratification import create_composite_edge_strata
 from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
     ENCODING_MANAGER,
     ENCODINGS,
     SPLITTING_STRATEGIES,
+    STRATIFY_BY,
 )
 from napistu_torch.load.napistu_graphs import (
     augment_napistu_graph,
@@ -34,6 +33,7 @@ from napistu_torch.load.napistu_graphs import (
     construct_vertex_labeled_napistu_data,
     napistu_graph_to_napistu_data,
 )
+from napistu_torch.load.stratification import create_composite_edge_strata
 
 # Suppress napistu logging during tests to reduce noise
 logging.getLogger("napistu").setLevel(logging.ERROR)

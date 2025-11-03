@@ -26,21 +26,21 @@ from napistu_torch.constants import (
     ARTIFACT_TYPES,
     VALID_ARTIFACT_TYPES,
 )
-from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import (
     get_comprehensive_source_membership,
 )
-from napistu_torch.evaluation.stratification import create_composite_edge_strata
-from napistu_torch.labeling.constants import LABEL_TYPE
+from napistu_torch.labels.constants import LABEL_TYPE
 from napistu_torch.load.constants import (
     ARTIFACT_DEFS,
     DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
+    STRATIFY_BY,
 )
 from napistu_torch.load.napistu_graphs import (
     construct_unlabeled_napistu_data,
     construct_vertex_labeled_napistu_data,
 )
+from napistu_torch.load.stratification import create_composite_edge_strata
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.vertex_tensor import VertexTensor
 

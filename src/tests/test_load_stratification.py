@@ -3,7 +3,7 @@
 import pandas as pd
 from napistu.network.constants import NAPISTU_GRAPH_VERTICES
 
-from napistu_torch.evaluation.stratification import create_composite_edge_strata
+from napistu_torch.load.stratification import create_composite_edge_strata
 
 
 def test_create_composite_edge_strata(napistu_graph):

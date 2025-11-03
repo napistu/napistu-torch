@@ -25,7 +25,8 @@ from napistu_torch.constants import (
     NAPISTU_DATA,
     NAPISTU_DATA_DEFAULT_NAME,
 )
-from napistu_torch.labeling.labeling_manager import LabelingManager
+from napistu_torch.labels.apply import decode_labels
+from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
@@ -1085,7 +1086,6 @@ class NapistuData(Data):
         >>> print(f"Label encoding is consistent: {is_consistent}")
         True
         """
-        from napistu_torch.labeling.apply import decode_labels
 
         # Check if NapistuData has encoded labels
         if not hasattr(self, NAPISTU_DATA.Y) or getattr(self, NAPISTU_DATA.Y) is None:

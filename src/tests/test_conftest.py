@@ -3,8 +3,8 @@
 from torch_geometric.data import Data
 
 from napistu_torch.constants import NAPISTU_DATA
-from napistu_torch.labeling.constants import LABEL_TYPE
-from napistu_torch.labeling.labeling_manager import LabelingManager
+from napistu_torch.labels.constants import LABEL_TYPE
+from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.napistu_data import NapistuData
 

@@ -3,8 +3,8 @@ import pandas as pd
 import pytest
 import torch
 
-from napistu_torch.labeling.constants import TASK_TYPES
-from napistu_torch.labeling.create import encode_labels
+from napistu_torch.labels.constants import TASK_TYPES
+from napistu_torch.labels.create import encode_labels
 
 
 @pytest.fixture
