@@ -17,4 +17,4 @@ Package Overview
    napistu_torch.ml
    napistu_torch.tasks
    napistu_torch.utils
-   napistu_torch.visualization  
+   napistu_torch.visualization
