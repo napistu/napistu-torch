@@ -9,7 +9,7 @@ from napistu.network.constants import (
 )
 from pydantic import BaseModel, Field, field_validator
 
-from napistu_torch.labeling.constants import LABEL_TYPE
+from napistu_torch.labels.constants import LABEL_TYPE
 
 
 class LabelingManager(BaseModel):

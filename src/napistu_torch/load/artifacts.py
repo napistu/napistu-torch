@@ -26,21 +26,21 @@ from napistu_torch.constants import (
     ARTIFACT_TYPES,
     VALID_ARTIFACT_TYPES,
 )
-from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import (
     get_comprehensive_source_membership,
 )
-from napistu_torch.evaluation.stratification import create_composite_edge_strata
-from napistu_torch.labeling.constants import LABEL_TYPE
+from napistu_torch.labels.constants import LABEL_TYPE
 from napistu_torch.load.constants import (
     ARTIFACT_DEFS,
     DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
+    STRATIFY_BY,
 )
 from napistu_torch.load.napistu_graphs import (
-    construct_supervised_pyg_data,
-    construct_unsupervised_pyg_data,
+    construct_unlabeled_napistu_data,
+    construct_vertex_labeled_napistu_data,
 )
+from napistu_torch.load.stratification import create_composite_edge_strata
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.vertex_tensor import VertexTensor
 
@@ -110,7 +110,7 @@ def create_artifact(
     --------
     >>> sbml_dfs = SBML_dfs.from_pickle("data.pkl")
     >>> napistu_graph = NapistuGraph.from_pickle("graph.pkl")
-    >>> artifact = create_artifact("unsupervised", sbml_dfs, napistu_graph)
+    >>> artifact = create_artifact("unlabeled", sbml_dfs, napistu_graph)
     """
     if artifact_registry is None:
         artifact_registry = DEFAULT_ARTIFACT_REGISTRY
@@ -159,11 +159,11 @@ def get_artifact_info(
 
     Examples
     --------
-    >>> info = get_artifact_info("unsupervised")
+    >>> info = get_artifact_info("unlabeled")
     >>> print(info.artifact_type)
     'napistu_data'
     >>> print(info.description)
-    'Unsupervised learning data without masking'
+    'Unlabeled learning data without masking'
     """
     if artifact_registry is None:
         artifact_registry = DEFAULT_ARTIFACT_REGISTRY
@@ -194,7 +194,7 @@ def list_available_artifacts(
     --------
     >>> artifacts = list_available_artifacts()
     >>> print(artifacts)
-    ['comprehensive_pathway_memberships', 'edge_prediction', 'supervised_species_type', 'unsupervised']
+    ['comprehensive_pathway_memberships', 'edge_prediction', 'supervised_species_type', 'unlabeled']
     """
     if artifact_registry is None:
         artifact_registry = DEFAULT_ARTIFACT_REGISTRY
@@ -246,11 +246,11 @@ def validate_artifact_registry(
 # artifact creation functions and other private functions
 
 
-def _create_unsupervised_data(
+def _create_unlabeled_data(
     sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph
 ) -> NapistuData:
     """
-    Create unsupervised data with no masking.
+    Create unlabeled data with no masking.
 
     Parameters
     ----------
@@ -262,9 +262,9 @@ def _create_unsupervised_data(
     Returns
     -------
     NapistuData
-        Unsupervised data suitable for full-graph training
+        Unlabeled data suitable for full-graph training
     """
-    return construct_unsupervised_pyg_data(
+    return construct_unlabeled_napistu_data(
         sbml_dfs,
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
@@ -289,14 +289,14 @@ def _create_edge_prediction_data(
     NapistuData
         Edge prediction data with train/val/test edge masks
     """
-    return construct_unsupervised_pyg_data(
+    return construct_vertex_labeled_napistu_data(
         sbml_dfs,
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
     )
 
 
-def _create_supervised_species_type_data(
+def _create_species_type_prediction_data(
     sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph
 ) -> NapistuData:
     """
@@ -314,7 +314,7 @@ def _create_supervised_species_type_data(
     NapistuData
         Supervised node classification data with species type labels
     """
-    return construct_supervised_pyg_data(
+    return construct_vertex_labeled_napistu_data(
         sbml_dfs,
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
@@ -388,40 +388,40 @@ def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFram
 # Define artifacts as a list (single source of truth for names)
 DEFAULT_ARTIFACTS = [
     ArtifactDefinition(
-        name=DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED,
+        name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
-        creation_func=_create_unsupervised_data,
-        description="Unsupervised learning data without masking",
+        creation_func=_create_unlabeled_data,
+        description="Unlabeled NapistuData without masking",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_edge_prediction_data,
-        description="Edge prediction task with edge masking",
+        description="Unlabeled NapistuData with train/test/val edge masking",
     ),
     ArtifactDefinition(
-        name=DEFAULT_ARTIFACTS_NAMES.SUPERVISED_SPECIES_TYPE,
+        name=DEFAULT_ARTIFACTS_NAMES.SPECIES_TYPE_PREDICTION,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
-        creation_func=_create_supervised_species_type_data,
-        description="Node classification for species types with vertex masking",
+        creation_func=_create_species_type_prediction_data,
+        description="NapistuData containing species type labels with train/test/val vertex masking",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.COMPREHENSIVE_PATHWAY_MEMBERSHIPS,
         artifact_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         creation_func=_create_comprehensive_pathway_memberships,
-        description="Comprehensive pathway membership features",
+        description="VertexTensor containing comprehensive pathway membership features",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_species_type,
-        description="Edge strata by node + species type",
+        description="Pandas DataFrame containing edge strata by node + species type",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_type,
-        description="Edge strata by node type",
+        description="Pandas DataFrame containing edge strata by node type",
     ),
 ]
 

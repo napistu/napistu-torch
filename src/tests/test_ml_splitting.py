@@ -5,7 +5,7 @@ import pytest
 import torch
 
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
-from napistu_torch.ml.stratification import create_split_masks, train_test_val_split
+from napistu_torch.ml.splitting import create_split_masks, train_test_val_split
 
 
 def test_train_test_val_split_basic():

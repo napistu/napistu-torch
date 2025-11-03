@@ -3,8 +3,8 @@
 from torch_geometric.data import Data
 
 from napistu_torch.constants import NAPISTU_DATA
-from napistu_torch.labeling.constants import LABEL_TYPE
-from napistu_torch.labeling.labeling_manager import LabelingManager
+from napistu_torch.labels.constants import LABEL_TYPE
+from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
 from napistu_torch.napistu_data import NapistuData
 
@@ -42,50 +42,60 @@ def test_napistu_data_fixture(napistu_data):
     assert napistu_data.num_edge_features > 0
 
 
-def test_supervised_napistu_data_fixture(supervised_napistu_data):
-    """Test that supervised_napistu_data fixture works."""
+def test_species_type_prediction_napistu_data_fixture(
+    species_type_prediction_napistu_data,
+):
+    """Test that vertex_labeled_napistu_data fixture works."""
 
     # Test the NapistuData object
-    assert supervised_napistu_data is not None
-    assert isinstance(supervised_napistu_data, NapistuData)
-    assert isinstance(supervised_napistu_data, Data)  # Should inherit from Data
-    assert supervised_napistu_data.num_nodes > 0
-    assert supervised_napistu_data.num_edges > 0
-    assert supervised_napistu_data.num_node_features > 0
-    assert supervised_napistu_data.num_edge_features > 0
+    assert species_type_prediction_napistu_data is not None
+    assert isinstance(species_type_prediction_napistu_data, NapistuData)
+    assert isinstance(
+        species_type_prediction_napistu_data, Data
+    )  # Should inherit from Data
+    assert species_type_prediction_napistu_data.num_nodes > 0
+    assert species_type_prediction_napistu_data.num_edges > 0
+    assert species_type_prediction_napistu_data.num_node_features > 0
+    assert species_type_prediction_napistu_data.num_edge_features > 0
     # Supervised data should have labels
-    assert hasattr(supervised_napistu_data, NAPISTU_DATA.Y)
-    assert supervised_napistu_data.y is not None
-    assert supervised_napistu_data.y.shape[0] == supervised_napistu_data.num_nodes
-    assert supervised_napistu_data.labeling_manager is not None
-    assert isinstance(supervised_napistu_data.labeling_manager, LabelingManager)
+    assert hasattr(species_type_prediction_napistu_data, NAPISTU_DATA.Y)
+    assert species_type_prediction_napistu_data.y is not None
     assert (
-        supervised_napistu_data.labeling_manager.label_attribute
+        species_type_prediction_napistu_data.y.shape[0]
+        == species_type_prediction_napistu_data.num_nodes
+    )
+    assert species_type_prediction_napistu_data.labeling_manager is not None
+    assert isinstance(
+        species_type_prediction_napistu_data.labeling_manager, LabelingManager
+    )
+    assert (
+        species_type_prediction_napistu_data.labeling_manager.label_attribute
         == LABEL_TYPE.SPECIES_TYPE
     )
-    assert supervised_napistu_data.name is not None
+    assert species_type_prediction_napistu_data.name is not None
     assert (
-        supervised_napistu_data.splitting_strategy == SPLITTING_STRATEGIES.VERTEX_MASK
+        species_type_prediction_napistu_data.splitting_strategy
+        == SPLITTING_STRATEGIES.VERTEX_MASK
     )
 
 
-def test_unsupervised_napistu_data_fixture(unsupervised_napistu_data):
-    """Test that unsupervised_napistu_data fixture works."""
+def test_unlabeled_napistu_data_fixture(unlabeled_napistu_data):
+    """Test that unlabeled_napistu_data fixture works."""
 
-    assert unsupervised_napistu_data is not None
-    assert isinstance(unsupervised_napistu_data, NapistuData)
-    assert isinstance(unsupervised_napistu_data, Data)  # Should inherit from Data
-    assert unsupervised_napistu_data.num_nodes > 0
-    assert unsupervised_napistu_data.num_edges > 0
-    assert unsupervised_napistu_data.num_node_features > 0
-    assert unsupervised_napistu_data.num_edge_features > 0
-    # Unsupervised data should not have labels
+    assert unlabeled_napistu_data is not None
+    assert isinstance(unlabeled_napistu_data, NapistuData)
+    assert isinstance(unlabeled_napistu_data, Data)  # Should inherit from Data
+    assert unlabeled_napistu_data.num_nodes > 0
+    assert unlabeled_napistu_data.num_edges > 0
+    assert unlabeled_napistu_data.num_node_features > 0
+    assert unlabeled_napistu_data.num_edge_features > 0
+    # Unlabeled data should not have labels
     assert (
-        not hasattr(unsupervised_napistu_data, NAPISTU_DATA.Y)
-        or unsupervised_napistu_data.y is None
+        not hasattr(unlabeled_napistu_data, NAPISTU_DATA.Y)
+        or unlabeled_napistu_data.y is None
     )
     # Check if labeling_manager exists, and if so, it should be None
-    if hasattr(unsupervised_napistu_data, NAPISTU_DATA.LABELING_MANAGER):
-        assert unsupervised_napistu_data.labeling_manager is None
-    assert unsupervised_napistu_data.name is not None
-    assert unsupervised_napistu_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
+    if hasattr(unlabeled_napistu_data, NAPISTU_DATA.LABELING_MANAGER):
+        assert unlabeled_napistu_data.labeling_manager is None
+    assert unlabeled_napistu_data.name is not None
+    assert unlabeled_napistu_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK

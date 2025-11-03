@@ -12,3 +12,8 @@ VALID_LABEL_TYPES = list(LABEL_TYPE.__dict__.values())
 TASK_TYPES = SimpleNamespace(CLASSIFICATION="classification", REGRESSION="regression")
 
 VALID_TASK_TYPES = list(TASK_TYPES.__dict__.values())
+
+LABELING = SimpleNamespace(
+    LABELED="labeled",
+    UNLABELED="unlabeled",
+)

@@ -4,13 +4,13 @@ import pandas as pd
 import torch
 from napistu.network.ng_core import NapistuGraph
 
-from napistu_torch.labeling.constants import (
+from napistu_torch.labels.constants import (
     LABEL_TYPE,
     TASK_TYPES,
     VALID_LABEL_TYPES,
     VALID_TASK_TYPES,
 )
-from napistu_torch.labeling.labeling_manager import (
+from napistu_torch.labels.labeling_manager import (
     LABELING_MANAGERS,
     LabelingManager,
 )

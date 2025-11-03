@@ -25,7 +25,8 @@ from napistu_torch.constants import (
     NAPISTU_DATA,
     NAPISTU_DATA_DEFAULT_NAME,
 )
-from napistu_torch.labeling.labeling_manager import LabelingManager
+from napistu_torch.labels.apply import decode_labels
+from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
@@ -33,7 +34,11 @@ from napistu_torch.load.constants import (
     VERTEX_DEFAULT_TRANSFORMS,
 )
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
-from napistu_torch.load.encoding import fit_encoders, transform_dataframe
+from napistu_torch.load.encoding import (
+    expand_deduplicated_features,
+    fit_encoders,
+    transform_dataframe,
+)
 from napistu_torch.load.encoding_manager import EncodingManager
 from napistu_torch.ml.constants import DEVICE
 
@@ -64,6 +69,10 @@ class NapistuData(Data):
         Names of vertex features for interpretability
     edge_feature_names : List[str], optional
         Names of edge features for interpretability
+    vertex_feature_name_aliases : Dict[str, str], optional
+        Mapping from vertex feature names to their canonical names (for deduplicated features)
+    edge_feature_name_aliases : Dict[str, str], optional
+        Mapping from edge feature names to their canonical names (for deduplicated features)
     ng_vertex_names : pd.Series, optional
         Minimal vertex names from the original NapistuGraph. Series aligned with
         the vertex tensor (x) - each element corresponds to a vertex in the same
@@ -128,6 +137,8 @@ class NapistuData(Data):
         y: Optional[torch.Tensor] = None,
         vertex_feature_names: Optional[List[str]] = None,
         edge_feature_names: Optional[List[str]] = None,
+        vertex_feature_name_aliases: Optional[Dict[str, str]] = None,
+        edge_feature_name_aliases: Optional[Dict[str, str]] = None,
         ng_vertex_names: Optional[pd.Series] = None,
         ng_edge_names: Optional[pd.DataFrame] = None,
         name: str = NAPISTU_DATA_DEFAULT_NAME,
@@ -176,6 +187,22 @@ class NapistuData(Data):
                     "if provided, vertex_feature_names must be a list of strings with the same length as the number of columns in x"
                 )
             params[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
+
+        if vertex_feature_name_aliases is not None:
+            if not isinstance(vertex_feature_name_aliases, dict):
+                raise ValueError(
+                    "if provided, vertex_feature_name_aliases must be a dict"
+                )
+            params[NAPISTU_DATA.VERTEX_FEATURE_NAME_ALIASES] = (
+                vertex_feature_name_aliases
+            )
+
+        if edge_feature_name_aliases is not None:
+            if not isinstance(edge_feature_name_aliases, dict):
+                raise ValueError(
+                    "if provided, edge_feature_name_aliases must be a dict"
+                )
+            params[NAPISTU_DATA.EDGE_FEATURE_NAME_ALIASES] = edge_feature_name_aliases
 
         if edge_feature_names is not None:
             if not isinstance(edge_feature_names, list):
@@ -560,7 +587,7 @@ class NapistuData(Data):
             Whether to keep edge_attr. Set False if not using edge features
             (e.g., no edge encoder). **Major memory savings for large graphs.**
         keep_labels : bool, default=True
-            Whether to keep y (node labels). Set False for unsupervised tasks.
+            Whether to keep y (node labels). Set False for unlabeled tasks.
         keep_masks : bool, default=True
             Whether to keep train_mask, val_mask, test_mask.
             Set False if using custom splitting.
@@ -580,7 +607,7 @@ class NapistuData(Data):
         >>> # No edge features needed (biggest memory savings)
         >>> trimmed = data.trim(keep_edge_attr=False)
         >>>
-        >>> # Unsupervised learning
+        >>> # Unlabeled learning
         >>> trimmed = data.trim(keep_labels=False)
         >>>
         >>> # Check memory savings
@@ -668,10 +695,12 @@ class NapistuData(Data):
             attribute_values = napistu_graph.get_vertex_series(attribute)
             encoded_features = self.x
             feature_names = self.vertex_feature_names
+            feature_name_aliases = self.vertex_feature_name_aliases
         elif attribute_type == NAPISTU_GRAPH.EDGES:
             attribute_values = napistu_graph.get_edge_series(attribute)
             encoded_features = self.edge_attr
             feature_names = self.edge_feature_names
+            feature_name_aliases = self.edge_feature_name_aliases
         else:
             raise ValueError(f"Invalid attribute type: {attribute_type}")
 
@@ -712,9 +741,21 @@ class NapistuData(Data):
         _, actual_transformer, _ = fitted_encoder.transformers_[0]
 
         # Get feature names for this specific attribute to find column indices
-        _, fitted_feature_names = transform_dataframe(
-            attribute_values.to_frame(), fitted_encoder
+        _, fitted_feature_names, _ = transform_dataframe(
+            attribute_values.to_frame(), fitted_encoder, deduplicate=False
         )
+
+        # do we need columns which are only present as aliases?
+        if any(name in feature_name_aliases for name in fitted_feature_names):
+            # need to expand the encoding
+            required_aliases = {
+                k: v
+                for k, v in feature_name_aliases.items()
+                if k in fitted_feature_names
+            }
+            encoded_features, feature_names = expand_deduplicated_features(
+                encoded_features, feature_names, required_aliases
+            )
 
         # Find which columns in encoded_features correspond to this attribute
         col_indices = [feature_names.index(fname) for fname in fitted_feature_names]
@@ -1045,7 +1086,6 @@ class NapistuData(Data):
         >>> print(f"Label encoding is consistent: {is_consistent}")
         True
         """
-        from napistu_torch.labeling.apply import decode_labels
 
         # Check if NapistuData has encoded labels
         if not hasattr(self, NAPISTU_DATA.Y) or getattr(self, NAPISTU_DATA.Y) is None:

@@ -10,9 +10,9 @@ from napistu.network.constants import (
 # artifact defs
 
 DEFAULT_ARTIFACTS_NAMES = SimpleNamespace(
-    UNSUPERVISED="unsupervised",
+    UNLABELED="unlabeled",
     EDGE_PREDICTION="edge_prediction",
-    SUPERVISED_SPECIES_TYPE="supervised_species_type",
+    SPECIES_TYPE_PREDICTION="species_type_prediction",
     COMPREHENSIVE_PATHWAY_MEMBERSHIPS="comprehensive_pathway_memberships",
     EDGE_STRATA_BY_NODE_SPECIES_TYPE="edge_strata_by_node_species_type",
     EDGE_STRATA_BY_NODE_TYPE="edge_strata_by_node_type",
@@ -110,3 +110,12 @@ SPLITTING_STRATEGIES = SimpleNamespace(
 )
 
 VALID_SPLITTING_STRATEGIES = list(SPLITTING_STRATEGIES.__dict__.values())
+
+# stratification
+
+STRATIFY_BY = SimpleNamespace(
+    NODE_SPECIES_TYPE="node_species_type",
+    NODE_TYPE="node_type",
+)
+
+VALID_STRATIFY_BY = list(STRATIFY_BY.__dict__.values())

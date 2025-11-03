@@ -2,8 +2,8 @@
 
 import pytest
 
-from napistu_torch.labeling.constants import LABEL_TYPE, VALID_LABEL_TYPES
-from napistu_torch.labeling.labeling_manager import (
+from napistu_torch.labels.constants import LABEL_TYPE, VALID_LABEL_TYPES
+from napistu_torch.labels.labeling_manager import (
     LABELING_MANAGERS,
     LabelingManager,
 )

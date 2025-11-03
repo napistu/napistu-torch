@@ -290,7 +290,7 @@ class NapistuDataStore:
         Examples
         --------
         >>> # Works with registry artifacts
-        >>> store.ensure_artifacts(["unsupervised", "edge_prediction"])
+        >>> store.ensure_artifacts(["unlabeled", "edge_prediction"])
         >>>
         >>> # Also works with custom artifacts already in store
         >>> custom_data = construct_custom_pyg_data(...)
@@ -394,7 +394,7 @@ class NapistuDataStore:
         Examples
         --------
         >>> missing = store.get_missing_artifacts([
-        ...     "unsupervised",
+        ...     "unlabeled",
         ...     "edge_prediction",
         ...     "custom_artifact"
         ... ])
@@ -465,7 +465,7 @@ class NapistuDataStore:
         ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),
         ...     copy_to_store=True,
         ...     napistu_data_name="edge_prediction",
-        ...     other_artifacts=["unsupervised"]
+        ...     other_artifacts=["unlabeled"]
         ... )
         >>> store = NapistuDataStore.from_config(config)
         """
