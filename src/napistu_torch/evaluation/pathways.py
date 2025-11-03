@@ -96,12 +96,12 @@ def get_comprehensive_source_membership(
         add_name_prefixes=False,
         mode=ADDING_ENTITY_DATA_DEFS.FRESH,
         overwrite=True,
+        binarize=True,
     )
 
-    vertex_pathway_memberships = (
+    binary_pathway_memberships = (
         working_napistu_graph.get_vertex_dataframe().select_dtypes(include=[int])
     )
-    binary_pathway_memberships = (vertex_pathway_memberships > 0).astype(int)
 
     ng_vertex_names = working_napistu_graph.get_vertex_series(
         NAPISTU_GRAPH_VERTICES.NAME

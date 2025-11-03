@@ -16,6 +16,7 @@ from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
 )
 
+from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.napistu_data import NapistuData
 
 
@@ -261,27 +262,26 @@ def test_get_features_by_regex(napistu_data):
     # Verify all feature names contain "ontology"
     for name in feature_names:
         assert (
-            "ontology" in name.lower()
-        ), f"Feature name {name} should contain 'ontology'"
+            IDENTIFIERS.ONTOLOGY in name.lower()
+        ), f"Feature name {name} should contain {IDENTIFIERS.ONTOLOGY}"
 
     # Test 2: Verify "chebi" is one of the matched entries and check total count
     chebi_matches = [name for name in feature_names if ONTOLOGIES.CHEBI in name.lower()]
     assert (
         len(chebi_matches) == 1
-    ), f"Expected exactly 1 'chebi' feature, but found {len(chebi_matches)}: {chebi_matches}"
+    ), f"Expected exactly 1 '{ONTOLOGIES.CHEBI}' feature, but found {len(chebi_matches)}: {chebi_matches}"
     assert (
-        chebi_matches[0] == "numeric__ontology_chebi"
-    ), f"Expected 'numeric__ontology_chebi' but found {chebi_matches[0]}"
-    print(f"\nFound {len(chebi_matches)} features containing 'chebi': {chebi_matches}")
+        chebi_matches[0] == f"binary__{IDENTIFIERS.ONTOLOGY}_{ONTOLOGIES.CHEBI}"
+    ), f"Expected 'binary__{IDENTIFIERS.ONTOLOGY}_{ONTOLOGIES.CHEBI}' but found {chebi_matches[0]}"
 
     # Test 3: Verify we have exactly 6 ontology features as shown in the output
     assert (
-        len(feature_names) == 6
-    ), f"Expected exactly 6 ontology features, but found {len(feature_names)}"
+        len(feature_names) == 5
+    ), f"Expected exactly 5 ontology features, but found {len(feature_names)}"
 
     # Test 4: Test with return_suffixes=True to extract suffixes after "ontology"
     masks, mask_names = napistu_data.get_features_by_regex(
-        "ontology", return_suffixes=True
+        IDENTIFIERS.ONTOLOGY, return_suffixes=True
     )
 
     # Verify the returned types
@@ -293,12 +293,12 @@ def test_get_features_by_regex(napistu_data):
     assert len(mask_names) == len(feature_names)
 
     # Verify suffixes are extracted correctly (should be the part after "ontology")
+    # note that ONTOLOGIES.REACTOME is a constant and is dropped during encoding so it should not be in the mask names
     EXPECTED_MASK_NAMES = [
         ONTOLOGIES.EC_CODE,
         ONTOLOGIES.CHEBI,
         ONTOLOGIES.GO,
         ONTOLOGIES.PUBMED,
-        ONTOLOGIES.REACTOME,
         ONTOLOGIES.UNIPROT,
     ]
     assert set(mask_names) == set(
@@ -311,7 +311,9 @@ def test_get_features_by_regex(napistu_data):
 
     # Test 6: Test error case - regex with capturing groups when return_suffixes=True
     with pytest.raises(ValueError, match="already contains capturing groups"):
-        napistu_data.get_features_by_regex("ontology(.*)", return_suffixes=True)
+        napistu_data.get_features_by_regex(
+            f"{IDENTIFIERS.ONTOLOGY}(.*)", return_suffixes=True
+        )
 
 
 def test_copy(napistu_data):
@@ -345,14 +347,17 @@ def test_trim_default(napistu_data):
     assert torch.equal(trimmed.edge_attr, napistu_data.edge_attr)
 
     # Verify edge_weight is preserved if it exists
-    if hasattr(napistu_data, "edge_weight") and napistu_data.edge_weight is not None:
+    if (
+        hasattr(napistu_data, NAPISTU_DATA.EDGE_WEIGHT)
+        and napistu_data.edge_weight is not None
+    ):
         assert torch.equal(trimmed.edge_weight, napistu_data.edge_weight)
 
     # Verify metadata is removed
-    assert not hasattr(trimmed, "ng_vertex_names")
-    assert not hasattr(trimmed, "ng_edge_names")
-    assert not hasattr(trimmed, "vertex_feature_names")
-    assert not hasattr(trimmed, "edge_feature_names")
+    assert not hasattr(trimmed, NAPISTU_DATA.NG_VERTEX_NAMES)
+    assert not hasattr(trimmed, NAPISTU_DATA.NG_EDGE_NAMES)
+    assert not hasattr(trimmed, NAPISTU_DATA.VERTEX_FEATURE_NAMES)
+    assert not hasattr(trimmed, NAPISTU_DATA.EDGE_FEATURE_NAMES)
 
     # Verify name is set to trimmed
     assert trimmed.name == "default_trimmed"
@@ -372,18 +377,18 @@ def test_trim_no_labels_masks(edge_masked_napistu_data):
     trimmed = edge_masked_napistu_data.trim(keep_labels=False, keep_masks=False)
 
     # Verify that trimmed data has core attributes
-    assert hasattr(trimmed, "x")
-    assert hasattr(trimmed, "edge_index")
-    assert hasattr(trimmed, "edge_attr")
+    assert hasattr(trimmed, NAPISTU_DATA.X)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_INDEX)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_ATTR)
 
     # Verify masks are removed (check original had them, trimmed doesn't)
-    assert hasattr(edge_masked_napistu_data, "train_mask")
-    assert hasattr(edge_masked_napistu_data, "val_mask")
-    assert hasattr(edge_masked_napistu_data, "test_mask")
-    assert not hasattr(trimmed, "train_mask")
-    assert not hasattr(trimmed, "val_mask")
-    assert not hasattr(trimmed, "test_mask")
+    assert hasattr(edge_masked_napistu_data, NAPISTU_DATA.TRAIN_MASK)
+    assert hasattr(edge_masked_napistu_data, NAPISTU_DATA.VAL_MASK)
+    assert hasattr(edge_masked_napistu_data, NAPISTU_DATA.TEST_MASK)
+    assert not hasattr(trimmed, NAPISTU_DATA.TRAIN_MASK)
+    assert not hasattr(trimmed, NAPISTU_DATA.VAL_MASK)
+    assert not hasattr(trimmed, NAPISTU_DATA.TEST_MASK)
 
     # Verify metadata is removed
-    assert not hasattr(trimmed, "vertex_feature_names")
-    assert not hasattr(trimmed, "edge_feature_names")
+    assert not hasattr(trimmed, NAPISTU_DATA.VERTEX_FEATURE_NAMES)
+    assert not hasattr(trimmed, NAPISTU_DATA.EDGE_FEATURE_NAMES)

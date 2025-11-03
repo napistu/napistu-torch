@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
+
 ARTIFACT_TYPES = SimpleNamespace(
     NAPISTU_DATA="napistu_data",
     VERTEX_TENSOR="vertex_tensor",
@@ -25,6 +27,9 @@ NAPISTU_DATA = SimpleNamespace(
     NAME="name",
     SPLITTING_STRATEGY="splitting_strategy",
     LABELING_MANAGER="labeling_manager",
+    TRAIN_MASK=SPLIT_TO_MASK[TRAINING.TRAIN],
+    TEST_MASK=SPLIT_TO_MASK[TRAINING.TEST],
+    VAL_MASK=SPLIT_TO_MASK[TRAINING.VALIDATION],
 )
 
 NAPISTU_DATA_DEFAULT_NAME = "default"
