@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+# this shouldn't declare imports since it is imported into the top-level constants.py
+
 TRAINING = SimpleNamespace(
     TRAIN="train",
     TEST="test",

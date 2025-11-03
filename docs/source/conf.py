@@ -34,10 +34,10 @@ html_theme = "sphinx_rtd_theme"
 html_static_path = ["_static"]
 
 autodoc_mock_imports = [
-    'torch',
-    'torch_geometric',
-    'torch_sparse',
-    'torch_scatter',
-    'pytorch_lightning',
-    'wandb',
+    "torch",
+    "torch_geometric",
+    "torch_sparse",
+    "torch_scatter",
+    "pytorch_lightning",
+    "wandb",
 ]

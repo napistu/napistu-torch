@@ -83,6 +83,7 @@ def augment_napistu_graph(
             summary_types=sbml_dfs_summary_types,
             stratify_by_bqb=False,
             add_name_prefixes=True,
+            binarize=True,
         )
     else:
         logger.info(
@@ -118,6 +119,18 @@ def construct_vertex_labeled_napistu_data(
     """
     Construct a PyG data object for supervised training tasks using a SBML_dfs and NapistuGraph.
 
+    This function handles the workflow for supervised learning tasks where labels are derived
+    from graph attributes. The process is:
+    1. Extract labels from the original graph (before augmentation) - labels may depend on
+       attributes that exist in the original graph
+    2. Augment the graph with SBML_dfs data (sources, reactions, species) to add features
+    3. Remove attributes that should not be encoded as features (e.g., the label attribute itself)
+    4. Encode the augmented graph (with excluded attributes removed) into NapistuData
+
+    Note: Labels are created from the original graph because they may depend on specific attributes
+    that must be present before augmentation. However, the final NapistuData uses the augmented
+    graph to ensure all SBML_dfs-derived features are included.
+
     Parameters
     ----------
     sbml_dfs : SBML_dfs
@@ -151,6 +164,9 @@ def construct_vertex_labeled_napistu_data(
     >>> data = construct_vertex_labeled_napistu_data(ng, splitting_strategy='vertex_mask')
     """
 
+    # Step 1: Extract labels from the original graph (before augmentation)
+    # Labels must be created from the original graph because they may depend on
+    # attributes that need to be present in the graph before augmentation
     labels, labeling_manager = create_vertex_labels(
         napistu_graph,
         label_type=label_type,
@@ -158,6 +174,8 @@ def construct_vertex_labeled_napistu_data(
         labeling_managers=labeling_managers,
     )
 
+    # Step 2: Augment the graph with SBML_dfs data to add features
+    # This adds source summaries, reaction data, and species data to the graph
     working_napistu_graph = augment_napistu_graph(
         sbml_dfs,
         napistu_graph,
@@ -165,22 +183,35 @@ def construct_vertex_labeled_napistu_data(
         inplace=False,
     )
 
+    # Step 3: Remove attributes that should not be encoded as features
+    # This prevents data leakage - if we're predicting 'species_type', we don't want
+    # 'species_type' to be an input feature (the model would just look at it directly).
+    # The remove_attributes() call physically deletes these attributes from the graph
+    # so they won't be present when the graph is converted to a DataFrame for encoding.
+    # For example:
+    #   - SPECIES_TYPE label excludes: [SPECIES_TYPE]
+    #   - NODE_TYPE label excludes: [NODE_TYPE, SPECIES_TYPE]
     if len(labeling_manager.exclude_vertex_attributes) > 0:
         working_napistu_graph.remove_attributes(
             NAPISTU_GRAPH.VERTICES, labeling_manager.exclude_vertex_attributes
         )
 
-        # remove excluded attributes from the default transforms so they are not expected during encoding
+        # Also remove excluded attributes from the default transforms configuration
+        # so the encoding system doesn't try to encode attributes that no longer exist
         vertex_default_transforms = {
             k: v - set(labeling_manager.exclude_vertex_attributes)
             for k, v in VERTEX_DEFAULT_TRANSFORMS.items()
         }
         vertex_default_transforms = {
-            k: v for k, v in VERTEX_DEFAULT_TRANSFORMS.items() if len(v) > 0
+            k: v for k, v in vertex_default_transforms.items() if len(v) > 0
         }
+    else:
+        vertex_default_transforms = VERTEX_DEFAULT_TRANSFORMS
 
+    # Step 4: Encode the augmented graph (with excluded attributes removed) into NapistuData
+    # Use the working graph which has both the augmentations AND the correct attributes removed
     napistu_data = napistu_graph_to_napistu_data(
-        napistu_graph,  # note - use the original napistu graph since the working one was just to scrub attributes from the default encoding manager
+        working_napistu_graph,  # Use augmented graph with SBML_dfs data and excluded attributes removed
         splitting_strategy=splitting_strategy,
         vertex_default_transforms=vertex_default_transforms,
         labels=labels,

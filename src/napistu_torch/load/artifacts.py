@@ -289,7 +289,7 @@ def _create_edge_prediction_data(
     NapistuData
         Edge prediction data with train/val/test edge masks
     """
-    return construct_vertex_labeled_napistu_data(
+    return construct_unlabeled_napistu_data(
         sbml_dfs,
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
