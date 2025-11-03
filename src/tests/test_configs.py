@@ -28,6 +28,8 @@ from napistu_torch.constants import (
     WANDB_CONFIG,
     WANDB_MODES,
 )
+from napistu_torch.evaluation.constants import STRATIFY_BY
+from napistu_torch.load.constants import DEFAULT_ARTIFACTS_NAMES
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
@@ -37,6 +39,7 @@ from napistu_torch.models.constants import (
     VALID_HEADS,
 )
 from napistu_torch.tasks.constants import (
+    NEGATIVE_SAMPLING_STRATEGIES,
     TASKS,
     VALID_TASKS,
 )
@@ -85,7 +88,7 @@ class TestModelConfig:
         valid_values = [64, 128, 256, 512]
         for value in valid_values:
             config = ModelConfig(hidden_channels=value)
-            assert hasattr(config, "hidden_channels")
+            assert hasattr(config, MODEL_DEFS.HIDDEN_CHANNELS)
             assert config.hidden_channels == value
 
         # Test invalid values (not power of 2)
@@ -101,7 +104,7 @@ class TestModelConfig:
         valid_values = [1, 3, 5, 10]
         for value in valid_values:
             config = ModelConfig(num_layers=value)
-            assert hasattr(config, "num_layers")
+            assert hasattr(config, MODEL_DEFS.NUM_LAYERS)
             assert config.num_layers == value
 
         # Test invalid values (out of range)
@@ -175,7 +178,7 @@ class TestDataConfig:
         assert config.store_dir == Path(".store")
         assert config.copy_to_store is False
         assert config.overwrite is False
-        assert config.napistu_data_name == "edge_prediction"
+        assert config.napistu_data_name == DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION
         assert config.other_artifacts == []
 
     def test_custom_values(self):
@@ -188,8 +191,11 @@ class TestDataConfig:
             napistu_graph_path=Path("custom_graph.pkl"),
             copy_to_store=True,
             overwrite=True,
-            napistu_data_name="unsupervised",
-            other_artifacts=["edge_prediction", "edge_strata_by_node_species_type"],
+            napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
+            other_artifacts=[
+                DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
+                DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
+            ],
         )
 
         assert config.name == "custom_name"
@@ -198,10 +204,10 @@ class TestDataConfig:
         assert config.napistu_graph_path == Path("custom_graph.pkl")
         assert config.copy_to_store is True
         assert config.overwrite is True
-        assert config.napistu_data_name == "unsupervised"
+        assert config.napistu_data_name == DEFAULT_ARTIFACTS_NAMES.UNLABELED
         assert config.other_artifacts == [
-            "edge_prediction",
-            "edge_strata_by_node_species_type",
+            DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
+            DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
         ]
 
     def test_path_objects(self):
@@ -289,14 +295,17 @@ class TestTaskConfig:
         config = TaskConfig(
             task=TASKS.NODE_CLASSIFICATION,
             edge_prediction_neg_sampling_ratio=3.0,
-            edge_prediction_neg_sampling_stratify_by="node_type",
-            edge_prediction_neg_sampling_strategy="uniform",
+            edge_prediction_neg_sampling_stratify_by=STRATIFY_BY.NODE_TYPE,
+            edge_prediction_neg_sampling_strategy=NEGATIVE_SAMPLING_STRATEGIES.UNIFORM,
             metrics=[METRICS.AUC],
         )
         assert config.task == TASKS.NODE_CLASSIFICATION
         assert config.edge_prediction_neg_sampling_ratio == 3.0
-        assert config.edge_prediction_neg_sampling_stratify_by == "node_type"
-        assert config.edge_prediction_neg_sampling_strategy == "uniform"
+        assert config.edge_prediction_neg_sampling_stratify_by == STRATIFY_BY.NODE_TYPE
+        assert (
+            config.edge_prediction_neg_sampling_strategy
+            == NEGATIVE_SAMPLING_STRATEGIES.UNIFORM
+        )
         assert config.metrics == [METRICS.AUC]
 
 
@@ -601,14 +610,14 @@ class TestConfigIntegration:
             name="custom_dataset",
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
-            napistu_data_name="unsupervised",
+            napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
         )
 
         task_config = TaskConfig(
             task=TASKS.NODE_CLASSIFICATION,
             edge_prediction_neg_sampling_ratio=2.0,
-            edge_prediction_neg_sampling_stratify_by="node_species_type",
-            edge_prediction_neg_sampling_strategy="degree_weighted",
+            edge_prediction_neg_sampling_stratify_by=STRATIFY_BY.NODE_SPECIES_TYPE,
+            edge_prediction_neg_sampling_strategy=NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
             metrics=[METRICS.AUC],
         )
 
@@ -634,7 +643,10 @@ class TestConfigIntegration:
         assert experiment_config.data.name == "custom_dataset"
         assert experiment_config.data.sbml_dfs_path == Path("custom_sbml.pkl")
         assert experiment_config.data.napistu_graph_path == Path("custom_graph.pkl")
-        assert experiment_config.data.napistu_data_name == "unsupervised"
+        assert (
+            experiment_config.data.napistu_data_name
+            == DEFAULT_ARTIFACTS_NAMES.UNLABELED
+        )
         assert experiment_config.task.task == TASKS.NODE_CLASSIFICATION
         assert experiment_config.training.optimizer == OPTIMIZERS.ADAMW
         assert experiment_config.wandb.project == "custom-project"
@@ -685,8 +697,8 @@ class TestConfigIntegration:
         # Customize component configs
         original_config.model.hidden_channels = 512
         original_config.data.name = "roundtrip_data"
-        original_config.data.napistu_data_name = "unsupervised"
-        original_config.data.other_artifacts = ["edge_prediction"]
+        original_config.data.napistu_data_name = DEFAULT_ARTIFACTS_NAMES.UNLABELED
+        original_config.data.other_artifacts = [DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION]
         original_config.task.edge_prediction_neg_sampling_ratio = 3.0
         original_config.training.lr = 0.005
         original_config.wandb.project = "roundtrip-project"
@@ -705,8 +717,13 @@ class TestConfigIntegration:
             assert loaded_config.fast_dev_run is True
             assert loaded_config.model.hidden_channels == 512
             assert loaded_config.data.name == "roundtrip_data"
-            assert loaded_config.data.napistu_data_name == "unsupervised"
-            assert loaded_config.data.other_artifacts == ["edge_prediction"]
+            assert (
+                loaded_config.data.napistu_data_name
+                == DEFAULT_ARTIFACTS_NAMES.UNLABELED
+            )
+            assert loaded_config.data.other_artifacts == [
+                DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION
+            ]
             assert loaded_config.task.edge_prediction_neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"

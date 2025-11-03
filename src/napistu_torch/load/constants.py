@@ -10,9 +10,9 @@ from napistu.network.constants import (
 # artifact defs
 
 DEFAULT_ARTIFACTS_NAMES = SimpleNamespace(
-    UNSUPERVISED="unsupervised",
+    UNLABELED="unlabeled",
     EDGE_PREDICTION="edge_prediction",
-    SUPERVISED_SPECIES_TYPE="supervised_species_type",
+    SPECIES_TYPE_PREDICTION="species_type_prediction",
     COMPREHENSIVE_PATHWAY_MEMBERSHIPS="comprehensive_pathway_memberships",
     EDGE_STRATA_BY_NODE_SPECIES_TYPE="edge_strata_by_node_species_type",
     EDGE_STRATA_BY_NODE_TYPE="edge_strata_by_node_type",

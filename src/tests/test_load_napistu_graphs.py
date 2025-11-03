@@ -1,4 +1,4 @@
-"""Test napistu_graph_to_pyg with all splitting strategies."""
+"""Test napistu_graph_to_napistu_data with all splitting strategies."""
 
 import logging
 
@@ -6,7 +6,10 @@ import pytest
 import torch
 from torch_geometric.data import Data
 
-from napistu_torch.labeling.constants import LABEL_TYPE
+from napistu_torch.labeling.constants import (
+    LABEL_TYPE,
+    LABELING,
+)
 from napistu_torch.labeling.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     SPLITTING_STRATEGIES,
@@ -14,19 +17,18 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.napistu_graphs import (
     _name_napistu_data,
-    napistu_graph_to_pyg,
+    napistu_graph_to_napistu_data,
 )
 from napistu_torch.ml.constants import (
     SPLIT_TO_MASK,
     TRAINING,
 )
-from napistu_torch.tasks.constants import SUPERVISION
 
 
 @pytest.mark.parametrize("strategy", VALID_SPLITTING_STRATEGIES)
-def test_napistu_graph_to_pyg_all_strategies(napistu_graph, strategy):
-    """Test that napistu_graph_to_pyg works with each splitting strategy."""
-    result = napistu_graph_to_pyg(
+def test_napistu_graph_to_napistu_data_all_strategies(napistu_graph, strategy):
+    """Test that napistu_graph_to_napistu_data works with each splitting strategy."""
+    result = napistu_graph_to_napistu_data(
         napistu_graph, splitting_strategy=strategy, verbose=False
     )
 
@@ -54,10 +56,10 @@ def test_napistu_graph_to_pyg_all_strategies(napistu_graph, strategy):
             assert data_obj.num_edges > 0
 
 
-def test_napistu_graph_to_pyg_invalid_strategy(napistu_graph):
-    """Test that napistu_graph_to_pyg raises ValueError for invalid strategy."""
+def test_napistu_graph_to_napistu_data_invalid_strategy(napistu_graph):
+    """Test that napistu_graph_to_napistu_data raises ValueError for invalid strategy."""
     with pytest.raises(ValueError, match="splitting_strategy must be one of"):
-        napistu_graph_to_pyg(
+        napistu_graph_to_napistu_data(
             napistu_graph, splitting_strategy="invalid_strategy", verbose=False
         )
 
@@ -65,7 +67,7 @@ def test_napistu_graph_to_pyg_invalid_strategy(napistu_graph):
 def test_vertex_mask_with_zero_val_size(augmented_napistu_graph):
     """Test vertex masking with val_size=0 runs without error and creates blank val_mask."""
     # Create PyG data with vertex masking and val_size=0
-    data = napistu_graph_to_pyg(
+    data = napistu_graph_to_napistu_data(
         augmented_napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
         train_size=0.8,
@@ -93,7 +95,7 @@ def test_no_mask_ignores_unused_params_with_warnings(napistu_graph, caplog):
     caplog.set_level(logging.WARNING)
 
     # Test with both splitting parameters and completely unexpected parameters
-    data = napistu_graph_to_pyg(
+    data = napistu_graph_to_napistu_data(
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
         train_size=0.8,  # Splitting param - should be ignored
@@ -158,7 +160,7 @@ def test_name_napistu_data():
     # LABEL_TYPE.SPECIES_TYPE = "species_type", SPLITTING_STRATEGIES.VERTEX_MASK = "vertex_mask"
     expected_supervised = "_".join(
         [
-            SUPERVISION.SUPERVISED,
+            LABELING.LABELED,
             LABEL_TYPE.SPECIES_TYPE,
             SPLITTING_STRATEGIES.VERTEX_MASK,
         ]
@@ -172,5 +174,5 @@ def test_name_napistu_data():
         labeling_manager=None,
     )
     # "no_mask" is dropped from the name
-    expected_unsupervised = SUPERVISION.UNSUPERVISED
+    expected_unsupervised = LABELING.UNLABELED
     assert unsupervised_name == expected_unsupervised

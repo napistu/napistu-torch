@@ -20,7 +20,7 @@ from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
 )
-from napistu_torch.load.napistu_graphs import construct_unsupervised_pyg_data
+from napistu_torch.load.napistu_graphs import construct_unlabeled_napistu_data
 from napistu_torch.napistu_data_store import NapistuDataStore
 
 
@@ -125,39 +125,43 @@ def _verify_napistu_data_equality(original, loaded):
             assert loaded.labeling_manager is None
 
 
-def test_supervised_napistu_data_roundtrip(
-    temp_napistu_data_store, supervised_napistu_data
+def test_species_type_prediction_napistu_data_roundtrip(
+    temp_napistu_data_store, species_type_prediction_napistu_data
 ):
-    """Test save/load round-trip for supervised NapistuData."""
+    """Test save/load round-trip for species type prediction NapistuData."""
 
     # Save the supervised data
-    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_napistu_data(
+        species_type_prediction_napistu_data, overwrite=True
+    )
 
     # Load it back
     loaded_data = temp_napistu_data_store.load_napistu_data(
-        supervised_napistu_data.name
+        species_type_prediction_napistu_data.name
     )
 
     # Verify the data integrity
-    _verify_napistu_data_equality(supervised_napistu_data, loaded_data)
+    _verify_napistu_data_equality(species_type_prediction_napistu_data, loaded_data)
 
     # Verify registry entry
     registry_entry = temp_napistu_data_store.registry[NAPISTU_DATA_STORE.NAPISTU_DATA][
-        supervised_napistu_data.name
+        species_type_prediction_napistu_data.name
     ]
-    assert registry_entry[NAPISTU_DATA.NAME] == supervised_napistu_data.name
+    assert (
+        registry_entry[NAPISTU_DATA.NAME] == species_type_prediction_napistu_data.name
+    )
     assert (
         registry_entry[NAPISTU_DATA.SPLITTING_STRATEGY]
-        == supervised_napistu_data.splitting_strategy
+        == species_type_prediction_napistu_data.splitting_strategy
     )
     assert registry_entry[NAPISTU_DATA.LABELING_MANAGER] is not None
 
 
-def test_unsupervised_napistu_data_roundtrip(
-    temp_napistu_data_store, unsupervised_napistu_data
+def test_unlabeled_napistu_data_roundtrip(
+    temp_napistu_data_store, unlabeled_napistu_data
 ):
-    """Test save/load round-trip for unsupervised NapistuData."""
-    napistu_data = unsupervised_napistu_data
+    """Test save/load round-trip for unlabeled NapistuData."""
+    napistu_data = unlabeled_napistu_data
 
     # Save the unsupervised data
     temp_napistu_data_store.save_napistu_data(napistu_data, overwrite=True)
@@ -182,26 +186,26 @@ def test_unsupervised_napistu_data_roundtrip(
     )  # Should be None for unsupervised
 
 
-def test_overwrite_behavior(temp_napistu_data_store, supervised_napistu_data):
+def test_overwrite_behavior(
+    temp_napistu_data_store, species_type_prediction_napistu_data
+):
     """Test overwrite behavior when saving NapistuData with same name."""
 
+    napistu_data = species_type_prediction_napistu_data
+
     # Save first time
-    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_napistu_data(napistu_data, overwrite=True)
 
     # Try to save again without overwrite - should raise FileExistsError
     with pytest.raises(FileExistsError, match="already exists in registry"):
-        temp_napistu_data_store.save_napistu_data(
-            supervised_napistu_data, overwrite=False
-        )
+        temp_napistu_data_store.save_napistu_data(napistu_data, overwrite=False)
 
     # Save with overwrite=True - should succeed
-    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_napistu_data(napistu_data, overwrite=True)
 
     # Verify it can still be loaded
-    loaded_data = temp_napistu_data_store.load_napistu_data(
-        supervised_napistu_data.name
-    )
-    _verify_napistu_data_equality(supervised_napistu_data, loaded_data)
+    loaded_data = temp_napistu_data_store.load_napistu_data(napistu_data.name)
+    _verify_napistu_data_equality(napistu_data, loaded_data)
 
 
 def test_load_nonexistent_napistu_data(temp_napistu_data_store):
@@ -285,21 +289,28 @@ def test_load_nonexistent_vertex_tensor(temp_napistu_data_store):
 
 
 def test_list_napistu_datas(
-    temp_napistu_data_store, supervised_napistu_data, unsupervised_napistu_data
+    temp_napistu_data_store,
+    species_type_prediction_napistu_data,
+    unlabeled_napistu_data,
 ):
     """Test listing NapistuData objects in the store."""
     # Initially empty
     assert temp_napistu_data_store.list_napistu_datas() == []
 
     # Save supervised data
-    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
-    assert supervised_napistu_data.name in temp_napistu_data_store.list_napistu_datas()
+    temp_napistu_data_store.save_napistu_data(
+        species_type_prediction_napistu_data, overwrite=True
+    )
+    assert (
+        species_type_prediction_napistu_data.name
+        in temp_napistu_data_store.list_napistu_datas()
+    )
 
     # Save unsupervised data
-    temp_napistu_data_store.save_napistu_data(unsupervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_napistu_data(unlabeled_napistu_data, overwrite=True)
     napistu_data_names = temp_napistu_data_store.list_napistu_datas()
-    assert supervised_napistu_data.name in napistu_data_names
-    assert unsupervised_napistu_data.name in napistu_data_names
+    assert species_type_prediction_napistu_data.name in napistu_data_names
+    assert unlabeled_napistu_data.name in napistu_data_names
     assert len(napistu_data_names) == 2
 
 
@@ -321,7 +332,7 @@ def test_list_vertex_tensors(temp_napistu_data_store, comprehensive_source_membe
 
 def test_summary(
     temp_napistu_data_store,
-    supervised_napistu_data,
+    species_type_prediction_napistu_data,
     comprehensive_source_membership,
     test_dataframe_with_nans,
 ):
@@ -338,7 +349,9 @@ def test_summary(
     assert "last_modified" in summary
 
     # Add some data
-    temp_napistu_data_store.save_napistu_data(supervised_napistu_data, overwrite=True)
+    temp_napistu_data_store.save_napistu_data(
+        species_type_prediction_napistu_data, overwrite=True
+    )
     temp_napistu_data_store.save_vertex_tensor(
         comprehensive_source_membership, name="test_tensor", overwrite=True
     )
@@ -351,7 +364,7 @@ def test_summary(
     assert summary["napistu_data_count"] == 1
     assert summary["vertex_tensors_count"] == 1
     assert summary["pandas_dfs_count"] == 1
-    assert supervised_napistu_data.name in summary["napistu_data_names"]
+    assert species_type_prediction_napistu_data.name in summary["napistu_data_names"]
     assert "test_tensor" in summary["vertex_tensor_names"]
     assert "test_df" in summary["pandas_df_names"]
 
@@ -395,11 +408,11 @@ def test_ensure_artifacts_comprehensive(
     store = temp_napistu_data_store_with_real_data
 
     # Test 1: Create single NapistuData artifact (unsupervised)
-    store.ensure_artifacts(["unsupervised"], overwrite=False)
-    assert "unsupervised" in store.list_napistu_datas()
+    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNLABELED], overwrite=False)
+    assert DEFAULT_ARTIFACTS_NAMES.UNLABELED in store.list_napistu_datas()
 
     # Load and verify it's usable
-    unsupervised_data = store.load_napistu_data("unsupervised")
+    unsupervised_data = store.load_napistu_data(DEFAULT_ARTIFACTS_NAMES.UNLABELED)
     assert unsupervised_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
     assert unsupervised_data.x.shape[0] == napistu_graph.vcount()
 
@@ -440,11 +453,11 @@ def test_ensure_artifacts_comprehensive(
 
     # Test 6: Skipping existing artifacts (should not recreate)
     initial_napistu_data_count = len(store.list_napistu_datas())
-    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED], overwrite=False)
+    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNLABELED], overwrite=False)
     assert len(store.list_napistu_datas()) == initial_napistu_data_count
 
     # Test 7: Overwriting existing artifact
-    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED], overwrite=True)
+    store.ensure_artifacts([DEFAULT_ARTIFACTS_NAMES.UNLABELED], overwrite=True)
     # Should still have same count but artifact was recreated
     assert len(store.list_napistu_datas()) == initial_napistu_data_count
 
@@ -467,7 +480,7 @@ def test_ensure_artifacts_error_handling(temp_napistu_data_store_with_real_data)
 
     with pytest.raises(ValueError, match="cannot be empty"):
         store.ensure_artifacts(
-            [DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED],
+            [DEFAULT_ARTIFACTS_NAMES.UNLABELED],
             artifact_registry={},
             overwrite=False,
         )
@@ -482,35 +495,35 @@ def test_ensure_artifacts_with_custom_registry(
 
     # Create a minimal custom registry with just one artifact
     def custom_unsupervised(sbml_dfs, napistu_graph):
-        return construct_unsupervised_pyg_data(
+        return construct_unlabeled_napistu_data(
             sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
         )
 
     custom_registry = {
-        "custom_unsupervised": ArtifactDefinition(
-            name="custom_unsupervised",
+        "custom_unlabeled": ArtifactDefinition(
+            name="custom_unlabeled",
             artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
             creation_func=custom_unsupervised,
-            description="Custom unsupervised data",
+            description="Custom unlabeled data",
         )
     }
 
     # Use custom registry
     store.ensure_artifacts(
-        ["custom_unsupervised"], artifact_registry=custom_registry, overwrite=False
+        ["custom_unlabeled"], artifact_registry=custom_registry, overwrite=False
     )
 
     # Verify it was created
-    assert "custom_unsupervised" in store.list_napistu_datas()
+    assert "custom_unlabeled" in store.list_napistu_datas()
 
     # Verify it can be loaded
-    custom_data = store.load_napistu_data("custom_unsupervised")
+    custom_data = store.load_napistu_data("custom_unlabeled")
     assert custom_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
 
 
 def test_validate_store(
     temp_napistu_data_store,
-    supervised_napistu_data,
+    species_type_prediction_napistu_data,
     comprehensive_source_membership,
     test_dataframe_with_nans,
     caplog,
@@ -522,7 +535,7 @@ def test_validate_store(
     store.validate()
 
     # Add some artifacts with different names - should still validate
-    store.save_napistu_data(supervised_napistu_data)
+    store.save_napistu_data(species_type_prediction_napistu_data)
     store.save_vertex_tensor(comprehensive_source_membership, name="test_tensor")
     store.save_pandas_df(test_dataframe_with_nans, "test_df")
 
@@ -537,16 +550,18 @@ def test_validate_store(
         assert "Duplicate artifact names found" in caplog.text
 
 
-def test_validate_artifact_name(temp_napistu_data_store, supervised_napistu_data):
+def test_validate_artifact_name(
+    temp_napistu_data_store, species_type_prediction_napistu_data
+):
     """Test artifact name validation method."""
     store = temp_napistu_data_store
 
     # Test 1: Valid artifact name from registry (not in store)
-    store.validate_artifact_name(DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED)  # Should pass
+    store.validate_artifact_name(DEFAULT_ARTIFACTS_NAMES.UNLABELED)  # Should pass
 
     # Test 2: Valid artifact name with required type
     store.validate_artifact_name(
-        DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED, required_type=ARTIFACT_TYPES.NAPISTU_DATA
+        DEFAULT_ARTIFACTS_NAMES.UNLABELED, required_type=ARTIFACT_TYPES.NAPISTU_DATA
     )  # Should pass
 
     # Test 3: Invalid artifact name (not in registry)
@@ -556,25 +571,28 @@ def test_validate_artifact_name(temp_napistu_data_store, supervised_napistu_data
     # Test 4: Wrong type requirement
     with pytest.raises(KeyError, match="is a napistu_data, not a vertex_tensor"):
         store.validate_artifact_name(
-            DEFAULT_ARTIFACTS_NAMES.UNSUPERVISED,
+            DEFAULT_ARTIFACTS_NAMES.UNLABELED,
             required_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         )
 
     # Test 5: Artifact already in store
-    store.save_napistu_data(supervised_napistu_data, overwrite=True)
-    store.validate_artifact_name(supervised_napistu_data.name)  # Should pass
+    store.save_napistu_data(species_type_prediction_napistu_data, overwrite=True)
+    store.validate_artifact_name(
+        species_type_prediction_napistu_data.name
+    )  # Should pass
 
     # Test 6: Artifact in store but wrong type requirement
     with pytest.raises(KeyError, match="already exists in store but is not of type"):
         store.validate_artifact_name(
-            supervised_napistu_data.name, required_type=ARTIFACT_TYPES.VERTEX_TENSOR
+            species_type_prediction_napistu_data.name,
+            required_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         )
 
 
 def test_list_artifacts(
     temp_napistu_data_store,
-    supervised_napistu_data,
-    unsupervised_napistu_data,
+    species_type_prediction_napistu_data,
+    unlabeled_napistu_data,
     comprehensive_source_membership,
     test_dataframe_with_nans,
 ):
@@ -591,17 +609,19 @@ def test_list_artifacts(
     assert store.list_artifacts(ARTIFACT_TYPES.PANDAS_DFS) == []
 
     # Add NapistuData
-    store.save_napistu_data(supervised_napistu_data)
-    assert supervised_napistu_data.name in store.list_artifacts(
+    store.save_napistu_data(species_type_prediction_napistu_data)
+    assert species_type_prediction_napistu_data.name in store.list_artifacts(
         ARTIFACT_TYPES.NAPISTU_DATA
     )
-    assert supervised_napistu_data.name in store.list_artifacts()  # All artifacts
+    assert (
+        species_type_prediction_napistu_data.name in store.list_artifacts()
+    )  # All artifacts
 
     # Add another NapistuData
-    store.save_napistu_data(unsupervised_napistu_data)
+    store.save_napistu_data(unlabeled_napistu_data)
     napistu_datas = store.list_artifacts(ARTIFACT_TYPES.NAPISTU_DATA)
-    assert supervised_napistu_data.name in napistu_datas
-    assert unsupervised_napistu_data.name in napistu_datas
+    assert species_type_prediction_napistu_data.name in napistu_datas
+    assert unlabeled_napistu_data.name in napistu_datas
     assert len(napistu_datas) == 2
 
     # Add VertexTensor
@@ -621,8 +641,8 @@ def test_list_artifacts(
     assert (
         len(all_artifacts) == 4
     )  # 2 NapistuData + 1 VertexTensor + 1 pandas DataFrame
-    assert supervised_napistu_data.name in all_artifacts
-    assert unsupervised_napistu_data.name in all_artifacts
+    assert species_type_prediction_napistu_data.name in all_artifacts
+    assert unlabeled_napistu_data.name in all_artifacts
     assert "test_tensor" in all_artifacts
     assert "test_df" in all_artifacts
 

@@ -8,7 +8,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from napistu import consensus, indices
-from napistu.network.constants import NAPISTU_WEIGHTING_STRATEGIES
+from napistu.network.constants import (
+    NAPISTU_GRAPH_VERTICES,
+    NAPISTU_WEIGHTING_STRATEGIES,
+)
 from napistu.network.net_create import process_napistu_graph
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -20,15 +23,16 @@ from napistu_torch.evaluation.constants import STRATIFY_BY
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.evaluation.stratification import create_composite_edge_strata
 from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
     ENCODING_MANAGER,
     ENCODINGS,
     SPLITTING_STRATEGIES,
 )
 from napistu_torch.load.napistu_graphs import (
     augment_napistu_graph,
-    construct_supervised_pyg_data,
-    construct_unsupervised_pyg_data,
-    napistu_graph_to_pyg,
+    construct_unlabeled_napistu_data,
+    construct_vertex_labeled_napistu_data,
+    napistu_graph_to_napistu_data,
 )
 
 # Suppress napistu logging during tests to reduce noise
@@ -114,7 +118,10 @@ def valid_encoding_config():
     """Valid encoding configuration without conflicts."""
     return {
         ENCODINGS.CATEGORICAL: {
-            ENCODING_MANAGER.COLUMNS: ["node_type", "species_type"],
+            ENCODING_MANAGER.COLUMNS: [
+                NAPISTU_GRAPH_VERTICES.NODE_TYPE,
+                NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,
+            ],
             ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(
                 handle_unknown="ignore", sparse_output=False
             ),
@@ -133,7 +140,10 @@ def valid_simple_encoding_config():
     Note: Uses lists instead of sets to ensure consistent column ordering with valid_encoding_config.
     """
     return {
-        ENCODINGS.CATEGORICAL: ["node_type", "species_type"],
+        ENCODINGS.CATEGORICAL: [
+            NAPISTU_GRAPH_VERTICES.NODE_TYPE,
+            NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,
+        ],
         ENCODINGS.NUMERIC: ["weight", "score"],
     }
 
@@ -144,8 +154,8 @@ def override_encoding_config():
     return {
         "categorical": {
             ENCODING_MANAGER.COLUMNS: [
-                "node_type",
-                "species_type",  # Use existing column instead of "new_col"
+                NAPISTU_GRAPH_VERTICES.NODE_TYPE,
+                NAPISTU_GRAPH_VERTICES.SPECIES_TYPE,  # Use existing column instead of "new_col"
             ],  # node_type conflicts with base
             ENCODING_MANAGER.TRANSFORMER: OneHotEncoder(
                 sparse_output=False
@@ -185,27 +195,27 @@ def augmented_napistu_graph(napistu_graph, sbml_dfs):
 def napistu_data(augmented_napistu_graph):
     """Create a NapistuData object using the no_mask split strategy."""
     # Convert to NapistuData using no_mask strategy
-    return napistu_graph_to_pyg(
+    return napistu_graph_to_napistu_data(
         augmented_napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK
     )
 
 
 @pytest.fixture
-def supervised_napistu_data(sbml_dfs, napistu_graph):
+def species_type_prediction_napistu_data(sbml_dfs, napistu_graph):
     """Create a supervised NapistuData object using default settings."""
-    return construct_supervised_pyg_data(sbml_dfs, napistu_graph)
+    return construct_vertex_labeled_napistu_data(sbml_dfs, napistu_graph)
 
 
 @pytest.fixture
-def unsupervised_napistu_data(sbml_dfs, napistu_graph):
-    """Create an unsupervised NapistuData object using default settings."""
-    return construct_unsupervised_pyg_data(sbml_dfs, napistu_graph)
+def unlabeled_napistu_data(sbml_dfs, napistu_graph):
+    """Create an unlabeled NapistuData object using default settings."""
+    return construct_unlabeled_napistu_data(sbml_dfs, napistu_graph)
 
 
 @pytest.fixture
 def edge_masked_napistu_data(sbml_dfs, napistu_graph):
     """Create a NapistuData object with train/val/test masks for testing."""
-    return construct_unsupervised_pyg_data(
+    return construct_unlabeled_napistu_data(
         sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK
     )
 
@@ -223,7 +233,7 @@ def experiment_config():
         data=DataConfig(
             sbml_dfs_path=Path("stub_sbml.pkl"),
             napistu_graph_path=Path("stub_graph.pkl"),
-            napistu_data_name="edge_prediction",
+            napistu_data_name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
         ),
     )
 
@@ -236,7 +246,7 @@ def data_config():
         name="test_data",
         sbml_dfs_path=Path("test_sbml.pkl"),
         napistu_graph_path=Path("test_graph.pkl"),
-        napistu_data_name="unsupervised",
+        napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
         other_artifacts=[],  # No other artifacts when side-loading
     )
 
@@ -274,7 +284,9 @@ def temp_napistu_data_store_with_edge_data(
 
         # Save the edge_masked_napistu_data to the store
         store.save_napistu_data(
-            edge_masked_napistu_data, name="edge_prediction", overwrite=True
+            edge_masked_napistu_data,
+            name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
+            overwrite=True,
         )
 
         yield store
@@ -290,9 +302,9 @@ def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
         store_dir=store.store_dir,
         sbml_dfs_path=store.sbml_dfs_path,
         napistu_graph_path=store.napistu_graph_path,
-        napistu_data_name="edge_prediction",
+        napistu_data_name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
         other_artifacts=[
-            "unsupervised"
+            DEFAULT_ARTIFACTS_NAMES.UNLABELED
         ],  # This fixture has a real store, so it can have other artifacts
     )
 

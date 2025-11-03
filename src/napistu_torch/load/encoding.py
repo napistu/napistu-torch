@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,7 @@ from napistu_torch.load.encoding_manager import (
     EncodingConfig,
     EncodingManager,
 )
+from napistu_torch.utils.base_utils import shortest_common_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,87 @@ def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[s
             return ENCODINGS.CATEGORICAL
 
 
+def deduplicate_features(
+    encoded_array: np.ndarray,
+    feature_names: List[str],
+    min_prefix_length: int = 3,
+) -> Tuple[np.ndarray, List[str], Dict[str, str]]:
+    """
+    Deduplicate identical feature columns using shortest common prefix.
+
+    Ensures all canonical names are unique by checking against both other
+    canonical names and non-duplicate feature names.
+
+    Parameters
+    ----------
+    encoded_array : np.ndarray
+        Feature matrix with potential duplicates, shape (n_samples, n_features)
+    feature_names : List[str]
+        Names corresponding to columns in encoded_array
+    min_prefix_length : int, default=3
+        Minimum prefix length for canonical names. If common prefix is shorter,
+        falls back to alphabetically first name in the group.
+
+    Returns
+    -------
+    pruned_array : np.ndarray
+        Array with duplicate columns removed
+    canonical_names : List[str]
+        Names of kept features (using shortest common prefix for duplicates)
+    feature_aliases : Dict[str, str]
+        Mapping from removed feature names to their canonical representatives
+
+    Raises
+    ------
+    ValueError
+        If feature_names contains duplicates
+
+    Examples
+    --------
+    >>> array = np.array([[1, 1, 0], [0, 0, 1]])
+    >>> names = ['is_string_x', 'is_string_y', 'value_weight']
+    >>> pruned, canonical, aliases = deduplicate_features(array, names)
+    >>> canonical
+    ['is_string', 'value_weight']
+    >>> aliases
+    {'is_string_y': 'is_string'}
+    """
+
+    _validate_feature_names(feature_names)
+
+    logger.debug(
+        f"Starting deduplication with {len(feature_names)} feature names: {feature_names}"
+    )
+
+    # Step 1: Group identical columns
+    column_groups = _group_identical_columns(encoded_array, feature_names)
+
+    # Step 2: Separate duplicates from unique columns
+    duplicate_groups = {k: v for k, v in column_groups.items() if len(v) > 1}
+    unique_columns = {
+        name for v in column_groups.values() if len(v) == 1 for _, name in v
+    }
+
+    # Step 3: Resolve canonical names with uniqueness guarantees
+    canonical_mapping, feature_aliases = _resolve_canonical_names(
+        duplicate_groups, unique_columns, min_prefix_length
+    )
+
+    # Step 4: Build deduplicated array and feature names
+    pruned_array, canonical_names = _build_deduplicated_array(
+        encoded_array, feature_names, canonical_mapping, unique_columns
+    )
+
+    logger.debug(
+        f"Completed deduplication: {len(feature_names)} -> {len(canonical_names)} features"
+    )
+    logger.debug(f"Final canonical names: {canonical_names}")
+    if feature_aliases:
+        logger.debug(f"Feature aliases: {feature_aliases}")
+
+    return pruned_array, canonical_names, feature_aliases
+
+
 def config_to_column_transformer(
     encoding_config: Union[Dict[str, Dict], EncodingConfig],
 ) -> ColumnTransformer:
@@ -264,6 +346,7 @@ def encode_dataframe(
     encoding_defaults: Union[Dict[str, Dict], EncodingManager],
     encoding_overrides: Optional[Union[Dict[str, Dict], EncodingManager]] = None,
     encoders: Dict = DEFAULT_ENCODERS,
+    deduplicate: bool = True,
     verbose: bool = False,
 ) -> tuple[np.ndarray, List[str]]:
     """Encode a DataFrame using sklearn transformers with configurable encoding rules.
@@ -303,6 +386,9 @@ def encode_dataframe(
         then these will be used to map from column encoding classes to the encoders themselves.
         If existing_encodings is a dict, then it must be passed in the 'simple' format
         which is a lookup from encoder keys to the columns using that encoder.
+    deduplicate: bool, default=True
+        If True, deduplicate identical features and name the resulting columns using the shortest
+        common prefix of the merged columns.
     verbose : bool, default=False
         If True, log detailed information about config composition and conflicts.
 
@@ -316,6 +402,10 @@ def encode_dataframe(
         - feature_names : List[str]
             List of feature names corresponding to the columns in encoded_array.
             Names follow sklearn's convention: 'transform_name__column_name'.
+        - feature_aliases : Dict[str, str]
+            Mapping from feature names to their aliases.
+            If deduplicate is True, this will be a mapping from feature names to their canonical names.
+            If deduplicate is False, this will be an empty dictionary.
 
     Raises
     ------
@@ -364,7 +454,76 @@ def encode_dataframe(
     )
 
     # Transform using the fitted transformer
-    return transform_dataframe(df, fitted_transformer)
+    return transform_dataframe(df, fitted_transformer, deduplicate=deduplicate)
+
+
+def expand_deduplicated_features(
+    encoded_array: np.ndarray,
+    feature_names: List[str],
+    feature_aliases: Dict[str, str],
+) -> Tuple[np.ndarray, List[str]]:
+    """
+    Expand deduplicated features back to original form.
+
+    Takes a deduplicated feature matrix and expands it by duplicating columns
+    for all aliased features. The expanded array will have the same number of
+    columns as the original pre-deduplication array (though column order may differ).
+
+    Parameters
+    ----------
+    encoded_array : np.ndarray
+        Deduplicated feature matrix, shape (n_samples, n_deduplicated_features)
+    feature_names : List[str]
+        Canonical feature names corresponding to encoded_array columns
+    feature_aliases : Dict[str, str]
+        Mapping from removed feature names to canonical names
+        (output from deduplicate_features). This can be a subset of the dictionary
+        to only restore specific aliases.
+
+    Returns
+    -------
+    expanded_array : np.ndarray
+        Array with aliased columns duplicated, shape (n_samples, n_original_features)
+    expanded_names : List[str]
+        Feature names for expanded array (includes all original names)
+
+    Examples
+    --------
+    >>> # After deduplication
+    >>> deduplicated = np.array([[1, 0], [0, 1]])
+    >>> names = ['is_string', 'value_weight']
+    >>> aliases = {'is_string_x': 'is_string', 'is_string_y': 'is_string'}
+    >>>
+    >>> expanded, expanded_names = expand_deduplicated_features(
+    ...     deduplicated, names, aliases
+    ... )
+    >>> expanded.shape
+    (2, 4)  # 2 samples, 4 features (is_string, is_string_x, is_string_y, value_weight)
+    >>> expanded_names
+    ['is_string', 'is_string_x', 'is_string_y', 'value_weight']
+    """
+    # Create mapping from canonical names to column indices
+    name_to_idx = {name: idx for idx, name in enumerate(feature_names)}
+
+    # Start with all canonical features
+    expanded_columns = []
+    expanded_names = []
+
+    # Add all canonical columns
+    for idx, name in enumerate(feature_names):
+        expanded_columns.append(encoded_array[:, idx])
+        expanded_names.append(name)
+
+    # Add aliased columns (duplicates of their canonical columns)
+    for alias, canonical in sorted(feature_aliases.items()):
+        canonical_idx = name_to_idx[canonical]
+        expanded_columns.append(encoded_array[:, canonical_idx])
+        expanded_names.append(alias)
+
+    # Stack columns horizontally
+    expanded_array = np.column_stack(expanded_columns)
+
+    return expanded_array, expanded_names
 
 
 def fit_encoders(
@@ -453,7 +612,8 @@ def fit_encoders(
 def transform_dataframe(
     df: pd.DataFrame,
     fitted_transformer: ColumnTransformer,
-) -> tuple[np.ndarray, List[str]]:
+    deduplicate: bool = True,
+) -> tuple[np.ndarray, List[str], Dict[str, str]]:
     """Transform a DataFrame using a fitted ColumnTransformer.
 
     This function applies pre-fitted transformations to a DataFrame. The
@@ -467,6 +627,9 @@ def transform_dataframe(
         transformer expects.
     fitted_transformer : ColumnTransformer
         A fitted sklearn ColumnTransformer instance.
+    deduplicate: bool = True,
+        If True, deduplicate identical features and name the resulting columns using the shortest
+        common prefix of the merged columns.
 
     Returns
     -------
@@ -476,6 +639,10 @@ def transform_dataframe(
             Transformed numpy array with encoded features.
         - feature_names : List[str]
             List of feature names corresponding to columns in encoded_array.
+        - feature_aliases : Dict[str, str]
+            Mapping from feature names to their aliases.
+            If deduplicate is True, this will be a mapping from feature names to their canonical names.
+            If deduplicate is False, this will be an empty dictionary.
 
     Raises
     ------
@@ -525,10 +692,63 @@ def transform_dataframe(
     encoded_array = fitted_transformer.transform(df)
     feature_names = _get_feature_names(fitted_transformer)
 
-    return encoded_array, feature_names
+    if deduplicate:
+        encoded_array, feature_names, feature_aliases = deduplicate_features(
+            encoded_array, feature_names
+        )
+    else:
+        feature_aliases = {}
+
+    return encoded_array, feature_names, feature_aliases
 
 
 # private
+
+
+def _build_deduplicated_array(
+    encoded_array: np.ndarray,
+    feature_names: List[str],
+    canonical_mapping: Dict[int, str],
+    unique_columns: set,
+) -> Tuple[np.ndarray, List[str]]:
+    """
+    Build deduplicated array and feature name list.
+
+    Parameters
+    ----------
+    encoded_array : np.ndarray
+        Original feature matrix
+    feature_names : List[str]
+        Original feature names
+    canonical_mapping : Dict[int, str]
+        Mapping from kept duplicate indices to canonical names
+    unique_columns : set
+        Names of non-duplicate columns to keep as-is
+
+    Returns
+    -------
+    pruned_array : np.ndarray
+        Array with duplicate columns removed
+    canonical_names : List[str]
+        Feature names for pruned array
+    """
+    kept_indices = []
+    canonical_names = []
+
+    for idx, name in enumerate(feature_names):
+        if idx in canonical_mapping:
+            # This is the kept representative of a duplicate group
+            kept_indices.append(idx)
+            canonical_names.append(canonical_mapping[idx])
+        elif name in unique_columns:
+            # This is a unique (non-duplicate) column
+            kept_indices.append(idx)
+            canonical_names.append(name)
+        # else: skip - this is a duplicate that was dropped
+
+    pruned_array = encoded_array[:, kept_indices]
+
+    return pruned_array, canonical_names
 
 
 def _get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
@@ -556,3 +776,109 @@ def _get_feature_names(preprocessor: ColumnTransformer) -> List[str]:
 
     # Use sklearn's built-in method (available since sklearn 1.0+)
     return preprocessor.get_feature_names_out().tolist()
+
+
+def _group_identical_columns(
+    encoded_array: np.ndarray, feature_names: List[str]
+) -> Dict[int, List[Tuple[int, str]]]:
+    """
+    Group columns by identical values using matrix operations.
+
+    Parameters
+    ----------
+    encoded_array : np.ndarray
+        Feature matrix
+    feature_names : List[str]
+        Feature names
+
+    Returns
+    -------
+    Dict[int, List[Tuple[int, str]]]
+        Mapping from representative column index to list of (index, name) tuples
+    """
+    column_groups = {}
+    for idx, col in enumerate(encoded_array.T):
+        col_hash = hash(col.tobytes())
+        column_groups.setdefault(col_hash, []).append((idx, feature_names[idx]))
+    return column_groups
+
+
+def _resolve_canonical_names(
+    duplicate_groups: Dict[int, List[Tuple[int, str]]],
+    unique_columns: set,
+    min_prefix_length: int,
+) -> Tuple[Dict[int, str], Dict[str, str]]:
+    """
+    Resolve canonical names for duplicate groups with uniqueness guarantees.
+
+    Processes groups serially, checking each proposed canonical name against
+    all previously assigned names and non-duplicate feature names to ensure
+    uniqueness.
+
+    Parameters
+    ----------
+    duplicate_groups : Dict[int, List[Tuple[int, str]]]
+        Groups of duplicate columns, mapping representative index to (index, name) tuples
+    unique_columns : set
+        Names of non-duplicate columns that must not be shadowed
+    min_prefix_length : int
+        Minimum prefix length for canonical names
+
+    Returns
+    -------
+    canonical_mapping : Dict[int, str]
+        Mapping from kept column index to its canonical name
+    alias_dict : Dict[str, str]
+        Mapping from removed names to canonical names
+    """
+    used_names = unique_columns.copy()
+    canonical_mapping = {}
+    alias_dict = {}
+
+    for group_indices_names in duplicate_groups.values():
+        indices = [idx for idx, _ in group_indices_names]
+        names = [name for _, name in group_indices_names]
+
+        # Find shortest common prefix
+        canonical = shortest_common_prefix(names, min_prefix_length)
+
+        logger.debug(
+            f"Merging duplicate columns {names} into canonical name '{canonical}'"
+        )
+
+        # Ensure uniqueness - if collision, fall back to first name alphabetically
+        if canonical in used_names:
+            logger.debug(
+                f"Canonical name '{canonical}' already used, falling back to '{sorted(names)[0]}'"
+            )
+            canonical = sorted(names)[0]
+
+        # Mark this canonical name as used
+        used_names.add(canonical)
+
+        # Keep first occurrence of the group with canonical name
+        canonical_mapping[indices[0]] = canonical
+
+        # All names except canonical go into alias dict
+        for name in names:
+            if name != canonical:
+                alias_dict[name] = canonical
+                logger.debug(f"Creating alias: '{name}' -> '{canonical}'")
+
+    return canonical_mapping, alias_dict
+
+
+def _validate_feature_names(feature_names: List[str]) -> None:
+    """Check for duplicates in feature_names."""
+
+    if len(feature_names) != len(set(feature_names)):
+        seen = set()
+        duplicates = set()
+        for name in feature_names:
+            if name in seen:
+                duplicates.add(name)
+            seen.add(name)
+        raise ValueError(
+            f"feature_names contains duplicates: {duplicates}. "
+            "This would cause pathological results in _resolve_canonical_names."
+        )

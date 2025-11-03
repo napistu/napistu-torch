@@ -13,7 +13,10 @@ from napistu_torch.labeling.create import _prepare_discrete_labels
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
-from napistu_torch.tasks.constants import NEGATIVE_SAMPLING_STRATEGIES
+from napistu_torch.tasks.constants import (
+    EDGE_PREDICTION_BATCH,
+    NEGATIVE_SAMPLING_STRATEGIES,
+)
 from napistu_torch.tasks.negative_sampler import NegativeSampler
 
 logger = logging.getLogger(__name__)
@@ -162,11 +165,11 @@ class EdgePredictionTask(BaseTask):
                 edge_data = self.encoder.static_edge_weights[train_indices]
 
         batch_dict = {
-            "x": data.x,
-            "supervision_edges": supervision_edges,
-            "pos_edges": pos_edge_index,
-            "neg_edges": neg_edge_index,
-            "edge_data": edge_data,
+            EDGE_PREDICTION_BATCH.X: data.x,
+            EDGE_PREDICTION_BATCH.SUPERVISION_EDGES: supervision_edges,
+            EDGE_PREDICTION_BATCH.POS_EDGES: pos_edge_index,
+            EDGE_PREDICTION_BATCH.NEG_EDGES: neg_edge_index,
+            EDGE_PREDICTION_BATCH.EDGE_DATA: edge_data,
         }
 
         self._validate_data_dims(batch_dict, data)
@@ -184,14 +187,14 @@ class EdgePredictionTask(BaseTask):
         """
         # Encode nodes with edge data
         z = self.encoder.encode(
-            batch["x"],
-            batch["supervision_edges"],
-            batch.get("edge_data", None),
+            batch[EDGE_PREDICTION_BATCH.X],
+            batch[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES],
+            batch.get(EDGE_PREDICTION_BATCH.EDGE_DATA, None),
         )
 
         # Score positive and negative edges
-        pos_scores = self.head(z, batch["pos_edges"])
-        neg_scores = self.head(z, batch["neg_edges"])
+        pos_scores = self.head(z, batch[EDGE_PREDICTION_BATCH.POS_EDGES])
+        neg_scores = self.head(z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES])
 
         # Binary classification loss
         pos_loss = self.loss_fn(pos_scores, torch.ones_like(pos_scores))
@@ -218,14 +221,18 @@ class EdgePredictionTask(BaseTask):
 
             # Encode nodes
             z = self.encoder.encode(
-                batch["x"],
-                batch["supervision_edges"],
-                batch.get("edge_data", None),
+                batch[EDGE_PREDICTION_BATCH.X],
+                batch[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES],
+                batch.get(EDGE_PREDICTION_BATCH.EDGE_DATA, None),
             )
 
             # Score positive and negative edges
-            pos_scores = torch.sigmoid(self.head(z, batch["pos_edges"]))
-            neg_scores = torch.sigmoid(self.head(z, batch["neg_edges"]))
+            pos_scores = torch.sigmoid(
+                self.head(z, batch[EDGE_PREDICTION_BATCH.POS_EDGES])
+            )
+            neg_scores = torch.sigmoid(
+                self.head(z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES])
+            )
 
             # Combine predictions and labels
             y_pred = torch.cat([pos_scores, neg_scores]).cpu().numpy()
@@ -380,27 +387,33 @@ class EdgePredictionTask(BaseTask):
     ) -> None:
         """Check that the dimensions of the tensors in the batch_dict are compatible."""
 
-        if batch_dict["x"].shape != (data.num_nodes, data.num_node_features):
+        if batch_dict[EDGE_PREDICTION_BATCH.X].shape != (
+            data.num_nodes,
+            data.num_node_features,
+        ):
             raise ValueError(
-                f"x shape mismatch: {batch_dict['x'].shape} != ({data.num_nodes}, {data.num_node_features})"
+                f"x shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.X].shape} != ({data.num_nodes}, {data.num_node_features})"
             )
 
         n_supervision_edges = data.train_mask.sum().item()
-        if batch_dict["supervision_edges"].shape != (2, n_supervision_edges):
+        if batch_dict[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES].shape != (
+            2,
+            n_supervision_edges,
+        ):
             raise ValueError(
-                f"supervision_edges shape mismatch: {batch_dict['supervision_edges'].shape} != (2, {n_supervision_edges})"
+                f"supervision_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES].shape} != (2, {n_supervision_edges})"
             )
 
-        n_pos_edges = batch_dict["pos_edges"].shape[1]
-        if batch_dict["pos_edges"].shape != (2, n_pos_edges):
+        n_pos_edges = batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape[1]
+        if batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape != (2, n_pos_edges):
             raise ValueError(
-                f"pos_edges shape mismatch: {batch_dict['pos_edges'].shape} != (2, {n_pos_edges})"
+                f"pos_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape} != (2, {n_pos_edges})"
             )
 
-        n_neg_edges = batch_dict["neg_edges"].shape[1]
-        if batch_dict["neg_edges"].shape != (2, n_neg_edges):
+        n_neg_edges = batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape[1]
+        if batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape != (2, n_neg_edges):
             raise ValueError(
-                f"neg_edges shape mismatch: {batch_dict['neg_edges'].shape} != (2, {n_neg_edges})"
+                f"neg_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape} != (2, {n_neg_edges})"
             )
 
         if n_pos_edges != n_neg_edges:
@@ -408,10 +421,13 @@ class EdgePredictionTask(BaseTask):
                 f"pos_edges and neg_edges have different number of edges: {n_pos_edges} != {n_neg_edges}"
             )
 
-        if batch_dict["edge_data"] is not None:
-            if batch_dict["edge_data"].shape[0] != n_supervision_edges:
+        if batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA] is not None:
+            if (
+                batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA].shape[0]
+                != n_supervision_edges
+            ):
                 raise ValueError(
-                    f"edge_data shape mismatch: {batch_dict['edge_data'].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
+                    f"edge_data shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
                 )
         return None
 

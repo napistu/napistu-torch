@@ -145,7 +145,9 @@ def test_directory_creation(napistu_data):
         assert isinstance(loaded_data, NapistuData)
 
 
-def test_supervised_data_ordering_consistency(supervised_napistu_data, napistu_graph):
+def test_species_type_prediction_data_ordering_consistency(
+    species_type_prediction_napistu_data, napistu_graph
+):
     """Test that data ordering is consistent between NapistuGraph and NapistuData objects.
 
     This test verifies that when labels are decoded from the NapistuData object,
@@ -153,8 +155,8 @@ def test_supervised_data_ordering_consistency(supervised_napistu_data, napistu_g
     vertex ordering preserved in the NapistuData.ng_vertex_names attribute.
     """
     # Use the new _validate_labels method to test consistency
-    supervised_napistu_data._validate_labels(
-        napistu_graph, supervised_napistu_data.labeling_manager
+    species_type_prediction_napistu_data._validate_labels(
+        napistu_graph, species_type_prediction_napistu_data.labeling_manager
     )
 
 
