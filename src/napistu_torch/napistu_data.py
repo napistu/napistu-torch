@@ -92,10 +92,10 @@ class NapistuData(Data):
 
     Public Methods
     --------------
-    save(filepath)
-        Save the NapistuData object to disk
-    load(filepath, map_location="cpu")
-        Load a NapistuData object from disk
+    copy()
+        Create a deep copy of the NapistuData object
+    estimate_memory_footprint()
+        Estimate memory footprint of the NapistuData object
     get_edge_feature_names()
         Get the names of edge features
     get_edge_names()
@@ -108,6 +108,28 @@ class NapistuData(Data):
         Get the names of vertex features
     get_vertex_names()
         Get the vertex names from the original NapistuGraph
+    load(filepath, map_location="cpu")
+        Load a NapistuData object from disk
+    save(filepath)
+        Save the NapistuData object to disk
+    show_memory_footprint()
+        Display memory footprint of the NapistuData object
+    summary()
+        Get a summary of the NapistuData object
+    trim(keep_edge_attr=True, keep_labels=True, keep_masks=True, inplace=False)
+        Trim the NapistuData object to keep only the specified attributes
+    unencode_features(napistu_graph, attribute_type, attribute, encoding_manager=None)
+        Unencode features from the NapistuData object
+
+    Private Methods
+    ---------------
+    _validate_edge_encoding(napistu_graph, edge_attribute, encoding_manager=None)
+        Validate the edge encoding of the NapistuData object
+    _validate_labels(napistu_graph, labeling_manager)
+        Validate the labels of the NapistuData object
+    _validate_vertex_encoding(napistu_graph, vertex_attribute, encoding_manager=None)
+        Validate the vertex encoding of the NapistuData object
+
 
     Examples
     --------
@@ -268,93 +290,79 @@ class NapistuData(Data):
         """
         return copy.deepcopy(self)
 
-    def save(self, filepath: Union[str, Path]) -> None:
+    def estimate_memory_footprint(self) -> Dict[str, Optional[int]]:
         """
-        Save the NapistuData object to disk.
+        Estimate memory footprint of the NapistuData object.
 
-        This method provides a safe way to save NapistuData objects, ensuring
-        compatibility with PyTorch's security features.
-
-        Parameters
-        ----------
-        filepath : Union[str, Path]
-            Path where to save the data object
-
-        Examples
-        --------
-        >>> data.save('my_network.pt')
-        """
-        filepath = Path(filepath)
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-
-        torch.save(self, filepath)
-
-    @classmethod
-    def load(
-        cls, filepath: Union[str, Path], map_location: str = DEVICE.CPU
-    ) -> "NapistuData":
-        """
-        Load a NapistuData object from disk.
-
-        This method automatically uses weights_only=False to ensure compatibility
-        with PyG Data objects, which contain custom classes that aren't allowed
-        with the default weights_only=True setting in PyTorch 2.6+.
-
-        Parameters
-        ----------
-        filepath : Union[str, Path]
-            Path to the saved data object
-        map_location : str, default='cpu'
-            Device to map tensors to (e.g., 'cpu', 'cuda:0'). Defaults to 'cpu'
-            for universal compatibility.
+        Calculates the memory usage (in bytes) for each major component
+        of the data object, including node features, edge index, edge
+        attributes, and training/validation/test masks.
 
         Returns
         -------
-        NapistuData
-            The loaded NapistuData object
-
-        Raises
-        ------
-        FileNotFoundError
-            If the file doesn't exist
-        RuntimeError
-            If loading fails
-        TypeError
-            If the loaded object is not a NapistuData or Data object
+        Dict[str, Optional[int]]
+            Dictionary containing memory usage in bytes for each component:
+            - "node_features": Memory used by node features (x)
+            - "edge_index": Memory used by edge index
+            - "edge_attr": Memory used by edge attributes
+            - "train_mask": Memory used by train mask (None if not present)
+            - "val_mask": Memory used by validation mask (None if not present)
+            - "test_mask": Memory used by test mask (None if not present)
+            - "total": Total memory usage in bytes
 
         Examples
         --------
-        >>> data = NapistuData.load('my_network.pt')  # Loads to CPU by default
-        >>> data = NapistuData.load('my_network.pt', map_location='cuda:0')  # Load to GPU
-
-        Notes
-        -----
-        This method uses weights_only=False by default because PyG Data objects
-        contain custom classes that aren't allowed with weights_only=True.
-        Only use this with trusted files, as it can result in arbitrary code execution.
+        >>> footprint = data.estimate_memory_footprint()
+        >>> print(f"Total memory: {footprint['total'] / 1e9:.2f} GB")
+        >>> print(f"Node features: {footprint['node_features'] / 1e9:.2f} GB")
         """
-        filepath = Path(filepath)
+        memory_dict: Dict[str, Optional[int]] = {
+            NAPISTU_DATA.X: None,
+            NAPISTU_DATA.EDGE_INDEX: None,
+            NAPISTU_DATA.EDGE_ATTR: None,
+            NAPISTU_DATA.TRAIN_MASK: None,
+            NAPISTU_DATA.VAL_MASK: None,
+            NAPISTU_DATA.TEST_MASK: None,
+            "total": 0,
+        }
 
-        if not filepath.exists():
-            raise FileNotFoundError(f"File not found: {filepath}")
+        total_bytes = 0
 
-        try:
-            # Always use weights_only=False for PyG compatibility
-            data = torch.load(filepath, weights_only=False, map_location=map_location)
+        # Node features
+        if hasattr(self, NAPISTU_DATA.X) and self.x is not None:
+            node_bytes = self.x.element_size() * self.x.nelement()
+            memory_dict[NAPISTU_DATA.X] = node_bytes
+            total_bytes += node_bytes
 
-            # Convert to NapistuData if it's a regular Data object
-            if isinstance(data, NapistuData):
-                return data
-            else:
-                raise TypeError(
-                    f"Loaded object is not a NapistuData object, got {type(data)}. "
-                    "This may indicate a corrupted file or incorrect file type."
-                )
+        # Edge index
+        if hasattr(self, NAPISTU_DATA.EDGE_INDEX) and self.edge_index is not None:
+            edge_index_bytes = (
+                self.edge_index.element_size() * self.edge_index.nelement()
+            )
+            memory_dict[NAPISTU_DATA.EDGE_INDEX] = edge_index_bytes
+            total_bytes += edge_index_bytes
 
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load NapistuData object from {filepath}: {e}"
-            ) from e
+        # Edge attributes
+        if hasattr(self, NAPISTU_DATA.EDGE_ATTR) and self.edge_attr is not None:
+            edge_attr_bytes = self.edge_attr.element_size() * self.edge_attr.nelement()
+            memory_dict[NAPISTU_DATA.EDGE_ATTR] = edge_attr_bytes
+            total_bytes += edge_attr_bytes
+
+        # Masks
+        for mask_name in [
+            NAPISTU_DATA.TRAIN_MASK,
+            NAPISTU_DATA.VAL_MASK,
+            NAPISTU_DATA.TEST_MASK,
+        ]:
+            if hasattr(self, mask_name):
+                mask = getattr(self, mask_name)
+                if mask is not None:
+                    mask_bytes = mask.element_size() * mask.nelement()
+                    memory_dict[mask_name] = mask_bytes
+                    total_bytes += mask_bytes
+
+        memory_dict["total"] = total_bytes
+        return memory_dict
 
     def get_edge_feature_names(self) -> Optional[List[str]]:
         """
@@ -530,6 +538,141 @@ class NapistuData(Data):
             )
         return result
 
+    @classmethod
+    def load(
+        cls, filepath: Union[str, Path], map_location: str = DEVICE.CPU
+    ) -> "NapistuData":
+        """
+        Load a NapistuData object from disk.
+
+        This method automatically uses weights_only=False to ensure compatibility
+        with PyG Data objects, which contain custom classes that aren't allowed
+        with the default weights_only=True setting in PyTorch 2.6+.
+
+        Parameters
+        ----------
+        filepath : Union[str, Path]
+            Path to the saved data object
+        map_location : str, default='cpu'
+            Device to map tensors to (e.g., 'cpu', 'cuda:0'). Defaults to 'cpu'
+            for universal compatibility.
+
+        Returns
+        -------
+        NapistuData
+            The loaded NapistuData object
+
+        Raises
+        ------
+        FileNotFoundError
+            If the file doesn't exist
+        RuntimeError
+            If loading fails
+        TypeError
+            If the loaded object is not a NapistuData or Data object
+
+        Examples
+        --------
+        >>> data = NapistuData.load('my_network.pt')  # Loads to CPU by default
+        >>> data = NapistuData.load('my_network.pt', map_location='cuda:0')  # Load to GPU
+
+        Notes
+        -----
+        This method uses weights_only=False by default because PyG Data objects
+        contain custom classes that aren't allowed with weights_only=True.
+        Only use this with trusted files, as it can result in arbitrary code execution.
+        """
+        filepath = Path(filepath)
+
+        if not filepath.exists():
+            raise FileNotFoundError(f"File n?ot found: {filepath}")
+
+        try:
+            # Always use weights_only=False for PyG compatibility
+            data = torch.load(filepath, weights_only=False, map_location=map_location)
+
+            # Convert to NapistuData if it's a regular Data object
+            if isinstance(data, NapistuData):
+                return data
+            else:
+                raise TypeError(
+                    f"Loaded object is not a NapistuData object, got {type(data)}. "
+                    "This may indicate a corrupted file or incorrect file type."
+                )
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load NapistuData object from {filepath}: {e}"
+            ) from e
+
+    def save(self, filepath: Union[str, Path]) -> None:
+        """
+        Save the NapistuData object to disk.
+
+        This method provides a safe way to save NapistuData objects, ensuring
+        compatibility with PyTorch's security features.
+
+        Parameters
+        ----------
+        filepath : Union[str, Path]
+            Path where to save the data object
+
+        Examples
+        --------
+        >>> data.save('my_network.pt')
+        """
+        filepath = Path(filepath)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        torch.save(self, filepath)
+
+    def show_memory_footprint(self) -> None:
+        """
+        Display memory footprint of the NapistuData object.
+
+        Prints a formatted breakdown of memory usage for each component
+        of the data object in gigabytes (GB), showing node features,
+        edge index, edge attributes, and training/validation/test masks.
+
+        Examples
+        --------
+        >>> data.show_memory_footprint()
+        Node features: 0.05 GB
+        Edge index: 0.01 GB
+        Edge attributes: 0.20 GB
+        train_mask: 0.00 GB
+        val_mask: 0.00 GB
+        test_mask: 0.00 GB
+
+        Total data: 0.26 GB
+        """
+        memory_dict = self.estimate_memory_footprint()
+
+        # Node features
+        if memory_dict[NAPISTU_DATA.X] is not None:
+            print(f"Node features: {memory_dict[NAPISTU_DATA.X] / 1e9:.2f} GB")
+
+        # Edge index
+        if memory_dict[NAPISTU_DATA.EDGE_INDEX] is not None:
+            print(f"Edge index: {memory_dict[NAPISTU_DATA.EDGE_INDEX] / 1e9:.2f} GB")
+
+        # Edge attributes
+        if memory_dict[NAPISTU_DATA.EDGE_ATTR] is not None:
+            print(
+                f"Edge attributes: {memory_dict[NAPISTU_DATA.EDGE_ATTR] / 1e9:.2f} GB"
+            )
+
+        # Masks
+        for mask_name in [
+            NAPISTU_DATA.TRAIN_MASK,
+            NAPISTU_DATA.VAL_MASK,
+            NAPISTU_DATA.TEST_MASK,
+        ]:
+            if memory_dict[mask_name] is not None:
+                print(f"{mask_name}: {memory_dict[mask_name] / 1e9:.3f} GB")
+
+        print(f"\nTotal data: {memory_dict['total'] / 1e9:.2f} GB")
+
     def summary(self) -> Dict[str, Any]:
         """
         Get a summary of the NapistuData object.
@@ -630,25 +773,29 @@ class NapistuData(Data):
         """
 
         new_attrs = {
-            "x": self.x,
-            "edge_index": self.edge_index,
-            "edge_attr": (
+            NAPISTU_DATA.X: self.x,
+            NAPISTU_DATA.EDGE_INDEX: self.edge_index,
+            NAPISTU_DATA.EDGE_ATTR: (
                 self.edge_attr if keep_edge_attr else torch.empty((self.num_edges, 0))
             ),
-            "name": NAPISTU_DATA_DEFAULT_NAME + "_trimmed",
+            NAPISTU_DATA.NAME: NAPISTU_DATA_DEFAULT_NAME + "_trimmed",
         }
 
         # Add edge_weight if present
-        if hasattr(self, "edge_weight") and self.edge_weight is not None:
-            new_attrs["edge_weight"] = self.edge_weight
+        if hasattr(self, NAPISTU_DATA.EDGE_WEIGHT) and self.edge_weight is not None:
+            new_attrs[NAPISTU_DATA.EDGE_WEIGHT] = self.edge_weight
 
         # Add labels if requested
-        if keep_labels and hasattr(self, "y") and self.y is not None:
-            new_attrs["y"] = self.y
+        if keep_labels and hasattr(self, NAPISTU_DATA.Y) and self.y is not None:
+            new_attrs[NAPISTU_DATA.Y] = self.y
 
         # Add masks if requested
         if keep_masks:
-            for mask_name in ["train_mask", "val_mask", "test_mask"]:
+            for mask_name in [
+                NAPISTU_DATA.TRAIN_MASK,
+                NAPISTU_DATA.VAL_MASK,
+                NAPISTU_DATA.TEST_MASK,
+            ]:
                 if hasattr(self, mask_name):
                     mask = getattr(self, mask_name)
                     if mask is not None:

@@ -10,7 +10,7 @@ import pandas as pd
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 
-from napistu_torch.configs import DataConfig
+from napistu_torch.configs import DataConfig, TaskConfig
 from napistu_torch.constants import (
     ARTIFACT_TYPES,
     NAPISTU_DATA,
@@ -422,6 +422,7 @@ class NapistuDataStore:
     def from_config(
         cls,
         config: DataConfig,
+        task_config: Optional[TaskConfig] = None,
         ensure_artifacts: bool = True,
     ) -> "NapistuDataStore":
         """
@@ -432,15 +433,18 @@ class NapistuDataStore:
         2. If store doesn't exist or config.overwrite: create new store
         - Uses sbml_dfs_path and napistu_graph_path from config
         - Copies to store if config.copy_to_store is True
-        3. Ensure napistu_data_name and other_artifacts exist (always, regardless of store creation)
+        3. Ensure napistu_data_name, other_artifacts, and task artifacts exist (always, regardless of store creation)
 
         Parameters
         ----------
         config : DataConfig
             Configuration with store location, artifact paths, and requirements.
             Must include sbml_dfs_path and napistu_graph_path.
+        task_config : Optional[TaskConfig], default=None
+            Optional task configuration. If provided, artifacts required by the task
+            will be added to the required artifacts list.
         ensure_artifacts : bool, default=True
-            Whether to ensure that napistu_data_name and other_artifacts exist.
+            Whether to ensure that napistu_data_name, other_artifacts, and task artifacts exist.
             Set to False when side-loading napistu_data directly (e.g., during testing).
 
         Returns
@@ -505,6 +509,14 @@ class NapistuDataStore:
         # Conditionally ensure required artifacts exist
         if ensure_artifacts:
             required_artifacts = [config.napistu_data_name] + config.other_artifacts
+
+            # Add additional artifacts required by the task
+            if task_config is not None:
+                from napistu_torch.configs import task_config_to_artifact_names
+
+                task_artifacts = task_config_to_artifact_names(task_config)
+                required_artifacts = list(set(required_artifacts) | set(task_artifacts))
+
             if required_artifacts:
                 logger.info(f"Ensuring required artifacts exist: {required_artifacts}")
                 store.ensure_artifacts(required_artifacts, overwrite=config.overwrite)

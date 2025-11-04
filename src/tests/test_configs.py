@@ -387,21 +387,21 @@ class TestTrainingConfig:
         with pytest.raises(ValidationError):
             TrainingConfig(epochs=-1)  # Negative value
 
-    def test_batch_size_validation(self):
-        """Test batch size validation with valid and invalid values."""
+    def test_batches_per_epoch_validation(self):
+        """Test batches per epoch validation with valid and invalid values."""
         # Test valid values
-        valid_batch_sizes = [1, 16, 32, 64, 128]
-        for batch_size in valid_batch_sizes:
-            config = TrainingConfig(batch_size=batch_size)
-            assert hasattr(config, TRAINING_CONFIG.BATCH_SIZE)
-            assert config.batch_size == batch_size
+        valid_batches_per_epoch = [1, 16, 32, 64, 128]
+        for batches_per_epoch in valid_batches_per_epoch:
+            config = TrainingConfig(batches_per_epoch=batches_per_epoch)
+            assert hasattr(config, TRAINING_CONFIG.BATCHES_PER_EPOCH)
+            assert config.batches_per_epoch == batches_per_epoch
 
         # Test invalid values
         with pytest.raises(ValidationError):
-            TrainingConfig(batch_size=0)  # At minimum (should be > 0)
+            TrainingConfig(batches_per_epoch=0)  # At minimum (should be > 0)
 
         with pytest.raises(ValidationError):
-            TrainingConfig(batch_size=-1)  # Negative value
+            TrainingConfig(batches_per_epoch=-1)  # Negative value
 
     def test_precision_validation(self):
         """Test precision validation with valid and invalid values."""
@@ -422,7 +422,7 @@ class TestTrainingConfig:
         assert hasattr(config, TRAINING_CONFIG.OPTIMIZER)
         assert hasattr(config, TRAINING_CONFIG.SCHEDULER)
         assert hasattr(config, TRAINING_CONFIG.EPOCHS)
-        assert hasattr(config, TRAINING_CONFIG.BATCH_SIZE)
+        assert hasattr(config, TRAINING_CONFIG.BATCHES_PER_EPOCH)
         assert hasattr(config, TRAINING_CONFIG.ACCELERATOR)
         assert hasattr(config, TRAINING_CONFIG.DEVICES)
         assert hasattr(config, TRAINING_CONFIG.PRECISION)
@@ -441,7 +441,7 @@ class TestTrainingConfig:
             optimizer=OPTIMIZERS.ADAMW,
             scheduler=SCHEDULERS.PLATEAU,
             epochs=100,
-            batch_size=64,
+            batches_per_epoch=64,
             checkpoint_dir=custom_path,
         )
         assert config.lr == 0.01
@@ -449,7 +449,7 @@ class TestTrainingConfig:
         assert config.optimizer == OPTIMIZERS.ADAMW
         assert config.scheduler == SCHEDULERS.PLATEAU
         assert config.epochs == 100
-        assert config.batch_size == 64
+        assert config.batches_per_epoch == 64
         assert config.checkpoint_dir == custom_path
         assert isinstance(config.checkpoint_dir, Path)
 

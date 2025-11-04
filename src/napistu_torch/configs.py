@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.constants import (
     METRICS,
@@ -13,6 +13,7 @@ from napistu_torch.constants import (
     VALID_WANDB_MODES,
     WANDB_CONFIG,
 )
+from napistu_torch.load.constants import STRATIFY_BY_ARTIFACT_NAMES
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODERS,
@@ -87,7 +88,8 @@ class ModelConfig(BaseModel):
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
 
-    model_config = ConfigDict(extra="forbid")  # Catch typos
+    class Config:
+        extra = "forbid"  # Catch typos
 
 
 class DataConfig(BaseModel):
@@ -112,7 +114,8 @@ class DataConfig(BaseModel):
         description="List of additional artifact names that must exist in the store.",
     )
 
-    model_config = ConfigDict(extra="forbid")
+    class Config:
+        extra = "forbid"
 
 
 class TaskConfig(BaseModel):
@@ -132,7 +135,8 @@ class TaskConfig(BaseModel):
             raise ValueError(f"Invalid task: {v}. Valid tasks are: {VALID_TASKS}")
         return v
 
-    model_config = ConfigDict(extra="forbid")
+    class Config:
+        extra = "forbid"
 
 
 class TrainingConfig(BaseModel):
@@ -144,7 +148,7 @@ class TrainingConfig(BaseModel):
     scheduler: Optional[str] = None
 
     epochs: int = Field(default=200, gt=0)
-    batch_size: int = Field(default=32, gt=0)
+    batches_per_epoch: int = Field(default=1, gt=0)
 
     # Training infrastructure
     accelerator: str = "auto"
@@ -178,7 +182,8 @@ class TrainingConfig(BaseModel):
             )
         return v
 
-    model_config = ConfigDict(extra="forbid")
+    class Config:
+        extra = "forbid"
 
 
 class WandBConfig(BaseModel):
@@ -220,7 +225,8 @@ class WandBConfig(BaseModel):
         )
         return enhanced_tags
 
-    model_config = ConfigDict(extra="forbid")
+    class Config:
+        extra = "forbid"
 
 
 class ExperimentConfig(BaseModel):
@@ -243,7 +249,8 @@ class ExperimentConfig(BaseModel):
     limit_train_batches: float = 1.0
     limit_val_batches: float = 1.0
 
-    model_config = ConfigDict(extra="forbid")  # Catch config typos!
+    class Config:
+        extra = "forbid"  # Catch config typos!
 
     # Convenience methods
     def to_dict(self):
@@ -307,3 +314,56 @@ class ExperimentConfig(BaseModel):
         data = convert_strings_to_paths(data)
 
         return cls(**data)
+
+
+# Public functions for working with configs
+
+
+def task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
+    """
+    Convert a TaskConfig to a list of artifact names required by the task.
+
+    Parameters
+    ----------
+    task_config : TaskConfig
+        Task configuration object
+
+    Returns
+    -------
+    List[str]
+        List of artifact names required by the task
+
+    Examples
+    --------
+    >>> from napistu_torch.configs import TaskConfig, task_config_to_artifact_names
+    >>> task_config = TaskConfig(
+    ...     task="edge_prediction",
+    ...     edge_prediction_neg_sampling_stratify_by="edge_strata_by_node_type"
+    ... )
+    >>> artifacts = task_config_to_artifact_names(task_config)
+    >>> print(artifacts)
+    ['edge_strata_by_node_type']
+    """
+    if task_config.task == TASKS.EDGE_PREDICTION:
+        return _task_config_to_artifact_names_edge_prediction(task_config)
+    else:
+        return []
+
+
+# Private functions for working with configs
+
+
+def _task_config_to_artifact_names_edge_prediction(
+    task_config: TaskConfig,
+) -> List[str]:
+    """Convert a TaskConfig to a list of artifact names for edge prediction."""
+    ALL_VALID = {"none"} | STRATIFY_BY_ARTIFACT_NAMES
+    if task_config.edge_prediction_neg_sampling_stratify_by not in ALL_VALID:
+        raise ValueError(
+            f"Invalid stratify_by value: {task_config.edge_prediction_neg_sampling_stratify_by}. "
+            f"Must be one of: {ALL_VALID}"
+        )
+    if task_config.edge_prediction_neg_sampling_stratify_by == "none":
+        return []
+    else:
+        return [task_config.edge_prediction_neg_sampling_stratify_by]

@@ -12,14 +12,12 @@ from typing import Dict, List, Optional
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-from napistu_torch.configs import DataConfig, TaskConfig
+from napistu_torch.configs import DataConfig, TaskConfig, task_config_to_artifact_names
 from napistu_torch.constants import ARTIFACT_TYPES
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
-from napistu_torch.load.constants import STRATIFY_BY_ARTIFACT_NAMES
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.napistu_data_store import NapistuDataStore
-from napistu_torch.tasks.constants import TASKS
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +88,7 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
 
         # Add additional artifacts required by the task
         if task_config is not None:
-            task_artifacts = _task_config_to_artifact_names(task_config)
+            task_artifacts = task_config_to_artifact_names(task_config)
             other_artifacts = list(set(other_artifacts) | set(task_artifacts))
 
         # Create or load the store from config
@@ -100,7 +98,7 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
                 logger.info("Creating/loading store from config")
                 ensure_artifacts = (napistu_data is None) or (len(other_artifacts) > 0)
                 napistu_data_store = NapistuDataStore.from_config(
-                    config, ensure_artifacts=ensure_artifacts
+                    config, task_config=task_config, ensure_artifacts=ensure_artifacts
                 )
             else:
                 logger.info(
@@ -228,30 +226,3 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
     def predict_dataloader(self) -> DataLoader:
         """Create prediction dataloader. Must be implemented by subclasses."""
         pass
-
-
-# private functions
-
-
-def _task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
-    """Convert a TaskConfig to a list of artifact names."""
-    if task_config.task == TASKS.EDGE_PREDICTION:
-        return _task_config_to_artifact_names_edge_prediction(task_config)
-    else:
-        return []
-
-
-def _task_config_to_artifact_names_edge_prediction(
-    task_config: TaskConfig,
-) -> List[str]:
-    """Convert a TaskConfig to a list of artifact names for edge prediction."""
-    ALL_VALID = {"none"} | STRATIFY_BY_ARTIFACT_NAMES
-    if task_config.edge_prediction_neg_sampling_stratify_by not in ALL_VALID:
-        raise ValueError(
-            f"Invalid stratify_by value: {task_config.edge_prediction_neg_sampling_stratify_by}. "
-            f"Must be one of: {ALL_VALID}"
-        )
-    if task_config.edge_prediction_neg_sampling_stratify_by == "none":
-        return []
-    else:
-        return [task_config.edge_prediction_neg_sampling_stratify_by]
