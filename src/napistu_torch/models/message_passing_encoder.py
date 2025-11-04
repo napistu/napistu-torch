@@ -16,6 +16,7 @@ from torch_geometric.nn import GATConv, GCNConv, GraphConv, SAGEConv
 from napistu_torch.configs import ModelConfig
 from napistu_torch.constants import MODEL_CONFIG
 from napistu_torch.models.constants import (
+    EDGE_WEIGHTING_TYPE,
     ENCODER_DEFS,
     ENCODER_NATIVE_ARGNAMES_MAPS,
     ENCODER_SPECIFIC_ARGS,
@@ -26,6 +27,7 @@ from napistu_torch.models.constants import (
 from napistu_torch.models.edge_encoder import EdgeEncoder
 
 logger = logging.getLogger(__name__)
+
 
 ENCODER_CLASSES = {
     ENCODERS.GAT: GATConv,
@@ -122,18 +124,13 @@ class MessagePassingEncoder(nn.Module):
         self.convs = nn.ModuleList()
         self.supports_edge_weight = encoder_type in [ENCODERS.GCN, ENCODERS.GRAPH_CONV]
 
-        # Handle edge weighting
-        self.weight_edges_by = weight_edges_by
-        if weight_edges_by is not None:
-            if self.supports_edge_weight:
-                if isinstance(weight_edges_by, nn.Module):
-                    self.edge_encoder = weight_edges_by
-                    self.static_edge_weights = None
-                else:
-                    self.edge_encoder = None
-                    self.static_edge_weights = weight_edges_by
-            else:
-                logger.warning(f"Edge weighting is not supported for {encoder_type}")
+        # Parse edge weighting specification into type indicator and value
+        self.edge_weighting_type, self.edge_weighting_value = _parse_edge_weighting(
+            weight_edges_by, self.supports_edge_weight, encoder_type
+        )
+        logger.debug(
+            f"Initialized MessagePassingEncoder with edge_weighting_type={self.edge_weighting_type}"
+        )
 
         # Build encoder_kwargs based on encoder using dict comprehension
         param_mapping = ENCODER_NATIVE_ARGNAMES_MAPS.get(encoder_type, {})
@@ -212,28 +209,29 @@ class MessagePassingEncoder(nn.Module):
 
         Notes
         -----
-        Edge weighting is handled based on the weight_edges_by parameter:
-        - None: No edge weighting (uniform message passing)
-        - torch.Tensor: Static edge weights
-        - nn.Module: Learnable edge encoder (requires edge_data)
+        Edge weighting is handled based on the edge_weighting_type attribute:
+        - EDGE_WEIGHTING_TYPE.NONE: No edge weighting (uniform message passing)
+        - EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS: Static edge weights (edge_data contains pre-computed weights)
+        - EDGE_WEIGHTING_TYPE.LEARNED_ENCODER: Learnable edge encoder (edge_data contains edge attributes)
         """
-        # Compute edge weights based on weight_edges_by setting
-        if self.weight_edges_by is not None:
-            if isinstance(self.weight_edges_by, nn.Module):
-                # Learnable edge encoder - requires edge_data (edge attributes)
-                if edge_data is None:
-                    raise ValueError(
-                        "edge_data required when using learnable edge encoder"
-                    )
-                edge_weight = self.edge_encoder(edge_data)
-            else:
-                # Static edge weights - use pre-masked weights from edge_data
-                if edge_data is None:
-                    raise ValueError(
-                        "edge_data required when using static edge weights"
-                    )
-                edge_weight = edge_data
-        else:
+        # Compute edge weights based on edge_weighting_type
+        if (
+            getattr(self, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)
+            == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
+        ):
+            # Learnable edge encoder - requires edge_data (edge attributes)
+            if edge_data is None:
+                raise ValueError("edge_data required when using learnable edge encoder")
+            edge_weight = getattr(self, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)(edge_data)
+        elif (
+            getattr(self, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)
+            == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS
+        ):
+            # Static edge weights - use pre-masked weights from edge_data
+            if edge_data is None:
+                raise ValueError("edge_data required when using static edge weights")
+            edge_weight = edge_data
+        else:  # EDGE_WEIGHTING_TYPE.NONE
             edge_weight = None
 
         # Warn if edge weights are provided but not supported
@@ -343,12 +341,16 @@ class MessagePassingEncoder(nn.Module):
             )
 
         # Handle edge encoder creation
-        if getattr(config, "use_edge_encoder", False):
+        if getattr(config, MODEL_CONFIG.USE_EDGE_ENCODER, False):
             if edge_in_channels is None:
                 raise ValueError(
                     "edge_in_channels must be provided when use_edge_encoder=True"
                 )
 
+            logger.debug(
+                f"Creating EdgeEncoder: edge_in_channels={edge_in_channels}, "
+                f"hidden_dim={config.edge_encoder_dim}, dropout={config.edge_encoder_dropout}"
+            )
             edge_encoder = EdgeEncoder(
                 edge_dim=edge_in_channels,
                 hidden_dim=config.edge_encoder_dim,
@@ -358,7 +360,7 @@ class MessagePassingEncoder(nn.Module):
         else:
             weight_edges_by = None
 
-        return cls(
+        result = cls(
             in_channels=in_channels,
             hidden_channels=getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
@@ -366,4 +368,66 @@ class MessagePassingEncoder(nn.Module):
             encoder_type=encoder_type,
             weight_edges_by=weight_edges_by,
             **model_kwargs,
+        )
+        logger.debug(
+            f"Created MessagePassingEncoder with edge_weighting_type={getattr(result, ENCODER_DEFS.EDGE_WEIGHTING_TYPE, 'N/A')}"
+        )
+        return result
+
+
+# private utils
+
+
+def _parse_edge_weighting(
+    weight_edges_by: Optional[Union[torch.Tensor, nn.Module]],
+    supports_edge_weight: bool,
+    encoder_type: str,
+) -> tuple[str, Optional[Union[torch.Tensor, nn.Module]]]:
+    """
+    Parse weight_edges_by parameter into type indicator and value.
+
+    This utility function handles the polyschematicity of edge weighting options
+    by explicitly separating the type indicator from the value.
+
+    Parameters
+    ----------
+    weight_edges_by : Optional[Union[torch.Tensor, nn.Module]]
+        Edge weighting specification:
+        - None: No edge weighting
+        - torch.Tensor: Static edge weights
+        - nn.Module: Learnable edge encoder
+    supports_edge_weight : bool
+        Whether the encoder type supports edge weighting
+    encoder_type : str
+        Name of encoder type (for logging)
+
+    Returns
+    -------
+    tuple[str, Optional[Union[torch.Tensor, nn.Module]]]
+        Tuple of (edge_weighting_type, edge_weighting_value)
+        - edge_weighting_type: String constant from EDGE_WEIGHTING_TYPE indicating the type of weighting
+        - edge_weighting_value: The actual value (None, Tensor, or Module)
+
+    Raises
+    ------
+    ValueError
+        If weight_edges_by is not None, Tensor, or Module
+    """
+
+    if weight_edges_by is None:
+        return EDGE_WEIGHTING_TYPE.NONE, None
+
+    if not supports_edge_weight:
+        logger.warning(
+            f"Edge weighting is not supported for {encoder_type}, ignoring weight_edges_by"
+        )
+        return EDGE_WEIGHTING_TYPE.NONE, None
+
+    if isinstance(weight_edges_by, nn.Module):
+        return EDGE_WEIGHTING_TYPE.LEARNED_ENCODER, weight_edges_by
+    elif isinstance(weight_edges_by, torch.Tensor):
+        return EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS, weight_edges_by
+    else:
+        raise ValueError(
+            f"weight_edges_by must be None, nn.Module, or torch.Tensor, got {type(weight_edges_by)}"
         )

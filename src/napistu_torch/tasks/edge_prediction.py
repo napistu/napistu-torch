@@ -5,6 +5,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
+from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.labels.create import _prepare_discrete_labels
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.load.constants import (
@@ -16,6 +17,10 @@ from napistu_torch.load.stratification import (
     validate_edge_strata_alignment,
 )
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
+from napistu_torch.models.constants import (
+    EDGE_WEIGHTING_TYPE,
+    ENCODER_DEFS,
+)
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
 from napistu_torch.tasks.constants import (
@@ -88,9 +93,6 @@ class EdgePredictionTask(BaseTask):
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or ["auc", "ap"]
 
-        # Extract edge encoder from the encoder if it has one
-        self.edge_encoder = getattr(encoder, "edge_encoder", None)
-
         # Negative sampler (initialized lazily on first prepare_batch call)
         self.negative_sampler = None
         self._sampler_initialized = False
@@ -154,20 +156,33 @@ class EdgePredictionTask(BaseTask):
             num_neg=num_neg, device=str(pos_edge_index.device)
         )
 
-        # Handle edge data based on encoder type
+        # Handle edge data based on encoder edge weighting type
         edge_data = None
-        if (
-            hasattr(self.encoder, "weight_edges_by")
-            and self.encoder.weight_edges_by is not None
-        ):
-            if isinstance(self.encoder.weight_edges_by, torch.nn.Module):
+        if hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE):
+
+            if self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER:
                 # Learnable edge encoder - pass edge attributes for supervision edges
-                edge_attr = getattr(data, "edge_attr", None)
+                edge_attr = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
                 if edge_attr is not None:
                     edge_data = edge_attr[train_indices]
-            else:
+                else:
+                    logger.warning(
+                        f"No edge attributes present in NapistuData despite edge weighting type being {EDGE_WEIGHTING_TYPE.LEARNED_ENCODER}. Falling back to uniform message passing."
+                    )
+            elif self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS:
                 # Static edge weights - pass weights for supervision edges
-                edge_data = self.encoder.static_edge_weights[train_indices]
+                if (
+                    hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+                    and getattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+                    is not None
+                ):
+                    edge_data = getattr(
+                        self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE
+                    )[train_indices]
+                else:
+                    logger.warning(
+                        f"No edge weighting value present in encoder despite edge weighting type being {EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS}. Falling back to uniform message passing."
+                    )
 
         batch_dict = {
             EDGE_PREDICTION_BATCH.X: data.x,
