@@ -392,3 +392,60 @@ def test_trim_no_labels_masks(edge_masked_napistu_data):
     # Verify metadata is removed
     assert not hasattr(trimmed, NAPISTU_DATA.VERTEX_FEATURE_NAMES)
     assert not hasattr(trimmed, NAPISTU_DATA.EDGE_FEATURE_NAMES)
+
+
+def test_estimate_memory_footprint(napistu_data):
+    """Test estimate_memory_footprint returns correct memory estimates."""
+    footprint = napistu_data.estimate_memory_footprint()
+
+    # Verify return type
+    assert isinstance(footprint, dict)
+
+    # Verify expected keys are present
+    assert NAPISTU_DATA.X in footprint
+    assert NAPISTU_DATA.EDGE_INDEX in footprint
+    assert NAPISTU_DATA.EDGE_ATTR in footprint
+    assert NAPISTU_DATA.TRAIN_MASK in footprint
+    assert NAPISTU_DATA.VAL_MASK in footprint
+    assert NAPISTU_DATA.TEST_MASK in footprint
+    assert "total" in footprint
+
+    # Verify node features memory is calculated
+    assert footprint[NAPISTU_DATA.X] is not None
+    assert footprint[NAPISTU_DATA.X] > 0
+    assert (
+        footprint[NAPISTU_DATA.X]
+        == napistu_data.x.element_size() * napistu_data.x.nelement()
+    )
+
+    # Verify edge_index memory is calculated
+    assert footprint[NAPISTU_DATA.EDGE_INDEX] is not None
+    assert footprint[NAPISTU_DATA.EDGE_INDEX] > 0
+    assert (
+        footprint[NAPISTU_DATA.EDGE_INDEX]
+        == napistu_data.edge_index.element_size() * napistu_data.edge_index.nelement()
+    )
+
+    # Verify edge_attr memory is calculated (if present)
+    if napistu_data.edge_attr is not None:
+        assert footprint[NAPISTU_DATA.EDGE_ATTR] is not None
+        assert footprint[NAPISTU_DATA.EDGE_ATTR] > 0
+        assert (
+            footprint[NAPISTU_DATA.EDGE_ATTR]
+            == napistu_data.edge_attr.element_size() * napistu_data.edge_attr.nelement()
+        )
+
+    # Verify total is sum of all components
+    expected_total = (
+        footprint[NAPISTU_DATA.X]
+        + footprint[NAPISTU_DATA.EDGE_INDEX]
+        + (footprint[NAPISTU_DATA.EDGE_ATTR] or 0)
+        + (footprint[NAPISTU_DATA.TRAIN_MASK] or 0)
+        + (footprint[NAPISTU_DATA.VAL_MASK] or 0)
+        + (footprint[NAPISTU_DATA.TEST_MASK] or 0)
+    )
+    assert footprint["total"] == expected_total
+    assert footprint["total"] > 0
+
+    # Call show_memory_footprint (just verify it doesn't raise, don't validate prints)
+    napistu_data.show_memory_footprint()

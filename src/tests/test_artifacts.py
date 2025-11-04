@@ -1,15 +1,9 @@
 """Tests for artifact registry and creation functions."""
 
 import pandas as pd
-
 import pytest
 
 from napistu_torch.constants import ARTIFACT_TYPES
-from napistu_torch.load.constants import (
-    DEFAULT_ARTIFACTS_NAMES,
-    STRATIFY_BY,
-    STRATIFY_BY_ARTIFACT_NAMES,
-)
 from napistu_torch.load.artifacts import (
     DEFAULT_ARTIFACT_REGISTRY,
     create_artifact,
@@ -17,6 +11,11 @@ from napistu_torch.load.artifacts import (
     get_artifact_info,
     list_available_artifacts,
     validate_artifact_registry,
+)
+from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
+    STRATIFY_BY,
+    STRATIFY_BY_ARTIFACT_NAMES,
 )
 
 

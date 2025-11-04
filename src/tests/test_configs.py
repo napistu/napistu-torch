@@ -7,13 +7,13 @@ import pytest
 from pydantic import ValidationError
 
 from napistu_torch.configs import (
-    create_template_yaml,
     DataConfig,
     ExperimentConfig,
     ModelConfig,
     TaskConfig,
     TrainingConfig,
     WandBConfig,
+    create_template_yaml,
     task_config_to_artifact_names,
 )
 from napistu_torch.constants import (
@@ -762,39 +762,39 @@ class TestConfigIntegration:
         """Test that create_template_yaml creates a valid YAML that can be loaded."""
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
             template_path = Path(f.name)
-        
+
         # Create template with specific paths and name
         sbml_path = Path("test_data/sbml_dfs.pkl")
         graph_path = Path("test_data/napistu_graph.pkl")
         experiment_name = "test_experiment"
-        
+
         create_template_yaml(
             output_path=template_path,
             sbml_dfs_path=sbml_path,
             napistu_graph_path=graph_path,
             name=experiment_name,
         )
-        
+
         # Verify file was created
         assert template_path.exists()
-        
+
         # Load the template using ExperimentConfig.from_yaml
         loaded_config = ExperimentConfig.from_yaml(template_path)
-        
+
         # Verify the loaded config has the expected values
         assert loaded_config.name == experiment_name
         assert loaded_config.data.sbml_dfs_path == sbml_path
         assert loaded_config.data.napistu_graph_path == graph_path
-        
+
         # Verify defaults are applied (not in template)
         assert isinstance(loaded_config.model, ModelConfig)
         assert isinstance(loaded_config.task, TaskConfig)
         assert isinstance(loaded_config.training, TrainingConfig)
         assert isinstance(loaded_config.wandb, WandBConfig)
-        
+
         # Verify wandb fields from template
         assert loaded_config.wandb.group == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
         assert loaded_config.wandb.tags == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS]
-        
+
         # Clean up
         template_path.unlink()

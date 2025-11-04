@@ -163,7 +163,9 @@ def ensure_stratify_by_artifact_name(stratify_by: str) -> str:
     elif stratify_by in STRATIFY_BY_TO_ARTIFACT_NAMES:
         return STRATIFY_BY_TO_ARTIFACT_NAMES[stratify_by]
     else:
-        raise ValueError(f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY} | {STRATIFY_BY_ARTIFACT_NAMES}")
+        raise ValueError(
+            f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY} | {STRATIFY_BY_ARTIFACT_NAMES}"
+        )
 
 
 def get_artifact_info(

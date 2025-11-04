@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from napistu_torch.load.constants import STRATIFY_BY
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
 from napistu_torch.models.constants import ENCODERS, HEADS
-from napistu_torch.load.constants import STRATIFY_BY
 from napistu_torch.tasks.constants import (
     NEGATIVE_SAMPLING_STRATEGIES,
     TASKS,

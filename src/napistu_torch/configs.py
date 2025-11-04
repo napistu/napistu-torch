@@ -65,7 +65,9 @@ class ModelConfig(BaseModel):
     )  # For node classification head
 
     # Edge encoder fields (optional, with defaults)
-    use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.USE_EDGE_ENCODER]  # Whether to use edge encoder
+    use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
+        MODEL_CONFIG.USE_EDGE_ENCODER
+    ]  # Whether to use edge encoder
     edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
     edge_encoder_dropout: Optional[float] = Field(
         default=0.1, ge=0.0, lt=1.0
@@ -132,8 +134,14 @@ class TaskConfig(BaseModel):
     metrics: List[str] = Field(default_factory=lambda: [METRICS.AUC, METRICS.AP])
 
     edge_prediction_neg_sampling_ratio: float = Field(default=1.0, gt=0.0)
-    edge_prediction_neg_sampling_stratify_by: str = Field(default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY])
-    edge_prediction_neg_sampling_strategy: str = Field(default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY])
+    edge_prediction_neg_sampling_stratify_by: str = Field(
+        default=TASK_CONFIG_DEFAULTS[
+            TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY
+        ]
+    )
+    edge_prediction_neg_sampling_strategy: str = Field(
+        default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY]
+    )
 
     @field_validator(TASK_CONFIG.TASK)
     @classmethod
@@ -167,7 +175,10 @@ class TrainingConfig(BaseModel):
     early_stopping_patience: int = 20
     early_stopping_metric: str = "val_auc"
 
-    checkpoint_dir: Path = Field(default=Path(TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_DIR]), description="Directory to save checkpoints.")
+    checkpoint_dir: Path = Field(
+        default=Path(TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_DIR]),
+        description="Directory to save checkpoints.",
+    )
     save_checkpoints: bool = True
     checkpoint_metric: str = "val_auc"
 
@@ -199,7 +210,9 @@ class WandBConfig(BaseModel):
     project: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.PROJECT]
     entity: Optional[str] = None
     group: Optional[str] = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
-    tags: List[str] = Field(default_factory=lambda: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS])
+    tags: List[str] = Field(
+        default_factory=lambda: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS]
+    )
     save_dir: Path = Field(default=WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.SAVE_DIR])
     log_model: bool = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.LOG_MODEL]
     mode: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.MODE]
@@ -322,7 +335,9 @@ class ExperimentConfig(BaseModel):
 
         return cls(**data)
 
+
 # Public functions for working with configs
+
 
 def create_template_yaml(
     output_path: Path,
@@ -332,14 +347,14 @@ def create_template_yaml(
 ) -> None:
     """
     Create a minimal YAML template file for experiment configuration.
-    
+
     This creates a clean, minimal YAML file with only:
     - Required data paths (sbml_dfs_path, napistu_graph_path)
     - Experiment metadata (name)
     - Common configuration options (without default values)
-    
+
     Users can then customize this template without all the default values cluttering the file.
-    
+
     Parameters
     ----------
     output_path : Path
@@ -350,12 +365,12 @@ def create_template_yaml(
         Path to the NapistuGraph pickle file. If None, uses a placeholder.
     name : Optional[str], default=None
         Experiment name. If None, omits the name field.
-    
+
     Examples
     --------
     >>> from pathlib import Path
     >>> from napistu_torch.configs import create_template_yaml
-    >>> 
+    >>>
     >>> # Create template with placeholder paths
     >>> create_template_yaml(
     ...     output_path=Path("config.yaml"),
@@ -365,17 +380,23 @@ def create_template_yaml(
     ... )
     """
     import yaml
-    
+
     # Build minimal template dict - only required fields and commonly customized ones
     template = {}
-    
-    template[EXPERIMENT_CONFIG.NAME] = name if name else EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
-    template[EXPERIMENT_CONFIG.SEED] = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.SEED]
+
+    template[EXPERIMENT_CONFIG.NAME] = (
+        name if name else EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
+    )
+    template[EXPERIMENT_CONFIG.SEED] = EXPERIMENT_CONFIG_DEFAULTS[
+        EXPERIMENT_CONFIG.SEED
+    ]
 
     template[EXPERIMENT_CONFIG.MODEL] = {
         MODEL_CONFIG.ENCODER: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER],
         MODEL_CONFIG.HEAD: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD],
-        MODEL_CONFIG.USE_EDGE_ENCODER: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.USE_EDGE_ENCODER],
+        MODEL_CONFIG.USE_EDGE_ENCODER: MODEL_CONFIG_DEFAULTS[
+            MODEL_CONFIG.USE_EDGE_ENCODER
+        ],
     }
 
     template[EXPERIMENT_CONFIG.TASK] = {
@@ -383,19 +404,26 @@ def create_template_yaml(
     }
 
     template[EXPERIMENT_CONFIG.DATA] = {
-        DATA_CONFIG.SBML_DFS_PATH: str(sbml_dfs_path) if sbml_dfs_path else "path/to/sbml_dfs.pkl",
-        DATA_CONFIG.NAPISTU_GRAPH_PATH: str(napistu_graph_path) if napistu_graph_path else "path/to/napistu_graph.pkl",
-        DATA_CONFIG.NAPISTU_DATA_NAME: DATA_CONFIG_DEFAULTS[DATA_CONFIG.NAPISTU_DATA_NAME],
+        DATA_CONFIG.SBML_DFS_PATH: (
+            str(sbml_dfs_path) if sbml_dfs_path else "path/to/sbml_dfs.pkl"
+        ),
+        DATA_CONFIG.NAPISTU_GRAPH_PATH: (
+            str(napistu_graph_path)
+            if napistu_graph_path
+            else "path/to/napistu_graph.pkl"
+        ),
+        DATA_CONFIG.NAPISTU_DATA_NAME: DATA_CONFIG_DEFAULTS[
+            DATA_CONFIG.NAPISTU_DATA_NAME
+        ],
     }
-    
+
     template[EXPERIMENT_CONFIG.WANDB] = {
         WANDB_CONFIG.GROUP: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP],
         WANDB_CONFIG.TAGS: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS],
-    }    
+    }
     # Include empty/minimal sections for training and wandb
     template[EXPERIMENT_CONFIG.TRAINING] = {}
-    
-    
+
     # Write YAML file
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
@@ -432,7 +460,9 @@ def task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
     else:
         return []
 
+
 # Private functions for working with configs
+
 
 def _task_config_to_artifact_names_edge_prediction(
     task_config: TaskConfig,
@@ -442,4 +472,8 @@ def _task_config_to_artifact_names_edge_prediction(
         return []
     else:
         # validate the value and return the artifact name
-        return [ensure_stratify_by_artifact_name(task_config.edge_prediction_neg_sampling_stratify_by)]
+        return [
+            ensure_stratify_by_artifact_name(
+                task_config.edge_prediction_neg_sampling_stratify_by
+            )
+        ]

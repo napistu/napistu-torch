@@ -6,6 +6,11 @@ import torch
 import torch.nn as nn
 
 from napistu_torch.labels.create import _prepare_discrete_labels
+from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
+from napistu_torch.load.constants import (
+    STRATIFY_BY_ARTIFACT_NAMES,
+    VALID_STRATIFY_BY,
+)
 from napistu_torch.load.stratification import (
     ensure_strata_series,
     validate_edge_strata_alignment,
@@ -16,11 +21,6 @@ from napistu_torch.tasks.base import BaseTask
 from napistu_torch.tasks.constants import (
     EDGE_PREDICTION_BATCH,
     NEGATIVE_SAMPLING_STRATEGIES,
-)
-from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
-from napistu_torch.load.constants import (
-    STRATIFY_BY_ARTIFACT_NAMES,
-    VALID_STRATIFY_BY,
 )
 from napistu_torch.tasks.negative_sampler import NegativeSampler
 
