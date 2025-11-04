@@ -4,6 +4,7 @@ import logging
 
 import pytest
 import torch
+from napistu.network.constants import NAPISTU_GRAPH
 from torch_geometric.data import Data
 
 from napistu_torch.labels.constants import (
@@ -16,6 +17,7 @@ from napistu_torch.load.constants import (
     VALID_SPLITTING_STRATEGIES,
 )
 from napistu_torch.load.napistu_graphs import (
+    _ignore_graph_attributes,
     _name_napistu_data,
     napistu_graph_to_napistu_data,
 )
@@ -122,7 +124,7 @@ def test_no_mask_ignores_unused_params_with_warnings(napistu_graph, caplog):
 
     # Check that we got a warning about ignored parameters
     ignored_params_warning = any(
-        "parameters were ignored" in msg and "no_mask" in msg
+        "parameters were ignored" in msg and SPLITTING_STRATEGIES.NO_MASK in msg
         for msg in warning_messages
     )
     assert (
@@ -176,3 +178,17 @@ def test_name_napistu_data():
     # "no_mask" is dropped from the name
     expected_unsupervised = LABELING.UNLABELED
     assert unsupervised_name == expected_unsupervised
+
+
+def test_ignore_graph_attributes(napistu_graph):
+    """Test that _ignore_graph_attributes removes specified edge attributes."""
+    # Add a test attribute
+    test_attr = "test_ignore_attr"
+    napistu_graph.es[test_attr] = [1.0] * napistu_graph.ecount()
+    assert test_attr in napistu_graph.es.attributes()
+
+    # Remove it
+    _ignore_graph_attributes(napistu_graph, {NAPISTU_GRAPH.EDGES: [test_attr]})
+
+    # Verify it's gone
+    assert test_attr not in napistu_graph.es.attributes()
