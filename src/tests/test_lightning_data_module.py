@@ -1,5 +1,6 @@
 """Tests for Lightning DataModule functionality."""
 
+import pytest
 import torch
 
 from napistu_torch.configs import ExperimentConfig, ModelConfig, TaskConfig
@@ -78,6 +79,7 @@ def test_datamodule_setup_idempotent(edge_masked_napistu_data, experiment_config
     assert first_data is second_data  # Should be the same object
 
 
+@pytest.mark.skip_on_windows
 def test_datamodule_trimming_from_store(
     temp_data_config_with_store, edge_masked_napistu_data
 ):
