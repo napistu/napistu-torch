@@ -26,6 +26,7 @@ from napistu_torch.labels.labeling_manager import LABELING_MANAGERS, LabelingMan
 from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
+    IGNORED_EDGE_ATTRIBUTES,
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
@@ -44,6 +45,9 @@ def augment_napistu_graph(
     sbml_dfs: SBML_dfs,
     napistu_graph: NapistuGraph,
     sbml_dfs_summary_types: list = VALID_VERTEX_SBML_DFS_SUMMARIES,
+    ignored_attributes: dict[str, list[str]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+    },
     inplace: bool = False,
 ) -> None:
     """
@@ -60,6 +64,8 @@ def augment_napistu_graph(
         The NapistuGraph to augment.
     sbml_dfs_summary_types : list, optional
         Types of summaries to include. Defaults to all valid summary types.
+    ignored_attributes : dict[str, list[str]], optional
+        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES.
     inplace : bool, default=False
         If True, modify the NapistuGraph in place.
         If False, return a new NapistuGraph with the augmentations.
@@ -102,6 +108,9 @@ def augment_napistu_graph(
         add_name_prefixes=True,
     )
 
+    # drop ignored attributes which aren't needed
+    _ignore_graph_attributes(napistu_graph, ignored_attributes)
+
     return None if inplace else napistu_graph
 
 
@@ -122,7 +131,7 @@ def construct_vertex_labeled_napistu_data(
     This function handles the workflow for supervised learning tasks where labels are derived
     from graph attributes. The process is:
     1. Extract labels from the original graph (before augmentation) - labels may depend on
-       attributes that exist in the original graph
+        attributes that exist in the original graph
     2. Augment the graph with SBML_dfs data (sources, reactions, species) to add features
     3. Remove attributes that should not be encoded as features (e.g., the label attribute itself)
     4. Encode the augmented graph (with excluded attributes removed) into NapistuData
@@ -481,6 +490,33 @@ def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
     else:
         logger.warning("No edge weights found in edge DataFrame")
     return None
+
+
+def _ignore_graph_attributes(
+    napistu_graph: NapistuGraph,
+    ignored_attributes: dict[str, list[str]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+    },
+) -> None:
+    """
+    Remove specified attributes from vertices or edges.
+
+    This function removes the specified attributes from either vertices or edges. This is generally to restrict the vertex and edge encodings to a manageable size.
+    """
+
+    # currently only edge attributes are ignored
+    existing_edge_attributes = napistu_graph.es.attributes()
+    to_be_removed_edge_attributes = set(ignored_attributes[NAPISTU_GRAPH.EDGES]) & set(
+        existing_edge_attributes
+    )
+
+    if len(to_be_removed_edge_attributes) > 0:
+        logger.info(
+            f"Removing the following edge attributes: {to_be_removed_edge_attributes}"
+        )
+        napistu_graph.remove_attributes(
+            NAPISTU_GRAPH.EDGES, to_be_removed_edge_attributes
+        )
 
 
 def _napistu_graph_to_edge_masked_napistu_data(

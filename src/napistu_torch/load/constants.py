@@ -93,7 +93,6 @@ EDGE_DEFAULT_TRANSFORMS = {
     ENCODINGS.NUMERIC: {
         NAPISTU_GRAPH_EDGES.STOICHIOMETRY,
         NAPISTU_GRAPH_EDGES.WEIGHT,
-        NAPISTU_GRAPH_EDGES.UPSTREAM_WEIGHT,
     },
     ENCODINGS.BINARY: {
         NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE,
@@ -124,3 +123,14 @@ STRATIFY_BY_TO_ARTIFACT_NAMES = {
     STRATIFY_BY.NODE_SPECIES_TYPE: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
     STRATIFY_BY.NODE_TYPE: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
 }
+
+# toss these attributes during augmentation
+
+IGNORED_EDGE_ATTRIBUTES = [
+    "string_wt",  # defined in graph_attrs_spec.yaml, same pattern of missingness as other STRING vars. Should be uppercase to be consistent with them so a readable prefix is generated during deduplication.
+    NAPISTU_GRAPH_EDGES.UPSTREAM_WEIGHT,  # identical to "weight"
+    "IntAct_interaction_method_unknown",
+    "OmniPath_is_directed",
+    "OmniPath_is_inhibition",
+    "OmniPath_is_stimulation",
+]
