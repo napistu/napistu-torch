@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
+from napistu_torch.load.constants import STRATIFY_BY
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
+from napistu_torch.models.constants import ENCODERS, HEADS
+from napistu_torch.tasks.constants import (
+    NEGATIVE_SAMPLING_STRATEGIES,
+    TASKS,
+)
 
 ARTIFACT_TYPES = SimpleNamespace(
     NAPISTU_DATA="napistu_data",
@@ -109,6 +116,11 @@ DATA_CONFIG = SimpleNamespace(
     OTHER_ARTIFACTS="other_artifacts",
 )
 
+DATA_CONFIG_DEFAULTS = {
+    DATA_CONFIG.STORE_DIR: Path("./.store"),
+    DATA_CONFIG.NAPISTU_DATA_NAME: "edge_prediction",
+}
+
 MODEL_CONFIG = SimpleNamespace(
     ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
     HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
@@ -118,6 +130,12 @@ MODEL_CONFIG = SimpleNamespace(
     EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
 )
 
+MODEL_CONFIG_DEFAULTS = {
+    MODEL_CONFIG.ENCODER: ENCODERS.SAGE,
+    MODEL_CONFIG.HEAD: HEADS.DOT_PRODUCT,
+    MODEL_CONFIG.USE_EDGE_ENCODER: False,
+}
+
 TASK_CONFIG = SimpleNamespace(
     TASK="task",
     METRICS="metrics",
@@ -126,13 +144,19 @@ TASK_CONFIG = SimpleNamespace(
     EDGE_PREDICTION_NEG_SAMPLING_STRATEGY="edge_prediction_neg_sampling_strategy",
 )
 
+TASK_CONFIG_DEFAULTS = {
+    TASK_CONFIG.TASK: TASKS.EDGE_PREDICTION,
+    TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY: STRATIFY_BY.NODE_TYPE,
+    TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY: NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
+}
+
 TRAINING_CONFIG = SimpleNamespace(
     LR="lr",
     WEIGHT_DECAY="weight_decay",
     OPTIMIZER="optimizer",
     SCHEDULER="scheduler",
     EPOCHS="epochs",
-    BATCH_SIZE="batch_size",
+    BATCHES_PER_EPOCH="batches_per_epoch",
     ACCELERATOR="accelerator",
     DEVICES="devices",
     PRECISION="precision",
@@ -144,6 +168,10 @@ TRAINING_CONFIG = SimpleNamespace(
     CHECKPOINT_METRIC="checkpoint_metric",
 )
 
+TRAINING_CONFIG_DEFAULTS = {
+    TRAINING_CONFIG.CHECKPOINT_DIR: Path("./checkpoints"),
+}
+
 WANDB_CONFIG = SimpleNamespace(
     PROJECT="project",
     ENTITY="entity",
@@ -153,6 +181,15 @@ WANDB_CONFIG = SimpleNamespace(
     LOG_MODEL="log_model",
     MODE="mode",
 )
+
+WANDB_CONFIG_DEFAULTS = {
+    WANDB_CONFIG.PROJECT: "napistu-experiments",
+    WANDB_CONFIG.GROUP: "baseline",
+    WANDB_CONFIG.TAGS: [],
+    WANDB_CONFIG.SAVE_DIR: Path("./wandb"),
+    WANDB_CONFIG.LOG_MODEL: False,
+    WANDB_CONFIG.MODE: WANDB_MODES.ONLINE,
+}
 
 EXPERIMENT_CONFIG = SimpleNamespace(
     NAME="name",
@@ -167,3 +204,8 @@ EXPERIMENT_CONFIG = SimpleNamespace(
     TRAINING="training",
     WANDB="wandb",
 )
+
+EXPERIMENT_CONFIG_DEFAULTS = {
+    EXPERIMENT_CONFIG.NAME: None,
+    EXPERIMENT_CONFIG.SEED: 42,
+}

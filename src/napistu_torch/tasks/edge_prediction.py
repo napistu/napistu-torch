@@ -6,6 +6,11 @@ import torch
 import torch.nn as nn
 
 from napistu_torch.labels.create import _prepare_discrete_labels
+from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
+from napistu_torch.load.constants import (
+    STRATIFY_BY_ARTIFACT_NAMES,
+    VALID_STRATIFY_BY,
+)
 from napistu_torch.load.stratification import (
     ensure_strata_series,
     validate_edge_strata_alignment,
@@ -461,6 +466,14 @@ def get_edge_strata_from_artifacts(
     ... )
     """
     if stratify_by == "none":
+        return None
+
+    try:
+        stratify_by = ensure_stratify_by_artifact_name(stratify_by)
+    except ValueError:
+        logger.warning(
+            f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY} | {STRATIFY_BY_ARTIFACT_NAMES}"
+        )
         return None
 
     if stratify_by in artifacts:

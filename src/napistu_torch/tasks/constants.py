@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+# constants are imported into napistu_torch.constants so don't declare imports here to avoid circular imports
+
 TASKS = SimpleNamespace(
     EDGE_PREDICTION="edge_prediction",
     NETWORK_EMBEDDING="network_embedding",

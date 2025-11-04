@@ -1,14 +1,21 @@
 """Tests for artifact registry and creation functions."""
 
 import pandas as pd
+import pytest
 
 from napistu_torch.constants import ARTIFACT_TYPES
 from napistu_torch.load.artifacts import (
     DEFAULT_ARTIFACT_REGISTRY,
     create_artifact,
+    ensure_stratify_by_artifact_name,
     get_artifact_info,
     list_available_artifacts,
     validate_artifact_registry,
+)
+from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
+    STRATIFY_BY,
+    STRATIFY_BY_ARTIFACT_NAMES,
 )
 
 
@@ -64,3 +71,25 @@ def test_validate_default_artifact_registry():
     # Verify no duplicate names
     names = [defn.name for defn in DEFAULT_ARTIFACT_REGISTRY.values()]
     assert len(names) == len(set(names)), "Should have no duplicate artifact names"
+
+
+def test_ensure_stratify_by_artifact_name():
+    """Test ensure_stratify_by_artifact_name function."""
+    # Test with artifact name (should return as-is)
+    for artifact_name in STRATIFY_BY_ARTIFACT_NAMES:
+        result = ensure_stratify_by_artifact_name(artifact_name)
+        assert result == artifact_name
+
+    # Test with shorthand alias (should convert to artifact name)
+    assert (
+        ensure_stratify_by_artifact_name(STRATIFY_BY.NODE_SPECIES_TYPE)
+        == DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE
+    )
+    assert (
+        ensure_stratify_by_artifact_name(STRATIFY_BY.NODE_TYPE)
+        == DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE
+    )
+
+    # Test with invalid value (should raise ValueError)
+    with pytest.raises(ValueError, match="Invalid stratify_by value"):
+        ensure_stratify_by_artifact_name("invalid_value")

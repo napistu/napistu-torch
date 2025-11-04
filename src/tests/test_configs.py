@@ -13,6 +13,8 @@ from napistu_torch.configs import (
     TaskConfig,
     TrainingConfig,
     WandBConfig,
+    create_template_yaml,
+    task_config_to_artifact_names,
 )
 from napistu_torch.constants import (
     DATA_CONFIG,
@@ -26,9 +28,14 @@ from napistu_torch.constants import (
     VALID_SCHEDULERS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
+    WANDB_CONFIG_DEFAULTS,
     WANDB_MODES,
 )
-from napistu_torch.load.constants import DEFAULT_ARTIFACTS_NAMES, STRATIFY_BY
+from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
+    STRATIFY_BY,
+    STRATIFY_BY_ARTIFACT_NAMES,
+)
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
@@ -307,6 +314,30 @@ class TestTaskConfig:
         )
         assert config.metrics == [METRICS.AUC]
 
+    def test_task_config_to_artifact_names(self):
+        """Test task_config_to_artifact_names function."""
+        # Test edge_prediction with "none" stratify_by -> returns empty list
+        task_config = TaskConfig(
+            task=TASKS.EDGE_PREDICTION,
+            edge_prediction_neg_sampling_stratify_by="none",
+        )
+        artifacts = task_config_to_artifact_names(task_config)
+        assert artifacts == []
+
+        # Test edge_prediction with valid artifact name -> returns list with artifact
+        for artifact_name in STRATIFY_BY_ARTIFACT_NAMES:
+            task_config = TaskConfig(
+                task=TASKS.EDGE_PREDICTION,
+                edge_prediction_neg_sampling_stratify_by=artifact_name,
+            )
+            artifacts = task_config_to_artifact_names(task_config)
+            assert artifacts == [artifact_name]
+
+        # Test non-edge_prediction task -> returns empty list
+        task_config = TaskConfig(task=TASKS.NODE_CLASSIFICATION)
+        artifacts = task_config_to_artifact_names(task_config)
+        assert artifacts == []
+
 
 class TestTrainingConfig:
     """Test TrainingConfig class."""
@@ -387,21 +418,21 @@ class TestTrainingConfig:
         with pytest.raises(ValidationError):
             TrainingConfig(epochs=-1)  # Negative value
 
-    def test_batch_size_validation(self):
-        """Test batch size validation with valid and invalid values."""
+    def test_batches_per_epoch_validation(self):
+        """Test batches per epoch validation with valid and invalid values."""
         # Test valid values
-        valid_batch_sizes = [1, 16, 32, 64, 128]
-        for batch_size in valid_batch_sizes:
-            config = TrainingConfig(batch_size=batch_size)
-            assert hasattr(config, TRAINING_CONFIG.BATCH_SIZE)
-            assert config.batch_size == batch_size
+        valid_batches_per_epoch = [1, 16, 32, 64, 128]
+        for batches_per_epoch in valid_batches_per_epoch:
+            config = TrainingConfig(batches_per_epoch=batches_per_epoch)
+            assert hasattr(config, TRAINING_CONFIG.BATCHES_PER_EPOCH)
+            assert config.batches_per_epoch == batches_per_epoch
 
         # Test invalid values
         with pytest.raises(ValidationError):
-            TrainingConfig(batch_size=0)  # At minimum (should be > 0)
+            TrainingConfig(batches_per_epoch=0)  # At minimum (should be > 0)
 
         with pytest.raises(ValidationError):
-            TrainingConfig(batch_size=-1)  # Negative value
+            TrainingConfig(batches_per_epoch=-1)  # Negative value
 
     def test_precision_validation(self):
         """Test precision validation with valid and invalid values."""
@@ -422,7 +453,7 @@ class TestTrainingConfig:
         assert hasattr(config, TRAINING_CONFIG.OPTIMIZER)
         assert hasattr(config, TRAINING_CONFIG.SCHEDULER)
         assert hasattr(config, TRAINING_CONFIG.EPOCHS)
-        assert hasattr(config, TRAINING_CONFIG.BATCH_SIZE)
+        assert hasattr(config, TRAINING_CONFIG.BATCHES_PER_EPOCH)
         assert hasattr(config, TRAINING_CONFIG.ACCELERATOR)
         assert hasattr(config, TRAINING_CONFIG.DEVICES)
         assert hasattr(config, TRAINING_CONFIG.PRECISION)
@@ -441,7 +472,7 @@ class TestTrainingConfig:
             optimizer=OPTIMIZERS.ADAMW,
             scheduler=SCHEDULERS.PLATEAU,
             epochs=100,
-            batch_size=64,
+            batches_per_epoch=64,
             checkpoint_dir=custom_path,
         )
         assert config.lr == 0.01
@@ -449,7 +480,7 @@ class TestTrainingConfig:
         assert config.optimizer == OPTIMIZERS.ADAMW
         assert config.scheduler == SCHEDULERS.PLATEAU
         assert config.epochs == 100
-        assert config.batch_size == 64
+        assert config.batches_per_epoch == 64
         assert config.checkpoint_dir == custom_path
         assert isinstance(config.checkpoint_dir, Path)
 
@@ -726,3 +757,44 @@ class TestConfigIntegration:
             assert loaded_config.task.edge_prediction_neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"
+
+    def test_create_template_yaml(self):
+        """Test that create_template_yaml creates a valid YAML that can be loaded."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            template_path = Path(f.name)
+
+        # Create template with specific paths and name
+        sbml_path = Path("test_data/sbml_dfs.pkl")
+        graph_path = Path("test_data/napistu_graph.pkl")
+        experiment_name = "test_experiment"
+
+        create_template_yaml(
+            output_path=template_path,
+            sbml_dfs_path=sbml_path,
+            napistu_graph_path=graph_path,
+            name=experiment_name,
+        )
+
+        # Verify file was created
+        assert template_path.exists()
+
+        # Load the template using ExperimentConfig.from_yaml
+        loaded_config = ExperimentConfig.from_yaml(template_path)
+
+        # Verify the loaded config has the expected values
+        assert loaded_config.name == experiment_name
+        assert loaded_config.data.sbml_dfs_path == sbml_path
+        assert loaded_config.data.napistu_graph_path == graph_path
+
+        # Verify defaults are applied (not in template)
+        assert isinstance(loaded_config.model, ModelConfig)
+        assert isinstance(loaded_config.task, TaskConfig)
+        assert isinstance(loaded_config.training, TrainingConfig)
+        assert isinstance(loaded_config.wandb, WandBConfig)
+
+        # Verify wandb fields from template
+        assert loaded_config.wandb.group == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
+        assert loaded_config.wandb.tags == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS]
+
+        # Clean up
+        template_path.unlink()
