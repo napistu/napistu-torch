@@ -173,9 +173,7 @@ def create_template_yaml_cmd(
             name=name,
         )
         click.echo(f"✓ Template created at: {output_path}")
-        click.echo(
-            "  You can now edit this file and use it with 'napistu-torch train'"
-        )
+        click.echo("  You can now edit this file and use it with 'napistu-torch train'")
     except Exception as e:
         click.echo(f"✗ Failed to create template: {e}", err=True)
         sys.exit(1)
