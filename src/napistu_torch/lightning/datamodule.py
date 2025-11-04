@@ -12,8 +12,16 @@ from typing import Dict, List, Optional
 import pytorch_lightning as pl
 from torch.utils.data import DataLoader
 
-from napistu_torch.configs import DataConfig, TaskConfig, task_config_to_artifact_names
-from napistu_torch.constants import ARTIFACT_TYPES
+from napistu_torch.configs import (
+    ExperimentConfig,
+    config_to_data_trimming_spec,
+    task_config_to_artifact_names,
+)
+from napistu_torch.constants import (
+    ARTIFACT_TYPES,
+    DATA_CONFIG,
+    NAPISTU_DATA_TRIM_ARGS,
+)
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
@@ -43,10 +51,8 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
 
     Parameters
     ----------
-    config : DataConfig
-        Pydantic data configuration
-    task_config : Optional[TaskConfig]
-        Pydantic task configuration
+    config : ExperimentConfig
+        Pydantic experiment configuration containing data, model, task, and training configs
     napistu_data_name : Optional[str]
         Name of the NapistuData artifact to use for training
     other_artifacts : Optional[List[str]]
@@ -63,8 +69,7 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
 
     def __init__(
         self,
-        config: DataConfig,
-        task_config: Optional[TaskConfig] = None,
+        config: ExperimentConfig,
         napistu_data_name: Optional[str] = None,
         other_artifacts: Optional[List[str]] = None,
         napistu_data: Optional[NapistuData] = None,
@@ -75,21 +80,23 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
         overwrite_artifacts: bool = False,
     ):
         super().__init__()
-        self.config = config
 
-        # ... ALL YOUR EXISTING __init__ CODE ...
-        # (Keep everything exactly as is - this is the shared infrastructure)
+        # Ensure config is an ExperimentConfig instance
+        if not isinstance(config, ExperimentConfig):
+            raise TypeError(
+                f"config must be an ExperimentConfig instance, got {type(config)}"
+            )
+        self.config = config
 
         # Use DataConfig values if not provided explicitly
         if napistu_data_name is None:
-            napistu_data_name = config.napistu_data_name
+            napistu_data_name = getattr(config.data, DATA_CONFIG.NAPISTU_DATA_NAME)
         if other_artifacts is None:
-            other_artifacts = config.other_artifacts
+            other_artifacts = getattr(config.data, DATA_CONFIG.OTHER_ARTIFACTS)
 
         # Add additional artifacts required by the task
-        if task_config is not None:
-            task_artifacts = task_config_to_artifact_names(task_config)
-            other_artifacts = list(set(other_artifacts) | set(task_artifacts))
+        task_artifacts = task_config_to_artifact_names(config.task)
+        other_artifacts = list(set(other_artifacts) | set(task_artifacts))
 
         # Create or load the store from config
         if store is None:
@@ -98,7 +105,9 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
                 logger.info("Creating/loading store from config")
                 ensure_artifacts = (napistu_data is None) or (len(other_artifacts) > 0)
                 napistu_data_store = NapistuDataStore.from_config(
-                    config, task_config=task_config, ensure_artifacts=ensure_artifacts
+                    config.data,
+                    task_config=config.task,
+                    ensure_artifacts=ensure_artifacts,
                 )
             else:
                 logger.info(
@@ -136,7 +145,19 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
         # Load napistu_data from store if not provided directly
         if napistu_data is None:
             logger.info(f"Loading napistu_data '{napistu_data_name}' from store")
-            self.napistu_data = napistu_data_store.load_napistu_data(napistu_data_name)
+            napistu_data = napistu_data_store.load_napistu_data(napistu_data_name)
+
+            # filter to just the required attributes (ignored if side-loading NapistuData)
+            data_trimming_spec = config_to_data_trimming_spec(config)
+            napistu_data.trim(
+                keep_edge_attr=data_trimming_spec[
+                    NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR
+                ],
+                keep_labels=data_trimming_spec[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS],
+                keep_masks=data_trimming_spec[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS],
+                inplace=True,
+            )
+            self.napistu_data = napistu_data
 
         # Load other artifacts
         self.other_artifacts = {}

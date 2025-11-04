@@ -775,6 +775,8 @@ class NapistuData(Data):
         new_attrs = {
             NAPISTU_DATA.X: self.x,
             NAPISTU_DATA.EDGE_INDEX: self.edge_index,
+            # edge_attr is always included to satisfy NapistuData.__init__ requirements
+            # If keep_edge_attr=False, use empty tensor (saves memory while keeping API compatibility)
             NAPISTU_DATA.EDGE_ATTR: (
                 self.edge_attr if keep_edge_attr else torch.empty((self.num_edges, 0))
             ),
@@ -802,7 +804,11 @@ class NapistuData(Data):
                         new_attrs[mask_name] = mask
 
         if inplace:
-            self = NapistuData(**new_attrs)
+            # Modify the object in place by clearing all attributes and setting new ones
+            for key in list(self.keys()):
+                delattr(self, key)
+            for key, value in new_attrs.items():
+                setattr(self, key, value)
             return None
         else:
             return NapistuData(**new_attrs)

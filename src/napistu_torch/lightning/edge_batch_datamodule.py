@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 import torch
 from torch.utils.data import DataLoader
 
-from napistu_torch.configs import DataConfig, TaskConfig
+from napistu_torch.configs import ExperimentConfig
 from napistu_torch.data.data_utils import create_single_graph_dataloader
 from napistu_torch.data.dataset import EdgeBatchDataset, SingleGraphDataset
 from napistu_torch.lightning.datamodule import NapistuDataModule
@@ -31,10 +31,9 @@ class EdgeBatchDataModule(NapistuDataModule):
 
     def __init__(
         self,
-        config: DataConfig,
-        batches_per_epoch: int = 10,
+        config: ExperimentConfig,
+        batches_per_epoch: Optional[int] = None,
         shuffle: bool = True,
-        task_config: Optional[TaskConfig] = None,
         napistu_data_name: Optional[str] = None,
         other_artifacts: Optional[List[str]] = None,
         napistu_data: Optional[NapistuData] = None,
@@ -49,14 +48,12 @@ class EdgeBatchDataModule(NapistuDataModule):
 
         Parameters
         ----------
-        config : DataConfig
-            Pydantic data configuration
-        batches_per_epoch : int
-            Number of mini-batches per epoch. Default is 10.
+        config : ExperimentConfig
+            Pydantic experiment configuration
+        batches_per_epoch : Optional[int]
+            Number of mini-batches per epoch. If None, uses config.training.batches_per_epoch
         shuffle : bool
             Whether to shuffle mini-batch order. Default True.
-        task_config : Optional[TaskConfig]
-            Pydantic task configuration
         napistu_data_name : Optional[str]
             Name of the NapistuData artifact to use
         other_artifacts : Optional[List[str]]
@@ -72,7 +69,6 @@ class EdgeBatchDataModule(NapistuDataModule):
         """
         super().__init__(
             config=config,
-            task_config=task_config,
             napistu_data_name=napistu_data_name,
             other_artifacts=other_artifacts,
             napistu_data=napistu_data,
@@ -81,7 +77,11 @@ class EdgeBatchDataModule(NapistuDataModule):
             overwrite_artifacts=overwrite_artifacts,
         )
 
-        self.batches_per_epoch = batches_per_epoch
+        self.batches_per_epoch = (
+            batches_per_epoch
+            if batches_per_epoch is not None
+            else self.config.training.batches_per_epoch
+        )
         self.shuffle = shuffle
 
         # Validate transductive split

@@ -18,6 +18,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from napistu_torch.configs import (
     DataConfig,
     ExperimentConfig,
+    TaskConfig,
 )
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.load.constants import (
@@ -235,6 +236,7 @@ def experiment_config():
             napistu_graph_path=Path("stub_graph.pkl"),
             napistu_data_name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
         ),
+        task=TaskConfig(edge_prediction_neg_sampling_stratify_by="none"),
     )
 
 
