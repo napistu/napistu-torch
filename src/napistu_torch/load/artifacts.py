@@ -35,6 +35,9 @@ from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
     STRATIFY_BY,
+    STRATIFY_BY_ARTIFACT_NAMES,
+    STRATIFY_BY_TO_ARTIFACT_NAMES,
+    VALID_STRATIFY_BY,
 )
 from napistu_torch.load.napistu_graphs import (
     construct_unlabeled_napistu_data,
@@ -132,6 +135,35 @@ def create_artifact(
         args_dict["napistu_graph"] = napistu_graph
 
     return definition.creation_func(**args_dict)
+
+
+def ensure_stratify_by_artifact_name(stratify_by: str) -> str:
+    """
+    Ensure the stratify_by value is an artifact name.
+
+    This supports naming either by short-hand alias or the full artifact name.
+
+    Parameters
+    ----------
+    stratify_by : str
+        Stratify by value
+
+    Returns
+    -------
+    str
+        Artifact name
+
+    Raises
+    ------
+    ValueError
+        If invalid stratify_by value
+    """
+    if stratify_by in STRATIFY_BY_ARTIFACT_NAMES:
+        return stratify_by
+    elif stratify_by in STRATIFY_BY_TO_ARTIFACT_NAMES:
+        return STRATIFY_BY_TO_ARTIFACT_NAMES[stratify_by]
+    else:
+        raise ValueError(f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY} | {STRATIFY_BY_ARTIFACT_NAMES}")
 
 
 def get_artifact_info(

@@ -7,12 +7,14 @@ import pytest
 from pydantic import ValidationError
 
 from napistu_torch.configs import (
+    create_template_yaml,
     DataConfig,
     ExperimentConfig,
     ModelConfig,
     TaskConfig,
     TrainingConfig,
     WandBConfig,
+    task_config_to_artifact_names,
 )
 from napistu_torch.constants import (
     DATA_CONFIG,
@@ -26,9 +28,14 @@ from napistu_torch.constants import (
     VALID_SCHEDULERS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
+    WANDB_CONFIG_DEFAULTS,
     WANDB_MODES,
 )
-from napistu_torch.load.constants import DEFAULT_ARTIFACTS_NAMES, STRATIFY_BY
+from napistu_torch.load.constants import (
+    DEFAULT_ARTIFACTS_NAMES,
+    STRATIFY_BY,
+    STRATIFY_BY_ARTIFACT_NAMES,
+)
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
@@ -306,6 +313,30 @@ class TestTaskConfig:
             == NEGATIVE_SAMPLING_STRATEGIES.UNIFORM
         )
         assert config.metrics == [METRICS.AUC]
+
+    def test_task_config_to_artifact_names(self):
+        """Test task_config_to_artifact_names function."""
+        # Test edge_prediction with "none" stratify_by -> returns empty list
+        task_config = TaskConfig(
+            task=TASKS.EDGE_PREDICTION,
+            edge_prediction_neg_sampling_stratify_by="none",
+        )
+        artifacts = task_config_to_artifact_names(task_config)
+        assert artifacts == []
+
+        # Test edge_prediction with valid artifact name -> returns list with artifact
+        for artifact_name in STRATIFY_BY_ARTIFACT_NAMES:
+            task_config = TaskConfig(
+                task=TASKS.EDGE_PREDICTION,
+                edge_prediction_neg_sampling_stratify_by=artifact_name,
+            )
+            artifacts = task_config_to_artifact_names(task_config)
+            assert artifacts == [artifact_name]
+
+        # Test non-edge_prediction task -> returns empty list
+        task_config = TaskConfig(task=TASKS.NODE_CLASSIFICATION)
+        artifacts = task_config_to_artifact_names(task_config)
+        assert artifacts == []
 
 
 class TestTrainingConfig:
@@ -726,3 +757,44 @@ class TestConfigIntegration:
             assert loaded_config.task.edge_prediction_neg_sampling_ratio == 3.0
             assert loaded_config.training.lr == 0.005
             assert loaded_config.wandb.project == "roundtrip-project"
+
+    def test_create_template_yaml(self):
+        """Test that create_template_yaml creates a valid YAML that can be loaded."""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            template_path = Path(f.name)
+        
+        # Create template with specific paths and name
+        sbml_path = Path("test_data/sbml_dfs.pkl")
+        graph_path = Path("test_data/napistu_graph.pkl")
+        experiment_name = "test_experiment"
+        
+        create_template_yaml(
+            output_path=template_path,
+            sbml_dfs_path=sbml_path,
+            napistu_graph_path=graph_path,
+            name=experiment_name,
+        )
+        
+        # Verify file was created
+        assert template_path.exists()
+        
+        # Load the template using ExperimentConfig.from_yaml
+        loaded_config = ExperimentConfig.from_yaml(template_path)
+        
+        # Verify the loaded config has the expected values
+        assert loaded_config.name == experiment_name
+        assert loaded_config.data.sbml_dfs_path == sbml_path
+        assert loaded_config.data.napistu_graph_path == graph_path
+        
+        # Verify defaults are applied (not in template)
+        assert isinstance(loaded_config.model, ModelConfig)
+        assert isinstance(loaded_config.task, TaskConfig)
+        assert isinstance(loaded_config.training, TrainingConfig)
+        assert isinstance(loaded_config.wandb, WandBConfig)
+        
+        # Verify wandb fields from template
+        assert loaded_config.wandb.group == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
+        assert loaded_config.wandb.tags == WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS]
+        
+        # Clean up
+        template_path.unlink()

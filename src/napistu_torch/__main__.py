@@ -13,6 +13,7 @@ from napistu_torch._cli import (
     setup_logging,
     verbosity_option,
 )
+from napistu_torch.configs import create_template_yaml
 from napistu_torch.lightning.workflows import fit_model, prepare_experiment
 
 
@@ -116,6 +117,65 @@ def train(
         sys.exit(130)
     except Exception as e:
         logger.exception(f"Training failed with unexpected error: {e}")
+        sys.exit(1)
+
+
+@cli.group()
+def utils():
+    """Utility commands for Napistu-Torch"""
+    pass
+
+
+@utils.command("create-template-yaml")
+@click.argument("output_path", type=click.Path(path_type=Path))
+@click.option(
+    "--sbml-dfs-path",
+    type=click.Path(path_type=Path),
+    help="Path to SBML_dfs pickle file (default: placeholder)",
+)
+@click.option(
+    "--napistu-graph-path",
+    type=click.Path(path_type=Path),
+    help="Path to NapistuGraph pickle file (default: placeholder)",
+)
+@click.option(
+    "--name",
+    type=str,
+    help="Experiment name (default: omitted)",
+)
+def create_template_yaml_cmd(
+    output_path: Path,
+    sbml_dfs_path: Optional[Path],
+    napistu_graph_path: Optional[Path],
+    name: Optional[str],
+):
+    """
+    Create a minimal YAML template file for experiment configuration.
+
+    OUTPUT_PATH: Path where the YAML template file will be written
+
+    \b
+    Examples:
+        # Create template with placeholder paths
+        $ napistu-torch utils create-template-yaml config.yaml
+
+        # Create template with specific paths
+        $ napistu-torch utils create-template-yaml config.yaml \\
+            --sbml-dfs-path data/sbml_dfs.pkl \\
+            --napistu-graph-path data/graph.pkl \\
+            --name my_experiment
+    """
+    try:
+        create_template_yaml(
+            output_path=output_path,
+            sbml_dfs_path=sbml_dfs_path,
+            napistu_graph_path=napistu_graph_path,
+            name=name,
+        )
+        click.echo(f"✓ Template created at: {output_path}")
+        click.echo(f"  You can now edit this file and use it with 'napistu-torch train'")
+    except Exception as e:
+        click.echo(f"✗ Failed to create template: {e}", err=True)
         sys.exit(1)
 
 

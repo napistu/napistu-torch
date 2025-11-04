@@ -4,20 +4,27 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.constants import (
+    DATA_CONFIG,
+    DATA_CONFIG_DEFAULTS,
+    EXPERIMENT_CONFIG,
+    EXPERIMENT_CONFIG_DEFAULTS,
     METRICS,
+    MODEL_CONFIG,
+    MODEL_CONFIG_DEFAULTS,
     OPTIMIZERS,
     TASK_CONFIG,
+    TASK_CONFIG_DEFAULTS,
     TRAINING_CONFIG,
+    TRAINING_CONFIG_DEFAULTS,
     VALID_OPTIMIZERS,
     VALID_SCHEDULERS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
+    WANDB_CONFIG_DEFAULTS,
 )
-from napistu_torch.load.constants import STRATIFY_BY_ARTIFACT_NAMES
+from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
-    ENCODERS,
-    HEADS,
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
@@ -31,11 +38,11 @@ from napistu_torch.tasks.constants import (
 class ModelConfig(BaseModel):
     """Model architecture configuration"""
 
-    encoder: str = Field(default=ENCODERS.SAGE)
+    encoder: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER])
     hidden_channels: int = Field(default=128, gt=0)
     num_layers: int = Field(default=3, ge=1, le=10)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
-    head: str = Field(default=HEADS.DOT_PRODUCT)
+    head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
 
     # Model-specific fields (optional, with defaults)
     gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
@@ -58,7 +65,7 @@ class ModelConfig(BaseModel):
     )  # For node classification head
 
     # Edge encoder fields (optional, with defaults)
-    use_edge_encoder: Optional[bool] = False  # Whether to use edge encoder
+    use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.USE_EDGE_ENCODER]  # Whether to use edge encoder
     edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
     edge_encoder_dropout: Optional[float] = Field(
         default=0.1, ge=0.0, lt=1.0
@@ -98,7 +105,7 @@ class DataConfig(BaseModel):
     name: str = "default"
 
     # config for defining the NapistuDataStore
-    store_dir: Path = Field(default=Path(".store"))
+    store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
     sbml_dfs_path: Path = Field()
     napistu_graph_path: Path = Field()
     copy_to_store: bool = Field(default=False)
@@ -106,7 +113,7 @@ class DataConfig(BaseModel):
 
     # named artifacts which are needed for the experiment
     napistu_data_name: str = Field(
-        default="edge_prediction",
+        default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.NAPISTU_DATA_NAME],
         description="Name of the NapistuData artifact to use for training.",
     )
     other_artifacts: List[str] = Field(
@@ -121,12 +128,12 @@ class DataConfig(BaseModel):
 class TaskConfig(BaseModel):
     """Task-specific configuration"""
 
-    task: str = Field(default=TASKS.EDGE_PREDICTION)
+    task: str = Field(default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.TASK])
     metrics: List[str] = Field(default_factory=lambda: [METRICS.AUC, METRICS.AP])
 
     edge_prediction_neg_sampling_ratio: float = Field(default=1.0, gt=0.0)
-    edge_prediction_neg_sampling_stratify_by: str = Field(default="none")
-    edge_prediction_neg_sampling_strategy: str = Field(default="degree_weighted")
+    edge_prediction_neg_sampling_stratify_by: str = Field(default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATIFY_BY])
+    edge_prediction_neg_sampling_strategy: str = Field(default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY])
 
     @field_validator(TASK_CONFIG.TASK)
     @classmethod
@@ -160,7 +167,7 @@ class TrainingConfig(BaseModel):
     early_stopping_patience: int = 20
     early_stopping_metric: str = "val_auc"
 
-    checkpoint_dir: Path = Field(default=Path("checkpoints"))
+    checkpoint_dir: Path = Field(default=Path(TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_DIR]), description="Directory to save checkpoints.")
     save_checkpoints: bool = True
     checkpoint_metric: str = "val_auc"
 
@@ -189,13 +196,13 @@ class TrainingConfig(BaseModel):
 class WandBConfig(BaseModel):
     """Weights & Biases configuration"""
 
-    project: str = "napistu-experiments"
+    project: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.PROJECT]
     entity: Optional[str] = None
-    group: Optional[str] = "baseline"
-    tags: List[str] = Field(default_factory=lambda: ["gnn", "pytorch-lightning"])
-    save_dir: Path = Field(default=Path("./wandb"))
-    log_model: bool = False
-    mode: str = Field(default="online")
+    group: Optional[str] = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
+    tags: List[str] = Field(default_factory=lambda: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS])
+    save_dir: Path = Field(default=WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.SAVE_DIR])
+    log_model: bool = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.LOG_MODEL]
+    mode: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.MODE]
 
     @field_validator(WANDB_CONFIG.MODE)
     @classmethod
@@ -233,8 +240,8 @@ class ExperimentConfig(BaseModel):
     """Top-level experiment configuration"""
 
     # Experiment metadata
-    name: Optional[str] = None
-    seed: int = 42
+    name: Optional[str] = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
+    seed: int = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.SEED]
     deterministic: bool = True
 
     # Component configs
@@ -302,9 +309,9 @@ class ExperimentConfig(BaseModel):
             elif isinstance(obj, list):
                 return [convert_strings_to_paths(item) for item in obj]
             elif isinstance(obj, str) and key in [
-                "store_dir",
-                "checkpoint_dir",
-                "save_dir",
+                DATA_CONFIG.STORE_DIR,
+                TRAINING_CONFIG.CHECKPOINT_DIR,
+                WANDB_CONFIG.SAVE_DIR,
             ]:
                 return Path(obj)
             else:
@@ -315,8 +322,84 @@ class ExperimentConfig(BaseModel):
 
         return cls(**data)
 
-
 # Public functions for working with configs
+
+def create_template_yaml(
+    output_path: Path,
+    sbml_dfs_path: Optional[Path] = None,
+    napistu_graph_path: Optional[Path] = None,
+    name: Optional[str] = None,
+) -> None:
+    """
+    Create a minimal YAML template file for experiment configuration.
+    
+    This creates a clean, minimal YAML file with only:
+    - Required data paths (sbml_dfs_path, napistu_graph_path)
+    - Experiment metadata (name)
+    - Common configuration options (without default values)
+    
+    Users can then customize this template without all the default values cluttering the file.
+    
+    Parameters
+    ----------
+    output_path : Path
+        Path where the YAML template file will be written
+    sbml_dfs_path : Optional[Path], default=None
+        Path to the SBML_dfs pickle file. If None, uses a placeholder.
+    napistu_graph_path : Optional[Path], default=None
+        Path to the NapistuGraph pickle file. If None, uses a placeholder.
+    name : Optional[str], default=None
+        Experiment name. If None, omits the name field.
+    
+    Examples
+    --------
+    >>> from pathlib import Path
+    >>> from napistu_torch.configs import create_template_yaml
+    >>> 
+    >>> # Create template with placeholder paths
+    >>> create_template_yaml(
+    ...     output_path=Path("config.yaml"),
+    ...     sbml_dfs_path=Path("data/sbml_dfs.pkl"),
+    ...     napistu_graph_path=Path("data/graph.pkl"),
+    ...     name="my_experiment"
+    ... )
+    """
+    import yaml
+    
+    # Build minimal template dict - only required fields and commonly customized ones
+    template = {}
+    
+    template[EXPERIMENT_CONFIG.NAME] = name if name else EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
+    template[EXPERIMENT_CONFIG.SEED] = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.SEED]
+
+    template[EXPERIMENT_CONFIG.MODEL] = {
+        MODEL_CONFIG.ENCODER: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER],
+        MODEL_CONFIG.HEAD: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD],
+        MODEL_CONFIG.USE_EDGE_ENCODER: MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.USE_EDGE_ENCODER],
+    }
+
+    template[EXPERIMENT_CONFIG.TASK] = {
+        TASK_CONFIG.TASK: TASK_CONFIG_DEFAULTS[TASK_CONFIG.TASK],
+    }
+
+    template[EXPERIMENT_CONFIG.DATA] = {
+        DATA_CONFIG.SBML_DFS_PATH: str(sbml_dfs_path) if sbml_dfs_path else "path/to/sbml_dfs.pkl",
+        DATA_CONFIG.NAPISTU_GRAPH_PATH: str(napistu_graph_path) if napistu_graph_path else "path/to/napistu_graph.pkl",
+        DATA_CONFIG.NAPISTU_DATA_NAME: DATA_CONFIG_DEFAULTS[DATA_CONFIG.NAPISTU_DATA_NAME],
+    }
+    
+    template[EXPERIMENT_CONFIG.WANDB] = {
+        WANDB_CONFIG.GROUP: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP],
+        WANDB_CONFIG.TAGS: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS],
+    }    
+    # Include empty/minimal sections for training and wandb
+    template[EXPERIMENT_CONFIG.TRAINING] = {}
+    
+    
+    # Write YAML file
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        yaml.dump(template, f, default_flow_style=False, sort_keys=False)
 
 
 def task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
@@ -349,21 +432,14 @@ def task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
     else:
         return []
 
-
 # Private functions for working with configs
-
 
 def _task_config_to_artifact_names_edge_prediction(
     task_config: TaskConfig,
 ) -> List[str]:
     """Convert a TaskConfig to a list of artifact names for edge prediction."""
-    ALL_VALID = {"none"} | STRATIFY_BY_ARTIFACT_NAMES
-    if task_config.edge_prediction_neg_sampling_stratify_by not in ALL_VALID:
-        raise ValueError(
-            f"Invalid stratify_by value: {task_config.edge_prediction_neg_sampling_stratify_by}. "
-            f"Must be one of: {ALL_VALID}"
-        )
     if task_config.edge_prediction_neg_sampling_stratify_by == "none":
         return []
     else:
-        return [task_config.edge_prediction_neg_sampling_stratify_by]
+        # validate the value and return the artifact name
+        return [ensure_stratify_by_artifact_name(task_config.edge_prediction_neg_sampling_stratify_by)]

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import pytorch_lightning as pl
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from napistu_torch.configs import ExperimentConfig
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
@@ -76,11 +76,10 @@ class ExperimentDict(BaseModel):
             )
         return v
 
-    class Config:
-        """Pydantic configuration."""
-
-        arbitrary_types_allowed = True
-        extra = "forbid"
+    model_config = ConfigDict(
+        arbitrary_types_allowed=True,
+        extra="forbid",
+    )
 
 
 def fit_model(
