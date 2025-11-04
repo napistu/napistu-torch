@@ -170,16 +170,23 @@ def test_edge_prediction_with_edge_encoder(edge_masked_napistu_data, experiment_
     assert "auc" in metrics
     assert "ap" in metrics
 
-    # Verify edge encoder was created and integrated
-    assert task.edge_encoder is not None
-    assert task.edge_encoder.edge_dim == 10
-    assert task.edge_encoder.hidden_dim == 16
+    # Verify edge encoder was created and integrated in the encoder
+    from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
+
+    assert hasattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)
+    assert (
+        getattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)
+        == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
+    )
+    assert hasattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+    edge_encoder = getattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+    assert edge_encoder is not None
+    assert edge_encoder.edge_dim == 10
+    assert edge_encoder.hidden_dim == 16
 
     # Verify edge encoder is properly integrated into the MessagePassingEncoder
-    assert hasattr(encoder, "edge_encoder")
-    assert encoder.edge_encoder is not None
-    assert encoder.weight_edges_by is not None
-    assert encoder.weight_edges_by is encoder.edge_encoder
+    # The edge encoder is stored in edge_weighting_value when type is LEARNED_ENCODER
+    assert edge_encoder is getattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
 
     # Verify that the encoder uses the edge encoder during forward pass
     # by checking that it requires edge_data when edge encoder is present

@@ -33,6 +33,9 @@ VALID_ENCODER_NAMED_ARGS = list(ENCODER_SPECIFIC_ARGS.__dict__.values())
 ENCODER_DEFS = SimpleNamespace(
     GRAPH_CONV_DEFAULT_AGGREGATOR="mean",
     SAGE_DEFAULT_AGGREGATOR="mean",
+    # derived encoder attributes
+    EDGE_WEIGHTING_TYPE="edge_weighting_type",
+    EDGE_WEIGHTING_VALUE="edge_weighting_value",
 )
 
 # select the relevant arguments and convert from the {encoder}_{arg} convention back to just arg
@@ -71,4 +74,10 @@ EDGE_ENCODER_ARGS = SimpleNamespace(
     EDGE_IN_CHANNELS="edge_in_channels",
     EDGE_ENCODER_DIM="edge_encoder_dim",
     EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
+)
+
+EDGE_WEIGHTING_TYPE = SimpleNamespace(
+    NONE="none",
+    STATIC_WEIGHTS="static_weights",
+    LEARNED_ENCODER="learned_encoder",
 )
