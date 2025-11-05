@@ -19,8 +19,10 @@ from napistu_torch.configs import (
     DataConfig,
     ExperimentConfig,
     TaskConfig,
+    WandBConfig,
 )
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
+from napistu_torch.lightning.workflows import prepare_experiment
 from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
     ENCODING_MANAGER,
@@ -318,3 +320,38 @@ def edge_strata(napistu_graph) -> pd.DataFrame:
         napistu_graph, stratify_by=STRATIFY_BY.NODE_TYPE
     )
     return strata_series.to_frame("edge_strata")
+
+
+@pytest.fixture
+def experiment_dict(temp_data_config_with_store):
+    """Create a complete experiment_dict using prepare_experiment.
+
+    This fixture uses prepare_experiment to create a fully configured
+    experiment_dict that can be validated and used in tests. It requires
+    a real NapistuDataStore with data, so it depends on temp_data_config_with_store.
+
+    Returns
+    -------
+    dict
+        Experiment dictionary containing:
+        - data_module: FullGraphDataModule or EdgeBatchDataModule
+        - model: EdgePredictionLightning
+        - trainer: NapistuTrainer
+        - run_manifest: RunManifest
+        - wandb_logger: WandbLogger
+    """
+    # Create an experiment config using the temp store
+    experiment_config = ExperimentConfig(
+        name="test_experiment",
+        seed=42,
+        deterministic=True,
+        fast_dev_run=True,
+        data=temp_data_config_with_store,
+        task=TaskConfig(edge_prediction_neg_sampling_stratify_by="none"),
+        wandb=WandBConfig(mode="disabled"),  # Disable wandb for testing
+    )
+
+    # Use prepare_experiment to create the full experiment_dict
+    experiment_dict = prepare_experiment(experiment_config)
+
+    return experiment_dict

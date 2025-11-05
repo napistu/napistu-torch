@@ -10,6 +10,7 @@ from napistu_torch.configs import (
     DataConfig,
     ExperimentConfig,
     ModelConfig,
+    RunManifest,
     TaskConfig,
     TrainingConfig,
     WandBConfig,
@@ -33,6 +34,7 @@ from napistu_torch.constants import (
     WANDB_CONFIG_DEFAULTS,
     WANDB_MODES,
 )
+from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
     STRATIFY_BY,
@@ -462,12 +464,11 @@ class TestTrainingConfig:
         assert hasattr(config, TRAINING_CONFIG.EARLY_STOPPING)
         assert hasattr(config, TRAINING_CONFIG.EARLY_STOPPING_PATIENCE)
         assert hasattr(config, TRAINING_CONFIG.EARLY_STOPPING_METRIC)
-        assert hasattr(config, TRAINING_CONFIG.CHECKPOINT_DIR)
+        assert hasattr(config, TRAINING_CONFIG.CHECKPOINT_SUBDIR)
         assert hasattr(config, TRAINING_CONFIG.SAVE_CHECKPOINTS)
         assert hasattr(config, TRAINING_CONFIG.CHECKPOINT_METRIC)
 
         # Test that they can be customized
-        custom_path = Path("/custom/checkpoints")
         config = TrainingConfig(
             lr=0.01,
             weight_decay=0.001,
@@ -475,7 +476,7 @@ class TestTrainingConfig:
             scheduler=SCHEDULERS.PLATEAU,
             epochs=100,
             batches_per_epoch=64,
-            checkpoint_dir=custom_path,
+            checkpoint_subdir="custom_checkpoints",
         )
         assert config.lr == 0.01
         assert config.weight_decay == 0.001
@@ -483,8 +484,20 @@ class TestTrainingConfig:
         assert config.scheduler == SCHEDULERS.PLATEAU
         assert config.epochs == 100
         assert config.batches_per_epoch == 64
-        assert config.checkpoint_dir == custom_path
-        assert isinstance(config.checkpoint_dir, Path)
+        assert config.checkpoint_subdir == "custom_checkpoints"
+
+    def test_get_checkpoint_dir(self):
+        """Test get_checkpoint_dir method."""
+        config = TrainingConfig(checkpoint_subdir="my_checkpoints")
+        output_dir = Path("/output")
+        checkpoint_dir = config.get_checkpoint_dir(output_dir)
+        assert checkpoint_dir == Path("/output/my_checkpoints")
+        assert isinstance(checkpoint_dir, Path)
+
+        # Test with default subdir
+        config = TrainingConfig()
+        checkpoint_dir = config.get_checkpoint_dir(output_dir)
+        assert checkpoint_dir == Path("/output/checkpoints")
 
 
 class TestWandBConfig:
@@ -512,29 +525,55 @@ class TestWandBConfig:
         assert hasattr(config, WANDB_CONFIG.ENTITY)
         assert hasattr(config, WANDB_CONFIG.GROUP)
         assert hasattr(config, WANDB_CONFIG.TAGS)
-        assert hasattr(config, WANDB_CONFIG.SAVE_DIR)
         assert hasattr(config, WANDB_CONFIG.LOG_MODEL)
         assert hasattr(config, WANDB_CONFIG.MODE)
+        assert hasattr(config, WANDB_CONFIG.WANDB_SUBDIR)
 
         # Test that they can be customized
-        custom_path = Path("/custom/wandb")
         config = WandBConfig(
             project="my-project",
             entity="my-entity",
             group="my-group",
             tags=["tag1", "tag2"],
-            save_dir=custom_path,
             log_model=True,
             mode=WANDB_MODES.OFFLINE,
+            wandb_subdir="my_wandb",
         )
         assert config.project == "my-project"
         assert config.entity == "my-entity"
         assert config.group == "my-group"
         assert config.tags == ["tag1", "tag2"]
-        assert config.save_dir == custom_path
-        assert isinstance(config.save_dir, Path)
         assert config.log_model is True
         assert config.mode == WANDB_MODES.OFFLINE
+        assert config.wandb_subdir == "my_wandb"
+
+    def test_get_save_dir(self):
+        """Test get_save_dir method."""
+        config = WandBConfig(wandb_subdir="my_wandb")
+        output_dir = Path("/output")
+        save_dir = config.get_save_dir(output_dir)
+        assert save_dir == Path("/output/my_wandb")
+        assert isinstance(save_dir, Path)
+
+        # Test with default subdir
+        config = WandBConfig()
+        save_dir = config.get_save_dir(output_dir)
+        assert save_dir == Path("/output/wandb")
+
+    def test_get_enhanced_tags(self):
+        """Test get_enhanced_tags method."""
+        config = WandBConfig(tags=["base_tag"])
+        model_config = ModelConfig(
+            encoder=ENCODERS.GAT, hidden_channels=256, num_layers=3
+        )
+        task_config = TaskConfig(task=TASKS.EDGE_PREDICTION)
+
+        enhanced_tags = config.get_enhanced_tags(model_config, task_config)
+        assert "base_tag" in enhanced_tags
+        assert ENCODERS.GAT in enhanced_tags
+        assert TASKS.EDGE_PREDICTION in enhanced_tags
+        assert "hidden_256" in enhanced_tags
+        assert "layers_3" in enhanced_tags
 
 
 class TestExperimentConfig:
@@ -621,6 +660,24 @@ class TestExperimentConfig:
             assert loaded_config.seed == 123
             assert isinstance(loaded_config.model, ModelConfig)
             assert isinstance(loaded_config.data, DataConfig)
+
+    def test_get_experiment_name(self, stubbed_data_config):
+        """Test get_experiment_name method."""
+        config = ExperimentConfig(
+            data=stubbed_data_config,
+            model=ModelConfig(encoder=ENCODERS.GAT, hidden_channels=128, num_layers=3),
+            task=TaskConfig(task=TASKS.EDGE_PREDICTION),
+        )
+
+        experiment_name = config.get_experiment_name()
+        assert experiment_name == "gat_h128_l3_edge_prediction"
+
+        # Test with different values
+        config.model.hidden_channels = 256
+        config.model.num_layers = 5
+        config.task.task = TASKS.NODE_CLASSIFICATION
+        experiment_name = config.get_experiment_name()
+        assert experiment_name == "gat_h256_l5_node_classification"
 
     def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""
@@ -836,3 +893,49 @@ def test_config_to_data_trimming_spec(stubbed_data_config):
     assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR] is True
     assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS] is False
     assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS] is True
+
+
+def test_run_manifest_round_trip(experiment_dict):
+    """Test that RunManifest can be saved to YAML and loaded back with all fields preserved."""
+    # Get the run_manifest from experiment_dict
+    original_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
+
+    # Save to temporary file
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        temp_path = Path(f.name)
+
+    try:
+        # Save the manifest
+        original_manifest.to_yaml(temp_path)
+
+        # Verify file was created
+        assert temp_path.exists()
+
+        # Load it back
+        loaded_manifest = RunManifest.from_yaml(temp_path)
+
+        # Verify all fields are preserved
+        assert loaded_manifest.experiment_name == original_manifest.experiment_name
+        assert loaded_manifest.created_at == original_manifest.created_at
+        assert loaded_manifest.wandb_run_id == original_manifest.wandb_run_id
+        assert loaded_manifest.wandb_run_url == original_manifest.wandb_run_url
+        assert loaded_manifest.wandb_project == original_manifest.wandb_project
+        assert loaded_manifest.wandb_entity == original_manifest.wandb_entity
+
+        # Verify experiment_config is preserved (compare as dicts)
+        # Path objects are serialized as strings via model_dump(mode='json'), so direct comparison works
+        assert loaded_manifest.experiment_config == original_manifest.experiment_config
+
+        # Verify all expected keys are present in experiment_config
+        assert EXPERIMENT_CONFIG.NAME in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.SEED in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.MODEL in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.DATA in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.TASK in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.TRAINING in loaded_manifest.experiment_config
+        assert EXPERIMENT_CONFIG.WANDB in loaded_manifest.experiment_config
+
+    finally:
+        # Clean up temporary file
+        if temp_path.exists():
+            temp_path.unlink()

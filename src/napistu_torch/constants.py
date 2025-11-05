@@ -175,13 +175,13 @@ TRAINING_CONFIG = SimpleNamespace(
     EARLY_STOPPING="early_stopping",
     EARLY_STOPPING_PATIENCE="early_stopping_patience",
     EARLY_STOPPING_METRIC="early_stopping_metric",
-    CHECKPOINT_DIR="checkpoint_dir",
+    CHECKPOINT_SUBDIR="checkpoint_subdir",
     SAVE_CHECKPOINTS="save_checkpoints",
     CHECKPOINT_METRIC="checkpoint_metric",
 )
 
 TRAINING_CONFIG_DEFAULTS = {
-    TRAINING_CONFIG.CHECKPOINT_DIR: Path("./checkpoints"),
+    TRAINING_CONFIG.CHECKPOINT_SUBDIR: "checkpoints",
 }
 
 WANDB_CONFIG = SimpleNamespace(
@@ -189,18 +189,19 @@ WANDB_CONFIG = SimpleNamespace(
     ENTITY="entity",
     GROUP="group",
     TAGS="tags",
-    SAVE_DIR="save_dir",
     LOG_MODEL="log_model",
     MODE="mode",
+    WANDB_SUBDIR="wandb_subdir",
 )
 
 WANDB_CONFIG_DEFAULTS = {
+    WANDB_CONFIG.ENTITY: "napistu",
     WANDB_CONFIG.PROJECT: "napistu-experiments",
     WANDB_CONFIG.GROUP: "baseline",
     WANDB_CONFIG.TAGS: [],
-    WANDB_CONFIG.SAVE_DIR: Path("./wandb"),
     WANDB_CONFIG.LOG_MODEL: False,
     WANDB_CONFIG.MODE: WANDB_MODES.ONLINE,
+    WANDB_CONFIG.WANDB_SUBDIR: "wandb",
 }
 
 EXPERIMENT_CONFIG = SimpleNamespace(
@@ -210,6 +211,7 @@ EXPERIMENT_CONFIG = SimpleNamespace(
     FAST_DEV_RUN="fast_dev_run",
     LIMIT_TRAIN_BATCHES="limit_train_batches",
     LIMIT_VAL_BATCHES="limit_val_batches",
+    OUTPUT_DIR="output_dir",
     MODEL="model",
     DATA="data",
     TASK="task",
@@ -220,4 +222,5 @@ EXPERIMENT_CONFIG = SimpleNamespace(
 EXPERIMENT_CONFIG_DEFAULTS = {
     EXPERIMENT_CONFIG.NAME: None,
     EXPERIMENT_CONFIG.SEED: 42,
+    EXPERIMENT_CONFIG.OUTPUT_DIR: Path("./output"),
 }
