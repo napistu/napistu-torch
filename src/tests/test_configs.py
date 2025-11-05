@@ -13,6 +13,7 @@ from napistu_torch.configs import (
     TaskConfig,
     TrainingConfig,
     WandBConfig,
+    config_to_data_trimming_spec,
     create_template_yaml,
     task_config_to_artifact_names,
 )
@@ -20,6 +21,7 @@ from napistu_torch.constants import (
     DATA_CONFIG,
     EXPERIMENT_CONFIG,
     METRICS,
+    NAPISTU_DATA_TRIM_ARGS,
     OPTIMIZERS,
     SCHEDULERS,
     TASK_CONFIG,
@@ -798,3 +800,39 @@ class TestConfigIntegration:
 
         # Clean up
         template_path.unlink()
+
+
+def test_config_to_data_trimming_spec(stubbed_data_config):
+    """Test config_to_data_trimming_spec returns correct trimming flags."""
+    # Test edge_prediction task without edge encoder
+    config1 = ExperimentConfig(
+        data=stubbed_data_config,
+        task=TaskConfig(task=TASKS.EDGE_PREDICTION),
+        model=ModelConfig(use_edge_encoder=False),
+    )
+    spec1 = config_to_data_trimming_spec(config1)
+    assert spec1[NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR] is False
+    assert spec1[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS] is False
+    assert spec1[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS] is True
+
+    # Test node_classification task
+    config2 = ExperimentConfig(
+        data=stubbed_data_config,
+        task=TaskConfig(task=TASKS.NODE_CLASSIFICATION),
+        model=ModelConfig(use_edge_encoder=False),
+    )
+    spec2 = config_to_data_trimming_spec(config2)
+    assert spec2[NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR] is False
+    assert spec2[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS] is True
+    assert spec2[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS] is True
+
+    # Test edge_prediction with edge encoder that supports weighting
+    config3 = ExperimentConfig(
+        data=stubbed_data_config,
+        task=TaskConfig(task=TASKS.EDGE_PREDICTION),
+        model=ModelConfig(use_edge_encoder=True, encoder=ENCODERS.GRAPH_CONV),
+    )
+    spec3 = config_to_data_trimming_spec(config3)
+    assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR] is True
+    assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS] is False
+    assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS] is True

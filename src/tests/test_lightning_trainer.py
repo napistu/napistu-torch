@@ -7,10 +7,11 @@ import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint
 
-from napistu_torch.configs import DataConfig, ExperimentConfig
+from napistu_torch.configs import DataConfig, ExperimentConfig, TaskConfig
 from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
+from napistu_torch.load.constants import STRATIFY_BY
 from napistu_torch.models.constants import ENCODERS
 from napistu_torch.models.heads import DotProductHead
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
@@ -83,6 +84,7 @@ def _create_test_experiment_config(
         limit_train_batches=limit_train_batches,
         limit_val_batches=limit_val_batches,
         data=data_config,
+        task=TaskConfig(edge_prediction_neg_sampling_stratify_by="none"),
         **kwargs,
     )
 
@@ -137,7 +139,7 @@ def test_edge_prediction_trainer_fit(edge_masked_napistu_data, stub_data_config)
 
     # Create data module with direct napistu_data
     dm = FullGraphDataModule(
-        config=stub_data_config, napistu_data=edge_masked_napistu_data
+        config=experiment_config, napistu_data=edge_masked_napistu_data
     )
 
     # Create encoder and head
@@ -188,9 +190,9 @@ def test_edge_prediction_trainer_fit_with_callbacks(
         limit_val_batches=0.1,
     )
 
-    # Create data module with direct napistu_data (backward compatibility)
+    # Create data module with direct napistu_data
     dm = FullGraphDataModule(
-        config=stub_data_config,
+        config=experiment_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -248,9 +250,9 @@ def test_edge_prediction_trainer_test(edge_masked_napistu_data, stub_data_config
         limit_val_batches=0.1,
     )
 
-    # Create data module with direct napistu_data (backward compatibility)
+    # Create data module with direct napistu_data
     dm = FullGraphDataModule(
-        config=stub_data_config,
+        config=experiment_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -305,7 +307,7 @@ def test_edge_prediction_trainer_different_encoders(
         )
 
         dm = FullGraphDataModule(
-            config=stub_data_config,
+            config=experiment_config,
             napistu_data_name="test",
             napistu_data=edge_masked_napistu_data,
         )
@@ -377,7 +379,7 @@ def test_edge_prediction_trainer_gpu_if_available(
     )
 
     dm = FullGraphDataModule(
-        config=stub_data_config,
+        config=experiment_config,
         napistu_data=edge_masked_napistu_data,
     )
 
@@ -424,7 +426,7 @@ def test_edge_prediction_trainer_with_store(temp_data_config_with_store):
     )
 
     # Create data module using NapistuDataStore approach
-    dm = FullGraphDataModule(config=temp_data_config_with_store)
+    dm = FullGraphDataModule(config=experiment_config)
 
     # Create encoder and head
     encoder = MessagePassingEncoder(
@@ -468,11 +470,13 @@ def test_edge_prediction_trainer_with_edge_strata(
         limit_train_batches=0.1,  # Limit to 10% of batches
         limit_val_batches=0.1,
         data=stub_data_config,
+        # set this temporarily here to avoid the dependency on a working NapistuDataStore for retriving strata. We're pasing them in directly.
+        task=TaskConfig(edge_prediction_neg_sampling_stratify_by="none"),
     )
 
     # Create data module with direct napistu_data
     dm = FullGraphDataModule(
-        config=stub_data_config, napistu_data=edge_masked_napistu_data
+        config=experiment_config, napistu_data=edge_masked_napistu_data
     )
 
     # Create encoder and head
@@ -541,20 +545,23 @@ def test_edge_prediction_trainer_with_edge_batch_datamodule(
 
     # Create experiment config
     experiment_config = _create_test_experiment_config(
-        name="trainer_test_edge_batch",
-        data_config=stub_data_config,
-        fast_dev_run=False,
-        limit_train_batches=1.0,
-        limit_val_batches=1.0,
+        name="trainer_test_edge_batch", data_config=stub_data_config
     )
 
     # Create mini-batch datamodule
     batches_per_epoch = 5
     dm = EdgeBatchDataModule(
-        config=stub_data_config,
+        config=experiment_config,
         napistu_data=edge_masked_napistu_data,
         batches_per_epoch=batches_per_epoch,
         shuffle=True,
+    )
+
+    # replace the Task config with the correct one
+    # we make this change here to avoid the dependency on a working NapistuDataStore for retriving strata in EdgeBatchDataModule.
+    # we'll be passing the strata in directly to the task.
+    experiment_config.task = TaskConfig(
+        edge_prediction_neg_sampling_stratify_by=STRATIFY_BY.NODE_TYPE
     )
 
     # Create encoder, head, task

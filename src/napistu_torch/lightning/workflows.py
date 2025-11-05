@@ -169,10 +169,10 @@ def prepare_experiment(
     batches_per_epoch = config.training.batches_per_epoch
     logger.info(f"Setting up data module with {batches_per_epoch} batches per epoch")
     if batches_per_epoch == 1:
-        data_module = FullGraphDataModule(config.data, task_config=config.task)
+        data_module = FullGraphDataModule(config, task_config=config.task)
     else:
         data_module = EdgeBatchDataModule(
-            config.data, task_config=config.task, batches_per_epoch=batches_per_epoch
+            config=config, batches_per_epoch=batches_per_epoch
         )
 
     # define the strata for negative sampling

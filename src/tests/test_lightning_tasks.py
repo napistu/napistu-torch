@@ -14,7 +14,7 @@ from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
 def test_edge_prediction_lightning_integration(
-    edge_masked_napistu_data, experiment_config, data_config
+    edge_masked_napistu_data, experiment_config
 ):
     # Create encoder and head
     encoder = MessagePassingEncoder(
@@ -32,7 +32,9 @@ def test_edge_prediction_lightning_integration(
     lightning_task = EdgePredictionLightning(task, experiment_config.training)
 
     # Create data module
-    dm = FullGraphDataModule(data_config, napistu_data=edge_masked_napistu_data)
+    dm = FullGraphDataModule(
+        config=experiment_config, napistu_data=edge_masked_napistu_data
+    )
     dm.setup()
 
     # Test training step

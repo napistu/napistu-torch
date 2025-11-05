@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 
 from torch.utils.data import DataLoader
 
-from napistu_torch.configs import DataConfig, TaskConfig
+from napistu_torch.configs import ExperimentConfig
 from napistu_torch.data.data_utils import create_single_graph_dataloader
 from napistu_torch.data.dataset import SingleGraphDataset
 from napistu_torch.lightning.datamodule import NapistuDataModule
@@ -30,8 +30,7 @@ class FullGraphDataModule(NapistuDataModule):
 
     def __init__(
         self,
-        config: DataConfig,
-        task_config: Optional[TaskConfig] = None,
+        config: ExperimentConfig,
         napistu_data_name: Optional[str] = None,
         other_artifacts: Optional[List[str]] = None,
         napistu_data: Optional[NapistuData] = None,
@@ -46,10 +45,8 @@ class FullGraphDataModule(NapistuDataModule):
 
         Parameters
         ----------
-        config : DataConfig
-            Pydantic data configuration
-        task_config : Optional[TaskConfig]
-            Pydantic task configuration
+        config : ExperimentConfig
+            Pydantic experiment configuration
         napistu_data_name : Optional[str]
             Name of the NapistuData artifact to use
         other_artifacts : Optional[List[str]]
@@ -65,7 +62,6 @@ class FullGraphDataModule(NapistuDataModule):
         """
         super().__init__(
             config=config,
-            task_config=task_config,
             napistu_data_name=napistu_data_name,
             other_artifacts=other_artifacts,
             napistu_data=napistu_data,

@@ -1,5 +1,6 @@
+import logging
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -25,6 +26,7 @@ from napistu_torch.constants import (
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
+    ENCODERS_SUPPORTING_EDGE_WEIGHTING,
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
@@ -33,6 +35,8 @@ from napistu_torch.tasks.constants import (
     TASKS,
     VALID_TASKS,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ModelConfig(BaseModel):
@@ -331,6 +335,56 @@ class ExperimentConfig(BaseModel):
 
 
 # Public functions for working with configs
+
+
+def config_to_data_trimming_spec(config: ExperimentConfig) -> Dict[str, bool]:
+    """
+    Based on the config, return a dictionary of booleans indicating whether each attribute should be kept.
+
+    Parameters
+    ----------
+    config : ExperimentConfig
+        The experiment configuration
+
+    Returns
+    -------
+    Dict[str, bool]
+        A dictionary with keys "keep_edge_attr", "keep_labels", "keep_masks" and values indicating whether each attribute should be kept. These match the arguments to NapistuData.trim().
+    """
+
+    # do we need edge attributes?
+    if getattr(config.model, MODEL_CONFIG.USE_EDGE_ENCODER):
+        edge_encoder = getattr(config.model, MODEL_CONFIG.ENCODER)
+        if edge_encoder in ENCODERS_SUPPORTING_EDGE_WEIGHTING:
+            keep_edge_attr = True
+        else:
+            logger.warning(
+                f"Edge encoders are not supported by {edge_encoder}, only {ENCODERS_SUPPORTING_EDGE_WEIGHTING} support for edge-weighted message passing. Edge attributes will not be used."
+            )
+            keep_edge_attr = False
+    else:
+        keep_edge_attr = False
+
+    # do we need labels?
+    tasks = getattr(config.task, TASK_CONFIG.TASK)
+    TASKS_WITH_LABELS = {TASKS.NODE_CLASSIFICATION}
+    if tasks in TASKS_WITH_LABELS:
+        keep_labels = True
+    else:
+        keep_labels = False
+
+    # do we need masks
+    TASKS_WITH_MASKS = {TASKS.EDGE_PREDICTION, TASKS.NODE_CLASSIFICATION}
+    if tasks in TASKS_WITH_MASKS:
+        keep_masks = True
+    else:
+        keep_masks = False
+
+    return {
+        "keep_edge_attr": keep_edge_attr,
+        "keep_labels": keep_labels,
+        "keep_masks": keep_masks,
+    }
 
 
 def create_template_yaml(

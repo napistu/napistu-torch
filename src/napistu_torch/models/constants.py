@@ -81,3 +81,8 @@ EDGE_WEIGHTING_TYPE = SimpleNamespace(
     STATIC_WEIGHTS="static_weights",
     LEARNED_ENCODER="learned_encoder",
 )
+
+ENCODERS_SUPPORTING_EDGE_WEIGHTING = {
+    ENCODERS.GCN,
+    ENCODERS.GRAPH_CONV,
+}

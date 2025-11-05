@@ -21,6 +21,7 @@ from napistu_torch.models.constants import (
     ENCODER_NATIVE_ARGNAMES_MAPS,
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
+    ENCODERS_SUPPORTING_EDGE_WEIGHTING,
     MODEL_DEFS,
     VALID_ENCODERS,
 )
@@ -122,7 +123,7 @@ class MessagePassingEncoder(nn.Module):
 
         encoder = ENCODER_CLASSES[encoder_type]
         self.convs = nn.ModuleList()
-        self.supports_edge_weight = encoder_type in [ENCODERS.GCN, ENCODERS.GRAPH_CONV]
+        self.supports_edge_weight = encoder_type in ENCODERS_SUPPORTING_EDGE_WEIGHTING
 
         # Parse edge weighting specification into type indicator and value
         self.edge_weighting_type, self.edge_weighting_value = _parse_edge_weighting(

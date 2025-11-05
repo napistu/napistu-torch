@@ -41,6 +41,14 @@ NAPISTU_DATA = SimpleNamespace(
 
 NAPISTU_DATA_DEFAULT_NAME = "default"
 
+NAPISTU_DATA_TRIM_ARGS = SimpleNamespace(
+    KEEP_EDGE_ATTR="keep_edge_attr",
+    KEEP_LABELS="keep_labels",
+    KEEP_MASKS="keep_masks",
+)
+
+# VertexTensor
+
 VERTEX_TENSOR = SimpleNamespace(
     DATA="data",
     FEATURE_NAMES="feature_names",
@@ -48,6 +56,8 @@ VERTEX_TENSOR = SimpleNamespace(
     NAME="name",
     DESCRIPTION="description",
 )
+
+# NapistuDataStore
 
 # defs in the json/config
 NAPISTU_DATA_STORE = SimpleNamespace(
@@ -76,6 +86,8 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
     VERTEX_TENSORS=NAPISTU_DATA_STORE.VERTEX_TENSORS,
     PANDAS_DFS=NAPISTU_DATA_STORE.PANDAS_DFS,
 )
+
+# Configs
 
 METRICS = SimpleNamespace(
     AUC="auc",
