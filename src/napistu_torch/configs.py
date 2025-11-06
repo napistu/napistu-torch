@@ -322,7 +322,10 @@ class ExperimentConfig(BaseModel):
         with open(filepath) as f:
             data = yaml.safe_load(f)
 
-        # Convert string paths back to Path objects
+        # Get config file's directory for resolving relative paths
+        config_dir = filepath.parent.resolve()
+
+        # Convert string paths back to Path objects and resolve relative paths to absolute
         def convert_strings_to_paths(obj, key=None):
             if isinstance(obj, dict):
                 return {k: convert_strings_to_paths(v, k) for k, v in obj.items()}
@@ -334,7 +337,13 @@ class ExperimentConfig(BaseModel):
                 DATA_CONFIG.NAPISTU_GRAPH_PATH,
                 EXPERIMENT_CONFIG.OUTPUT_DIR,
             ]:
-                return Path(obj)
+                path = Path(obj)
+                # Resolve relative paths to absolute paths relative to config file directory
+                # These paths should always be resolved to absolute paths
+                if not path.is_absolute():
+                    return (config_dir / path).resolve()
+                else:
+                    return path.resolve()
             else:
                 return obj
 

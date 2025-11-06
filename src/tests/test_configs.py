@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from napistu_torch.configs import (
@@ -663,6 +664,50 @@ class TestExperimentConfig:
             assert isinstance(loaded_config.model, ModelConfig)
             assert isinstance(loaded_config.data, DataConfig)
 
+    def test_from_yaml_resolves_relative_paths(self):
+        """Test that from_yaml resolves relative paths to absolute paths."""
+
+        # Create a temporary YAML file with complex relative paths
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            temp_path = Path(f.name)
+            config_data = {
+                "seed": 42,
+                "data": {
+                    "store_dir": "../../.store",
+                    "sbml_dfs_path": "../../data/napistu/sbml_dfs.pkl",
+                    "napistu_graph_path": "../data/graph.pkl",
+                },
+                "output_dir": "./output/experiments",
+            }
+            yaml.dump(config_data, f)
+
+        try:
+            # Load the config
+            config = ExperimentConfig.from_yaml(temp_path)
+
+            # Verify paths are resolved to absolute paths
+            assert config.data.store_dir.is_absolute()
+            assert config.data.sbml_dfs_path.is_absolute()
+            assert config.data.napistu_graph_path.is_absolute()
+            assert config.output_dir.is_absolute()
+
+            # Verify paths are resolved relative to config file directory
+            config_dir = temp_path.parent.resolve()
+            assert config.data.store_dir == (config_dir / "../../.store").resolve()
+            assert (
+                config.data.sbml_dfs_path
+                == (config_dir / "../../data/napistu/sbml_dfs.pkl").resolve()
+            )
+            assert (
+                config.data.napistu_graph_path
+                == (config_dir / "../data/graph.pkl").resolve()
+            )
+            assert config.output_dir == (config_dir / "./output/experiments").resolve()
+
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
     def test_get_experiment_name(self, stubbed_data_config):
         """Test get_experiment_name method."""
         config = ExperimentConfig(
@@ -844,8 +889,12 @@ class TestConfigIntegration:
 
         # Verify the loaded config has the expected values
         assert loaded_config.name == experiment_name
-        assert loaded_config.data.sbml_dfs_path == sbml_path
-        assert loaded_config.data.napistu_graph_path == graph_path
+        # Paths are resolved to absolute paths relative to config file directory
+        config_dir = template_path.parent.resolve()
+        assert loaded_config.data.sbml_dfs_path == (config_dir / sbml_path).resolve()
+        assert (
+            loaded_config.data.napistu_graph_path == (config_dir / graph_path).resolve()
+        )
 
         # Verify defaults are applied (not in template)
         assert isinstance(loaded_config.model, ModelConfig)

@@ -3,7 +3,15 @@ from typing import Optional, Tuple
 
 from lightning.pytorch.loggers import WandbLogger
 
-from napistu_torch.configs import ExperimentConfig
+from napistu_torch.configs import (
+    ExperimentConfig,
+    RunManifest,
+)
+from napistu_torch.constants import (
+    EXPERIMENT_CONFIG,
+    RUN_MANIFEST,
+    WANDB_CONFIG,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +99,64 @@ def prepare_wandb_config(cfg: ExperimentConfig) -> None:
     return None
 
 
+def resume_wandb_logger(
+    manifest: RunManifest,
+) -> Optional[WandbLogger]:
+    """
+    Resume a W&B run using the run ID from the manifest.
+
+    Parameters
+    ----------
+    manifest : RunManifest
+        The original run manifest containing W&B run ID
+    logger : logging.Logger
+        Logger instance
+
+    Returns
+    -------
+    Optional[WandbLogger]
+        Resumed WandbLogger, or None if wandb is disabled or run ID missing
+    """
+
+    config = getattr(manifest, RUN_MANIFEST.EXPERIMENT_CONFIG)
+
+    # If wandb is disabled in config, don't create logger
+    wandb_config = getattr(config, EXPERIMENT_CONFIG.WANDB)
+    if getattr(wandb_config, WANDB_CONFIG.MODE) == "disabled":
+        logger.info("W&B logging disabled in config")
+        return None
+
+    # Need a run ID to resume
+    run_id = getattr(manifest, RUN_MANIFEST.WANDB_RUN_ID)
+    if run_id is None:
+        logger.warning(
+            "No W&B run ID found in manifest. " "Testing without W&B logging."
+        )
+        return None
+
+    # Get save directory
+    save_dir = wandb_config.get_save_dir(getattr(config, EXPERIMENT_CONFIG.OUTPUT_DIR))
+    save_dir.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Resuming W&B run: {manifest.wandb_run_id}")
+
+    # Create logger with resume='must' to ensure we resume the existing run
+    wandb_logger = WandbLogger(
+        project=getattr(manifest, RUN_MANIFEST.WANDB_PROJECT)
+        or getattr(wandb_config, WANDB_CONFIG.PROJECT),
+        entity=getattr(manifest, RUN_MANIFEST.WANDB_ENTITY)
+        or getattr(wandb_config, WANDB_CONFIG.ENTITY),
+        id=run_id,  # CRITICAL: This resumes the run
+        resume="must",  # CRITICAL: Must resume, fail if run doesn't exist
+        save_dir=str(save_dir),
+        offline=getattr(wandb_config, WANDB_CONFIG.MODE) == "offline",
+    )
+
+    logger.info(f"Successfully resumed W&B run: {wandb_logger.experiment.url}")
+
+    return wandb_logger
+
+
 def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
     """
     Setup WandbLogger with configuration.
@@ -112,28 +178,30 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
         Configured WandbLogger instance, or None if wandb is disabled
     """
     # If wandb is disabled, don't create the logger at all
-    if cfg.wandb.mode == "disabled":
+    wandb_config = getattr(cfg, EXPERIMENT_CONFIG.WANDB)
+    if getattr(wandb_config, WANDB_CONFIG.MODE) == "disabled":
         return None
 
     # Use the config's built-in method for run name
-    experiment_name = cfg.name or cfg.get_experiment_name()
+    experiment_name = getattr(cfg, EXPERIMENT_CONFIG.NAME) or cfg.get_experiment_name()
 
     # Get the save directory using the config method
-    save_dir = cfg.wandb.get_save_dir(cfg.output_dir)
+    save_dir = wandb_config.get_save_dir(getattr(cfg, EXPERIMENT_CONFIG.OUTPUT_DIR))
 
     # Create the logger with the config values
     wandb_logger = WandbLogger(
-        project=cfg.wandb.project,
+        project=getattr(wandb_config, WANDB_CONFIG.PROJECT),
         name=experiment_name,
-        group=cfg.wandb.group,
-        tags=cfg.wandb.tags,
+        group=getattr(wandb_config, WANDB_CONFIG.GROUP),
+        tags=getattr(wandb_config, WANDB_CONFIG.TAGS),
         save_dir=save_dir,
-        log_model=cfg.wandb.log_model,
+        log_model=getattr(wandb_config, WANDB_CONFIG.LOG_MODEL),
         config=cfg.to_dict(),
-        entity=cfg.wandb.entity,
-        notes=f"Training {cfg.model.encoder} for {cfg.task.task}",
+        entity=getattr(wandb_config, WANDB_CONFIG.ENTITY),
+        notes=f"Training {getattr(cfg, EXPERIMENT_CONFIG.MODEL).encoder} for {getattr(cfg, EXPERIMENT_CONFIG.TASK).task}",
         reinit=True,
-        offline=cfg.wandb.mode == "offline",  # Set offline mode if needed
+        offline=getattr(wandb_config, WANDB_CONFIG.MODE)
+        == "offline",  # Set offline mode if needed
     )
 
     return wandb_logger

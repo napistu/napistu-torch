@@ -16,7 +16,7 @@ from napistu_torch.constants import (
 logger = logging.getLogger(__name__)
 
 
-class ExperimentEvaluationManager:
+class EvaluationManager:
     """Manage the evaluation of an experiment."""
 
     def __init__(self, experiment_dir: Union[Path, str]):
@@ -43,19 +43,19 @@ class ExperimentEvaluationManager:
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Manifest file {manifest_path} does not exist")
         try:
-            manifest = RunManifest.from_yaml(manifest_path)
+            self.manifest = RunManifest.from_yaml(manifest_path)
         except ValidationError as e:
             raise ValueError(f"Invalid manifest file {manifest_path}: {e}")
 
         # set attributes based on manifest
-        self.experiment_name = manifest.experiment_name
-        self.wandb_run_id = manifest.wandb_run_id
-        self.wandb_run_url = manifest.wandb_run_url
-        self.wandb_project = manifest.wandb_project
-        self.wandb_entity = manifest.wandb_entity
+        self.experiment_name = self.manifest.experiment_name
+        self.wandb_run_id = self.manifest.wandb_run_id
+        self.wandb_run_url = self.manifest.wandb_run_url
+        self.wandb_project = self.manifest.wandb_project
+        self.wandb_entity = self.manifest.wandb_entity
 
         # Get ExperimentConfig from manifest (already reconstructed by RunManifest.from_yaml)
-        self.experiment_config = manifest.experiment_config
+        self.experiment_config = self.manifest.experiment_config
         # Replace output_dir with experiment_dir so paths will appropriately resolve
         self.experiment_config.output_dir = experiment_dir
 
@@ -73,6 +73,9 @@ class ExperimentEvaluationManager:
             self.best_checkpoint_path, self.best_checkpoint_val_auc = None, None
         else:
             self.best_checkpoint_path, self.best_checkpoint_val_auc = best_checkpoint
+
+
+# public functions
 
 
 def find_best_checkpoint(checkpoint_dir: Path) -> Tuple[Path, float] | None:

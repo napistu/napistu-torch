@@ -5,7 +5,13 @@ from types import SimpleNamespace
 
 from napistu_torch.load.constants import STRATIFY_BY
 from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
-from napistu_torch.models.constants import ENCODERS, HEADS
+from napistu_torch.models.constants import (
+    EDGE_ENCODER_ARGS,
+    ENCODER_SPECIFIC_ARGS,
+    ENCODERS,
+    HEADS,
+    MODEL_DEFS,
+)
 from napistu_torch.tasks.constants import (
     NEGATIVE_SAMPLING_STRATEGIES,
     TASKS,
@@ -137,9 +143,16 @@ MODEL_CONFIG = SimpleNamespace(
     ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
     HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
     USE_EDGE_ENCODER="use_edge_encoder",
-    EDGE_IN_CHANNELS="edge_in_channels",
-    EDGE_ENCODER_DIM="edge_encoder_dim",
-    EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
+    HIDDEN_CHANNELS=MODEL_DEFS.HIDDEN_CHANNELS,
+    NUM_LAYERS=MODEL_DEFS.NUM_LAYERS,
+    DROPOUT=ENCODER_SPECIFIC_ARGS.DROPOUT,
+    GAT_HEADS=ENCODER_SPECIFIC_ARGS.GAT_HEADS,
+    GAT_CONCAT=ENCODER_SPECIFIC_ARGS.GAT_CONCAT,
+    GRAPH_CONV_AGGREGATOR=ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR,
+    SAGE_AGGREGATOR=ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR,
+    EDGE_IN_CHANNELS=EDGE_ENCODER_ARGS.EDGE_IN_CHANNELS,
+    EDGE_ENCODER_DIM=EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM,
+    EDGE_ENCODER_DROPOUT=EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT,
 )
 
 MODEL_CONFIG_DEFAULTS = {
