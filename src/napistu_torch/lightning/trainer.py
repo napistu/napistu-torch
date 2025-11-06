@@ -20,6 +20,10 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
 from napistu_torch.configs import ExperimentConfig
+from napistu_torch.lightning.constants import (
+    TRAINER_MODES,
+    VALID_TRAINER_MODES,
+)
 
 
 class ExperimentTimingCallback(Callback):
@@ -89,18 +93,46 @@ class NapistuTrainer:
     def __init__(
         self,
         config: ExperimentConfig,
+        mode: str = TRAINER_MODES.TRAIN,
+        wandb_logger: Optional[WandbLogger] = None,
         callbacks: Optional[List[pl.Callback]] = None,
     ):
         self.config = config
         self._user_callbacks = callbacks or []
+        # Store wandb_logger to use existing one if provided
+        self.wandb_logger = wandb_logger
 
         # Create the underlying Lightning trainer
-        self._trainer = self._create_trainer()
+        if mode == TRAINER_MODES.TRAIN:
+            self._trainer = self._create_trainer()
+        elif mode == TRAINER_MODES.EVAL:
+            self._trainer = self._create_eval_trainer()
+        else:
+            raise ValueError(
+                f"Invalid trainer mode: {mode}; valid modes are {VALID_TRAINER_MODES}"
+            )
+
+    def _create_eval_trainer(self) -> pl.Trainer:
+        """Create a minimal trainer for testing and evaluation (no callbacks)."""
+        # Setup logger - use existing one if provided, otherwise create new one
+        wandb_logger = self.wandb_logger or self._create_wandb_logger()
+
+        trainer = pl.Trainer(
+            accelerator=self.config.training.accelerator,
+            devices=self.config.training.devices,
+            precision=self.config.training.precision,
+            logger=wandb_logger,
+            enable_progress_bar=True,
+            enable_model_summary=False,  # Already trained
+            deterministic=self.config.deterministic,
+        )
+
+        return trainer
 
     def _create_trainer(self) -> pl.Trainer:
         """Create the underlying PyTorch Lightning Trainer."""
-        # Setup logger
-        logger = self._create_logger()
+        # Setup logger - use existing one if provided, otherwise create new one
+        wandb_logger = self.wandb_logger or self._create_wandb_logger()
 
         # Setup callbacks
         all_callbacks = self._create_callbacks()
@@ -114,7 +146,7 @@ class NapistuTrainer:
             devices=self.config.training.devices,
             precision=self.config.training.precision,
             # Logging and callbacks
-            logger=logger,
+            logger=wandb_logger,
             callbacks=all_callbacks,
             log_every_n_steps=10,
             # Reproducibility
@@ -130,7 +162,7 @@ class NapistuTrainer:
 
         return trainer
 
-    def _create_logger(self) -> Optional[WandbLogger]:
+    def _create_wandb_logger(self) -> Optional[WandbLogger]:
         """Create W&B logger from config.
 
         Returns None if wandb mode is disabled to avoid initializing wandb

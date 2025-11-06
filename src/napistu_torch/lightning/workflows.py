@@ -17,7 +17,10 @@ from napistu_torch.constants import (
 )
 from napistu_torch.evaluation.constants import EVALUATION_MANAGER
 from napistu_torch.evaluation.evaluation_manager import EvaluationManager
-from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.lightning.constants import (
+    EXPERIMENT_DICT,
+    TRAINER_MODES,
+)
 from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
@@ -371,7 +374,9 @@ def resume_experiment(
 
     # 4. trainer
     logger.info("Creating NapistuTrainer from config...")
-    trainer = NapistuTrainer(experiment_config)
+    trainer = NapistuTrainer(
+        experiment_config, mode=TRAINER_MODES.EVAL, wandb_logger=wandb_logger
+    )
 
     experiment_dict = {
         EXPERIMENT_DICT.DATA_MODULE: data_module,
@@ -382,6 +387,28 @@ def resume_experiment(
     }
 
     return experiment_dict
+
+
+def test(evaluation_manager, experiment_dict) -> list[dict]:
+
+    checkpoint = evaluation_manager.best_checkpoint_path
+    if checkpoint is None:
+        logger.warning("No best checkpoint found, using last checkpoint")
+        checkpoint = "last"
+
+    test_results = experiment_dict[EXPERIMENT_DICT.TRAINER].test(
+        model=experiment_dict[EXPERIMENT_DICT.MODEL],
+        datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
+        ckpt_path=checkpoint,
+    )
+
+    for key, value in test_results[0].items():
+        if experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER] is not None:
+            experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER].experiment.summary[
+                key
+            ] = value
+
+    return test_results
 
 
 # private functions

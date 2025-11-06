@@ -9,3 +9,10 @@ EXPERIMENT_DICT = SimpleNamespace(
     RUN_MANIFEST="run_manifest",
     WANDB_LOGGER="wandb_logger",
 )
+
+TRAINER_MODES = SimpleNamespace(
+    TRAIN="train",
+    EVAL="eval",
+)
+
+VALID_TRAINER_MODES = list(TRAINER_MODES.__dict__.values())

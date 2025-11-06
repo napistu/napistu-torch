@@ -34,11 +34,8 @@ class EvaluationManager:
             )
         self.experiment_dir = experiment_dir
 
-        # manifest_path = experiment_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
         manifest_path = (
-            experiment_dir
-            / "logs"
-            / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
+            experiment_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
         )
         if not manifest_path.is_file():
             raise FileNotFoundError(f"Manifest file {manifest_path} does not exist")
