@@ -9,13 +9,13 @@ from typing import Optional
 import click
 
 from napistu_torch._cli import (
-    _log_deferred_messages,
+    log_deferred_messages,
     prepare_config,
     setup_logging,
     verbosity_option,
 )
 from napistu_torch.configs import create_template_yaml
-from napistu_torch.constants import EXPERIMENT_DICT
+from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import (
     fit_model,
     log_experiment_overview,
@@ -118,7 +118,7 @@ def train(
     )
 
     # Log all deferred messages
-    _log_deferred_messages(
+    log_deferred_messages(
         logger=logger,
         config_messages=config_messages,
         config=config,
@@ -140,10 +140,9 @@ def train(
         log_experiment_overview(experiment_dict, logger=logger)
 
         # save manifest to file
-        experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(
-            log_dir / "run_manifest.yaml"
-        )
-        logger.info(f"Saved run manifest to {log_dir / 'run_manifest.yaml'}")
+        manifest_path = config.output_dir / "run_manifest.yaml"
+        experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
+        logger.info(f"Saved run manifest to {manifest_path}")
 
         fit_model(experiment_dict, resume_from=resume, logger=logger)
 

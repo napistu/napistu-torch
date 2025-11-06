@@ -118,13 +118,16 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
     # Use the config's built-in method for run name
     experiment_name = cfg.name or cfg.get_experiment_name()
 
+    # Get the save directory using the config method
+    save_dir = cfg.wandb.get_save_dir(cfg.output_dir)
+
     # Create the logger with the config values
     wandb_logger = WandbLogger(
         project=cfg.wandb.project,
         name=experiment_name,
         group=cfg.wandb.group,
         tags=cfg.wandb.tags,
-        save_dir=cfg.wandb.save_dir,
+        save_dir=save_dir,
         log_model=cfg.wandb.log_model,
         config=cfg.to_dict(),
         entity=cfg.wandb.entity,

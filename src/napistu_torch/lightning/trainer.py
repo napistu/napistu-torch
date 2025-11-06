@@ -139,13 +139,14 @@ class NapistuTrainer:
         if self.config.wandb.mode == "disabled":
             return None
 
+        save_dir = self.config.wandb.get_save_dir(self.config.output_dir)
         return WandbLogger(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
             name=self.config.name,
             group=self.config.wandb.group,
             tags=self.config.wandb.tags,
-            save_dir=str(self.config.wandb.save_dir),
+            save_dir=str(save_dir),
             log_model=self.config.wandb.log_model,
             offline=(self.config.wandb.mode == "offline"),
         )

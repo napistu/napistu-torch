@@ -246,6 +246,7 @@ class WandBConfig(BaseModel):
 
     def get_save_dir(self, output_dir: Path) -> Path:
         """Get absolute wandb save directory"""
+        # note that wandb automatically creates a "wandb" subdirectory within the output_dir
         return output_dir / self.wandb_subdir
 
     model_config = ConfigDict(extra="forbid")
