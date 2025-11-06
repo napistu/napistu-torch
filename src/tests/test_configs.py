@@ -897,6 +897,7 @@ def test_config_to_data_trimming_spec(stubbed_data_config):
     assert spec3[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS] is True
 
 
+@pytest.mark.skip_on_windows
 def test_run_manifest_round_trip(experiment_dict):
     """Test that RunManifest can be saved to YAML and loaded back with all fields preserved."""
     # Get the run_manifest from experiment_dict

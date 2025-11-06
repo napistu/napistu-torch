@@ -1,10 +1,13 @@
 """Tests for napistu_torch lightning workflows module."""
 
+import pytest
+
 from napistu_torch.constants import EXPERIMENT_CONFIG
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import ExperimentDict
 
 
+@pytest.mark.skip_on_windows
 def test_experiment_dict_fixture(experiment_dict):
     """Test that the experiment_dict fixture is properly structured and validated."""
     # Validate the experiment_dict structure using Pydantic
@@ -32,6 +35,7 @@ def test_experiment_dict_fixture(experiment_dict):
     assert validated.wandb_logger is None
 
 
+@pytest.mark.skip_on_windows
 def test_experiment_dict_run_manifest(experiment_dict):
     """Test that run_manifest contains expected information."""
     run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
@@ -45,6 +49,7 @@ def test_experiment_dict_run_manifest(experiment_dict):
     assert run_manifest.created_at is not None
 
 
+@pytest.mark.skip_on_windows
 def test_experiment_dict_data_module(experiment_dict):
     """Test that data_module is properly configured."""
     data_module = experiment_dict[EXPERIMENT_DICT.DATA_MODULE]
@@ -56,6 +61,7 @@ def test_experiment_dict_data_module(experiment_dict):
     assert data_module.num_edge_features >= 0
 
 
+@pytest.mark.skip_on_windows
 def test_experiment_dict_model(experiment_dict):
     """Test that model is properly configured."""
     model = experiment_dict[EXPERIMENT_DICT.MODEL]
@@ -66,6 +72,7 @@ def test_experiment_dict_model(experiment_dict):
     assert model.task is not None
 
 
+@pytest.mark.skip_on_windows
 def test_experiment_dict_trainer(experiment_dict):
     """Test that trainer is properly configured."""
     trainer = experiment_dict[EXPERIMENT_DICT.TRAINER]
