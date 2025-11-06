@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
@@ -176,12 +177,16 @@ class TrainingConfig(BaseModel):
     early_stopping_patience: int = 20
     early_stopping_metric: str = "val_auc"
 
-    checkpoint_dir: Path = Field(
-        default=Path(TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_DIR]),
-        description="Directory to save checkpoints.",
+    checkpoint_subdir: str = Field(
+        default=TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_SUBDIR],
+        description="Subdirectory for checkpoints within output_dir",
     )
     save_checkpoints: bool = True
     checkpoint_metric: str = "val_auc"
+
+    def get_checkpoint_dir(self, output_dir: Path) -> Path:
+        """Get absolute checkpoint directory"""
+        return output_dir / self.checkpoint_subdir
 
     @field_validator(TRAINING_CONFIG.OPTIMIZER)
     @classmethod
@@ -208,14 +213,14 @@ class WandBConfig(BaseModel):
     """Weights & Biases configuration"""
 
     project: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.PROJECT]
-    entity: Optional[str] = None
+    entity: Optional[str] = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.ENTITY]
     group: Optional[str] = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.GROUP]
     tags: List[str] = Field(
         default_factory=lambda: WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.TAGS]
     )
-    save_dir: Path = Field(default=WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.SAVE_DIR])
     log_model: bool = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.LOG_MODEL]
     mode: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.MODE]
+    wandb_subdir: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.WANDB_SUBDIR]
 
     @field_validator(WANDB_CONFIG.MODE)
     @classmethod
@@ -223,12 +228,6 @@ class WandBConfig(BaseModel):
         if v not in VALID_WANDB_MODES:
             raise ValueError(f"Invalid mode: {v}. Valid modes are: {VALID_WANDB_MODES}")
         return v
-
-    def get_run_name(
-        self, model_config: "ModelConfig", task_config: "TaskConfig"
-    ) -> str:
-        """Generate a descriptive run name based on model and task configs"""
-        return f"{model_config.encoder}_h{model_config.hidden_channels}_l{model_config.num_layers}_{task_config.task}"
 
     def get_enhanced_tags(
         self, model_config: "ModelConfig", task_config: "TaskConfig"
@@ -245,6 +244,11 @@ class WandBConfig(BaseModel):
         )
         return enhanced_tags
 
+    def get_save_dir(self, output_dir: Path) -> Path:
+        """Get absolute wandb save directory"""
+        # note that wandb automatically creates a "wandb" subdirectory within the output_dir
+        return output_dir / self.wandb_subdir
+
     model_config = ConfigDict(extra="forbid")
 
 
@@ -255,6 +259,11 @@ class ExperimentConfig(BaseModel):
     name: Optional[str] = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
     seed: int = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.SEED]
     deterministic: bool = True
+
+    output_dir: Path = Field(
+        default=Path("./output"),
+        description="Base output directory for all run artifacts (checkpoints, logs, wandb)",
+    )
 
     # Component configs
     model: ModelConfig = Field(default_factory=ModelConfig)
@@ -321,8 +330,9 @@ class ExperimentConfig(BaseModel):
                 return [convert_strings_to_paths(item) for item in obj]
             elif isinstance(obj, str) and key in [
                 DATA_CONFIG.STORE_DIR,
-                TRAINING_CONFIG.CHECKPOINT_DIR,
-                WANDB_CONFIG.SAVE_DIR,
+                DATA_CONFIG.SBML_DFS_PATH,
+                DATA_CONFIG.NAPISTU_GRAPH_PATH,
+                EXPERIMENT_CONFIG.OUTPUT_DIR,
             ]:
                 return Path(obj)
             else:
@@ -330,6 +340,81 @@ class ExperimentConfig(BaseModel):
 
         # Apply path conversion
         data = convert_strings_to_paths(data)
+
+        return cls(**data)
+
+    def get_experiment_name(self) -> str:
+        """Generate a descriptive experiment name based on model and task configs"""
+        return f"{self.model.encoder}_h{self.model.hidden_channels}_l{self.model.num_layers}_{self.task.task}"
+
+
+class RunManifest(BaseModel):
+    """Manifest file containing all information about a training run."""
+
+    # Timestamps
+    created_at: datetime = Field(
+        default_factory=datetime.now, description="When this run was created"
+    )
+
+    # WandB information
+    wandb_run_id: Optional[str] = Field(
+        default=None, description="WandB run ID for this experiment"
+    )
+    wandb_run_url: Optional[str] = Field(
+        default=None, description="Direct URL to the WandB run"
+    )
+    wandb_project: Optional[str] = Field(default=None, description="WandB project name")
+    wandb_entity: Optional[str] = Field(
+        default=None, description="WandB entity (username/team)"
+    )
+
+    # Experiment configuration
+    experiment_name: Optional[str] = Field(
+        default=None, description="Name of the experiment"
+    )
+
+    # Full experiment config (stored as dict)
+    experiment_config: dict = Field(description="Complete experiment configuration")
+
+    def to_yaml(self, filepath: Path) -> None:
+        """
+        Save manifest to YAML file.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path where the YAML file will be written
+        """
+        import yaml
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        # Convert to dict
+        data = self.model_dump(mode="json")
+
+        # Write to YAML file
+        with open(filepath, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    @classmethod
+    def from_yaml(cls, filepath: Path) -> "RunManifest":
+        """
+        Load manifest from YAML file.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path to the YAML file
+
+        Returns
+        -------
+        RunManifest
+            Loaded manifest object
+        """
+        import yaml
+
+        with open(filepath) as f:
+            data = yaml.safe_load(f)
 
         return cls(**data)
 

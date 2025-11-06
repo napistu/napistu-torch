@@ -9,12 +9,18 @@ from typing import Optional
 import click
 
 from napistu_torch._cli import (
+    log_deferred_messages,
     prepare_config,
     setup_logging,
     verbosity_option,
 )
 from napistu_torch.configs import create_template_yaml
-from napistu_torch.lightning.workflows import fit_model, prepare_experiment
+from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.lightning.workflows import (
+    fit_model,
+    log_experiment_overview,
+    prepare_experiment,
+)
 
 
 @click.group()
@@ -33,10 +39,11 @@ def cli():
 )
 @click.option("--fast-dev-run", is_flag=True, help="Run 1 batch for quick debugging")
 @click.option(
-    "--log-dir",
+    "--out-dir",
     type=click.Path(path_type=Path),
-    default=Path("."),
-    help="Directory for log files (default: current directory)",
+    default=None,
+    help="Output directory for all run artifacts (logs, checkpoints, manifest). "
+    "If not specified, uses checkpoint_dir from config.",
 )
 @click.option(
     "--resume",
@@ -55,7 +62,7 @@ def train(
     seed: Optional[int],
     wandb_mode: Optional[str],
     fast_dev_run: bool,
-    log_dir: Path,
+    out_dir: Optional[Path],
     resume: Optional[Path],
     overrides: tuple[str, ...],
     verbosity: str,
@@ -67,35 +74,60 @@ def train(
 
     \b
     Examples:
-        # Basic training
+        # Basic training (outputs to checkpoint_dir from config)
         $ napistu-torch train config.yaml
 
+        # Specify custom output directory
+        $ napistu-torch train config.yaml --out-dir ./experiments/run_001
+
         # Override specific config values
-        $ napistu-torch train config.yaml --set wandb.mode=disabled --set training.epochs=50
+        $ napistu-torch train config.yaml --set training.epochs=50 --out-dir ./quick_test
 
         # Quick debug run
         $ napistu-torch train config.yaml --fast-dev-run --wandb-mode disabled
 
         # Resume from checkpoint
-        $ napistu-torch train config.yaml --resume checkpoints/best-epoch=10-val_auc=0.85.ckpt
-
-        # Save logs to specific directory
-        $ napistu-torch train config.yaml --log-dir ./logs/experiment1
+        $ napistu-torch train config.yaml --resume checkpoints/best.ckpt
     """
-    # Setup logging first
-    logger, _ = setup_logging(
-        log_dir=log_dir,
-        verbosity=verbosity,
-    )
 
-    config = prepare_config(
+    # Prepare config to respect named and wildcard overrides
+    config, config_messages = prepare_config(
         config_path=config_path,
         seed=seed,
         wandb_mode=wandb_mode,
         fast_dev_run=fast_dev_run,
         overrides=overrides,
-        logger=logger,
     )
+
+    # Override output_dir if --out-dir provided
+    if out_dir is not None:
+        config_messages.append(f"Overriding output_dir with --out-dir: {out_dir}")
+        config.output_dir = out_dir.resolve()
+    else:
+        config.output_dir = config.output_dir.resolve()
+
+    # Compute derived directories
+    checkpoint_dir = config.training.get_checkpoint_dir(config.output_dir)
+    log_dir = config.output_dir / "logs"
+    wandb_dir = config.wandb.get_save_dir(config.output_dir)
+
+    # Setup logging
+    logger, _ = setup_logging(
+        log_dir=log_dir,
+        verbosity=verbosity,
+    )
+
+    # Log all deferred messages
+    log_deferred_messages(
+        logger=logger,
+        config_messages=config_messages,
+        config=config,
+        checkpoint_dir=checkpoint_dir,
+        log_dir=log_dir,
+        wandb_dir=wandb_dir,
+        resume=resume,
+    )
+
     if resume:
         logger.info(f"  Resume from: {resume}")
     logger.info("=" * 80)
@@ -105,6 +137,13 @@ def train(
         logger.info("Starting training workflow...")
 
         experiment_dict = prepare_experiment(config, logger=logger)
+        log_experiment_overview(experiment_dict, logger=logger)
+
+        # save manifest to file
+        manifest_path = config.output_dir / "run_manifest.yaml"
+        experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
+        logger.info(f"Saved run manifest to {manifest_path}")
+
         fit_model(experiment_dict, resume_from=resume, logger=logger)
 
         logger.info("Training completed successfully! 🎉")

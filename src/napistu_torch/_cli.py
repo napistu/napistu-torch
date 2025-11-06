@@ -16,14 +16,64 @@ import napistu_torch
 from napistu_torch.configs import ExperimentConfig
 
 
+def log_deferred_messages(
+    logger: logging.Logger,
+    config_messages: list[str],
+    config: ExperimentConfig,
+    checkpoint_dir: Path,
+    log_dir: Path,
+    wandb_dir: Path,
+    resume: Optional[Path] = None,
+) -> None:
+    """
+    Log deferred configuration messages and run information.
+
+    Parameters
+    ----------
+    logger : logging.Logger
+        Logger to use for output
+    config_messages : list[str]
+        Messages collected during config preparation
+    config : ExperimentConfig
+        The experiment configuration
+    checkpoint_dir : Path
+        Checkpoint directory path
+    log_dir : Path
+        Log directory path
+    wandb_dir : Path
+        WandB directory path
+    resume : Optional[Path]
+        Checkpoint path to resume from, if any
+    """
+    logger.info("=" * 80)
+    logger.info("Napistu-Torch Training")
+    logger.info("=" * 80)
+
+    # Log config preparation messages
+    for msg in config_messages:
+        logger.info(f"  {msg}")
+
+    logger.info("=" * 80)
+
+    # Log directory information
+    logger.info(f"  Output directory: {config.output_dir}")
+    logger.info(f"  Checkpoints: {checkpoint_dir}")
+    logger.info(f"  Logs: {log_dir}")
+    logger.info(f"  WandB: {wandb_dir}")
+
+    if resume:
+        logger.info(f"  Resume from: {resume}")
+
+    logger.info("=" * 80)
+
+
 def prepare_config(
     config_path: Path,
     seed: Optional[int] = None,
     wandb_mode: Optional[str] = None,
     fast_dev_run: bool = False,
     overrides: tuple[str] = (),
-    logger: logging.Logger = logging.getLogger(__name__),
-) -> ExperimentConfig:
+) -> tuple[ExperimentConfig, list[str]]:
     """
     Prepare the configuration for training.
 
@@ -39,79 +89,69 @@ def prepare_config(
         Whether to run a fast development run (1 batch per epoch)
     overrides: tuple[str]
         A tuple of strings in the format "key.subkey=value" to override the values in the loaded config file (including defaults)
-    logger: logging.Logger
-        The logger to use for logging
 
     Returns
     -------
-    ExperimentConfig
-        The prepared configuration
+    tuple[ExperimentConfig, list[str]]
+        The prepared configuration and a list of log messages to emit after logger setup
     """
-    logger.info(f"Loading config from: {config_path}")
+    messages = []
+
+    messages.append(f"Loading config from: {config_path}")
     config = ExperimentConfig.from_yaml(config_path)
-    logger.info(f"Config loaded: {config.name or 'unnamed experiment'}")
+    messages.append(f"Config loaded: {config.name or 'unnamed experiment'}")
 
     # Try to validate original config first (catch config file issues early)
     try:
         config.model_validate(config.model_dump())
-        logger.debug("Original config validated successfully")
+        messages.append("Original config validated successfully")
     except ValidationError as e:
-        logger.error(f"Config file validation failed:\n{e}")
+        # Validation errors need to be raised immediately (can't defer these)
+        print(f"ERROR: Config file validation failed:\n{e}")
         raise click.Abort()
 
     # Apply explicit CLI flags (these take precedence over --set)
     if seed is not None:
-        logger.info(f"Overriding seed: {config.seed} → {seed}")
+        messages.append(f"Overriding seed: {config.seed} → {seed}")
         config.seed = seed
 
     if wandb_mode is not None:
-        logger.info(f"Overriding W&B mode: {config.wandb.mode} → {wandb_mode}")
+        messages.append(f"Overriding W&B mode: {config.wandb.mode} → {wandb_mode}")
         config.wandb.mode = wandb_mode
 
     if fast_dev_run:
-        logger.info("Fast dev run enabled (1 batch per epoch)")
+        messages.append("Fast dev run enabled (1 batch per epoch)")
         config.fast_dev_run = True
 
     # Apply --set overrides
     if overrides:
-        config = _apply_config_overrides(config, overrides, logger)
+        config, override_messages = _apply_config_overrides(config, overrides)
+        messages.extend(override_messages)
 
     # Validate config after all overrides
     try:
         config.model_validate(config.model_dump())
-        logger.info("Config validation passed")
+        messages.append("Config validation passed")
     except ValidationError as e:
-        logger.error(
-            f"Config validation failed after applying overrides:\n{e}\n\n"
+        # Validation errors need to be raised immediately (can't defer these)
+        print(
+            f"ERROR: Config validation failed after applying overrides:\n{e}\n\n"
             f"Original config was valid, so the issue is with one of your overrides."
         )
         raise click.Abort()
 
     # Check that required data paths exist
     if not config.data.sbml_dfs_path.exists():
-        logger.error(f"SBML_dfs file not found: {config.data.sbml_dfs_path}")
+        print(f"ERROR: SBML_dfs file not found: {config.data.sbml_dfs_path}")
         raise click.Abort()
 
     if not config.data.napistu_graph_path.exists():
-        logger.error(f"NapistuGraph file not found: {config.data.napistu_graph_path}")
+        print(f"ERROR: NapistuGraph file not found: {config.data.napistu_graph_path}")
         raise click.Abort()
 
-    logger.info("All data paths validated")
+    messages.append("All data paths validated")
 
-    # Display key configuration
-    logger.info("=" * 80)
-    logger.info("Training Configuration:")
-    logger.info(f"  Task: {config.task.task}")
-    logger.info(
-        f"  Model: {config.model.encoder} (hidden={config.model.hidden_channels}, layers={config.model.num_layers})"
-    )
-    logger.info(
-        f"  Training: {config.training.epochs} epochs, lr={config.training.lr}, batches_per_epoch={config.training.batches_per_epoch}"
-    )
-    logger.info(f"  W&B: project={config.wandb.project}, mode={config.wandb.mode}")
-    logger.info(f"  Seed: {config.seed}")
-
-    return config
+    return config, messages
 
 
 def setup_logging(
@@ -203,80 +243,59 @@ def verbosity_option(f: Callable) -> Callable:
 
 
 def _apply_config_overrides(
-    config: ExperimentConfig, overrides: tuple[str], logger: logging.Logger
-) -> ExperimentConfig:
+    config: ExperimentConfig, overrides: tuple[str]
+) -> tuple[ExperimentConfig, list[str]]:
     """
-    Apply dot-notation overrides to a Pydantic config.
+    Apply --set style config overrides.
 
     Parameters
     ----------
     config : ExperimentConfig
-        Base configuration object
+        The config to modify
     overrides : tuple[str]
-        Override strings in format "key.subkey=value"
-    logger : logging.Logger
-        Logger for reporting changes
+        Tuples of "key.subkey=value" strings
 
     Returns
     -------
-    ExperimentConfig
-        Config with overrides applied
-
-    Examples
-    --------
-    >>> config = apply_config_overrides(
-    ...     config,
-    ...     ("wandb.mode=disabled", "training.epochs=100"),
-    ...     logger
-    ... )
+    tuple[ExperimentConfig, list[str]]
+        The modified config and a list of log messages
     """
-    if not overrides:
-        return config
-
-    logger.info("Applying config overrides:")
+    messages = []
+    messages.append(f"Applying {len(overrides)} config override(s):")
 
     for override in overrides:
         try:
-            if "=" not in override:
-                raise ValueError(
-                    f"Override must be in format 'key=value', got: {override}"
-                )
+            key, value = override.split("=", 1)
+            messages.append(f"  {key} = {value}")
 
-            key_path, value = override.split("=", 1)
-            keys = key_path.split(".")
+            # Parse the nested key path (e.g., "training.lr" -> ["training", "lr"])
+            keys = key.split(".")
 
-            # Navigate to parent object
-            obj = config
-            for key in keys[:-1]:
-                if not hasattr(obj, key):
-                    raise AttributeError(
-                        f"Config has no attribute '{key}' in path '{key_path}'"
-                    )
-                obj = getattr(obj, key)
+            # Navigate to the target and set the value
+            target = config
+            for k in keys[:-1]:
+                target = getattr(target, k)
 
-            # Get field info for type conversion
-            field_name = keys[-1]
-            if not hasattr(obj, field_name):
-                raise AttributeError(f"Config has no attribute '{field_name}'")
+            # Convert value to appropriate type
+            current_value = getattr(target, keys[-1])
+            if isinstance(current_value, bool):
+                converted_value = value.lower() in ("true", "1", "yes")
+            elif isinstance(current_value, int):
+                converted_value = int(value)
+            elif isinstance(current_value, float):
+                converted_value = float(value)
+            elif isinstance(current_value, Path):
+                converted_value = Path(value)
+            else:
+                converted_value = value
 
-            # Get the field type from Pydantic model
-            field_info = obj.model_fields[field_name]
-            field_type = field_info.annotation
+            setattr(target, keys[-1], converted_value)
 
-            # Convert and set value
-            old_value = getattr(obj, field_name)
-            converted_value = _convert_value(value, field_type)
-            setattr(obj, field_name, converted_value)
+        except (ValueError, AttributeError) as e:
+            print(f"ERROR: Failed to apply override '{override}': {e}")
+            raise click.Abort()
 
-            logger.info(f"  {key_path}: {old_value} → {converted_value}")
-
-        except Exception as e:
-            raise click.BadParameter(
-                f"Invalid override '{override}': {e}\n"
-                f"Use format: --set key.subkey=value"
-            )
-
-    return config
+    return config, messages
 
 
 def _convert_value(value_str: str, field_type: Any) -> Any:

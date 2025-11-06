@@ -36,26 +36,28 @@ class ExperimentTimingCallback(Callback):
         epoch_duration = time.time() - self.epoch_start
         self.epoch_times.append(epoch_duration)
 
-        # Log per-epoch timing
-        trainer.logger.experiment.log(
-            {
-                "epoch_duration_seconds": epoch_duration,
-                "avg_epoch_duration": sum(self.epoch_times) / len(self.epoch_times),
-            }
-        )
+        # Log per-epoch timing (only if logger exists)
+        if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
+            trainer.logger.experiment.log(
+                {
+                    "epoch_duration_seconds": epoch_duration,
+                    "avg_epoch_duration": sum(self.epoch_times) / len(self.epoch_times),
+                }
+            )
 
     def on_train_end(self, trainer, pl_module):
         total_time = time.time() - self.start_time
 
-        # Log summary statistics
-        trainer.logger.experiment.log(
-            {
-                "total_train_time_minutes": total_time / 60,
-                "total_epochs_completed": len(self.epoch_times),
-                "time_per_epoch_avg": sum(self.epoch_times) / len(self.epoch_times),
-                "time_per_epoch_std": np.std(self.epoch_times),
-            }
-        )
+        # Log summary statistics (only if logger exists)
+        if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
+            trainer.logger.experiment.log(
+                {
+                    "total_train_time_minutes": total_time / 60,
+                    "total_epochs_completed": len(self.epoch_times),
+                    "time_per_epoch_avg": sum(self.epoch_times) / len(self.epoch_times),
+                    "time_per_epoch_std": np.std(self.epoch_times),
+                }
+            )
 
 
 class NapistuTrainer:
@@ -128,15 +130,23 @@ class NapistuTrainer:
 
         return trainer
 
-    def _create_logger(self) -> WandbLogger:
-        """Create W&B logger from config."""
+    def _create_logger(self) -> Optional[WandbLogger]:
+        """Create W&B logger from config.
+
+        Returns None if wandb mode is disabled to avoid initializing wandb
+        and triggering sentry/analytics.
+        """
+        if self.config.wandb.mode == "disabled":
+            return None
+
+        save_dir = self.config.wandb.get_save_dir(self.config.output_dir)
         return WandbLogger(
             project=self.config.wandb.project,
             entity=self.config.wandb.entity,
             name=self.config.name,
             group=self.config.wandb.group,
             tags=self.config.wandb.tags,
-            save_dir=str(self.config.wandb.save_dir),
+            save_dir=str(save_dir),
             log_model=self.config.wandb.log_model,
             offline=(self.config.wandb.mode == "offline"),
         )
@@ -158,10 +168,13 @@ class NapistuTrainer:
 
         # Model checkpointing
         if self.config.training.save_checkpoints:
-            self.config.training.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            checkpoint_dir = self.config.training.get_checkpoint_dir(
+                self.config.output_dir
+            )
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
             callbacks.append(
                 ModelCheckpoint(
-                    dirpath=self.config.training.checkpoint_dir,
+                    dirpath=checkpoint_dir,
                     filename="best-{epoch}-{val_auc:.4f}",
                     monitor=self.config.training.checkpoint_metric,
                     mode="max",
@@ -238,8 +251,8 @@ class NapistuTrainer:
         return self._trainer
 
     @property
-    def logger(self) -> WandbLogger:
-        """Access the W&B logger."""
+    def logger(self) -> Optional[WandbLogger]:
+        """Access the W&B logger (may be None if wandb is disabled)."""
         return self._trainer.logger
 
     @property
