@@ -555,10 +555,12 @@ class TestWandBConfig:
         assert save_dir == Path("/output/my_wandb")
         assert isinstance(save_dir, Path)
 
-        # Test with default subdir
+        # Test with default subdir (from constants)
         config = WandBConfig()
         save_dir = config.get_save_dir(output_dir)
-        assert save_dir == Path("/output/wandb")
+        expected_default = output_dir / WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.WANDB_SUBDIR]
+        assert save_dir == expected_default
+        assert isinstance(save_dir, Path)
 
     def test_get_enhanced_tags(self):
         """Test get_enhanced_tags method."""
