@@ -224,3 +224,17 @@ EXPERIMENT_CONFIG_DEFAULTS = {
     EXPERIMENT_CONFIG.SEED: 42,
     EXPERIMENT_CONFIG.OUTPUT_DIR: Path("./output"),
 }
+
+RUN_MANIFEST = SimpleNamespace(
+    EXPERIMENT_NAME="experiment_name",
+    WANDB_RUN_ID="wandb_run_id",
+    WANDB_RUN_URL="wandb_run_url",
+    WANDB_PROJECT="wandb_project",
+    WANDB_ENTITY="wandb_entity",
+    EXPERIMENT_CONFIG="experiment_config",
+    MANIFEST_FILENAME="manifest_filename",
+)
+
+RUN_MANIFEST_DEFAULTS = {
+    RUN_MANIFEST.MANIFEST_FILENAME: "run_manifest.yaml",
+}

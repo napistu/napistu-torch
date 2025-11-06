@@ -925,18 +925,26 @@ def test_run_manifest_round_trip(experiment_dict):
         assert loaded_manifest.wandb_project == original_manifest.wandb_project
         assert loaded_manifest.wandb_entity == original_manifest.wandb_entity
 
-        # Verify experiment_config is preserved (compare as dicts)
-        # Path objects are serialized as strings via model_dump(mode='json'), so direct comparison works
-        assert loaded_manifest.experiment_config == original_manifest.experiment_config
+        # Verify experiment_config is preserved
+        # Both should be ExperimentConfig objects now
+        assert isinstance(original_manifest.experiment_config, ExperimentConfig)
+        assert isinstance(loaded_manifest.experiment_config, ExperimentConfig)
 
-        # Verify all expected keys are present in experiment_config
-        assert EXPERIMENT_CONFIG.NAME in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.SEED in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.MODEL in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.DATA in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.TASK in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.TRAINING in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.WANDB in loaded_manifest.experiment_config
+        # Compare as dicts (Path objects are serialized as strings via model_dump(mode='json'))
+        original_config_dict = original_manifest.experiment_config.model_dump(
+            mode="json"
+        )
+        loaded_config_dict = loaded_manifest.experiment_config.model_dump(mode="json")
+        assert loaded_config_dict == original_config_dict
+
+        # Verify all expected attributes are present in experiment_config
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.NAME)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.SEED)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.MODEL)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.DATA)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.TASK)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.TRAINING)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.WANDB)
 
     finally:
         # Clean up temporary file

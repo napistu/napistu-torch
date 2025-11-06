@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import pytorch_lightning as pl
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -100,6 +100,25 @@ class ExperimentDict(BaseModel):
         arbitrary_types_allowed=True,
         extra="forbid",
     )
+
+
+# public functions
+
+
+def create_data_module(
+    config: ExperimentConfig,
+) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
+    """Create the appropriate data module based on the configuration."""
+    batches_per_epoch = config.training.batches_per_epoch
+    if batches_per_epoch == 1:
+        logger.info("Creating FullGraphDataModule...")
+        return FullGraphDataModule(config)
+    else:
+        logger.info(
+            "Creating EdgeBatchDataModule with batches_per_epoch = %s...",
+            batches_per_epoch,
+        )
+        return EdgeBatchDataModule(config=config, batches_per_epoch=batches_per_epoch)
 
 
 def fit_model(
@@ -317,7 +336,7 @@ def prepare_experiment(
         wandb_run_url=wandb_run_url,
         wandb_project=config.wandb.project,
         wandb_entity=config.wandb.entity,
-        experiment_config=config.model_dump(mode="json"),
+        experiment_config=config,
     )
 
     experiment_dict = {

@@ -373,8 +373,10 @@ class RunManifest(BaseModel):
         default=None, description="Name of the experiment"
     )
 
-    # Full experiment config (stored as dict)
-    experiment_config: dict = Field(description="Complete experiment configuration")
+    # Full experiment config (always an ExperimentConfig object)
+    experiment_config: ExperimentConfig = Field(
+        description="Complete experiment configuration"
+    )
 
     def to_yaml(self, filepath: Path) -> None:
         """
@@ -389,7 +391,8 @@ class RunManifest(BaseModel):
 
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert to dict
+        # Pydantic automatically serializes nested models
+        # Use mode="json" to convert Path objects to strings
         data = self.model_dump(mode="json")
 
         # Write to YAML file
@@ -409,13 +412,14 @@ class RunManifest(BaseModel):
         Returns
         -------
         RunManifest
-            Loaded manifest object
+            Loaded manifest object with experiment_config as ExperimentConfig instance
         """
         import yaml
 
         with open(filepath) as f:
             data = yaml.safe_load(f)
 
+        # Pydantic automatically converts the dict to ExperimentConfig when creating the model
         return cls(**data)
 
 

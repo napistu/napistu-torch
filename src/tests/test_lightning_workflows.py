@@ -43,9 +43,10 @@ def test_experiment_dict_run_manifest(experiment_dict):
     # Verify run_manifest has the expected attributes
     assert run_manifest.experiment_name == "test_experiment"
     assert run_manifest.experiment_config is not None
-    assert EXPERIMENT_CONFIG.TASK in run_manifest.experiment_config
-    assert EXPERIMENT_CONFIG.MODEL in run_manifest.experiment_config
-    assert EXPERIMENT_CONFIG.TRAINING in run_manifest.experiment_config
+    # experiment_config is now an ExperimentConfig object, so check for attributes
+    assert hasattr(run_manifest.experiment_config, EXPERIMENT_CONFIG.TASK)
+    assert hasattr(run_manifest.experiment_config, EXPERIMENT_CONFIG.MODEL)
+    assert hasattr(run_manifest.experiment_config, EXPERIMENT_CONFIG.TRAINING)
     assert run_manifest.created_at is not None
 
 

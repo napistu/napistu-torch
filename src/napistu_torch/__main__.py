@@ -15,6 +15,7 @@ from napistu_torch._cli import (
     verbosity_option,
 )
 from napistu_torch.configs import create_template_yaml
+from napistu_torch.constants import RUN_MANIFEST, RUN_MANIFEST_DEFAULTS
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import (
     fit_model,
@@ -140,7 +141,9 @@ def train(
         log_experiment_overview(experiment_dict, logger=logger)
 
         # save manifest to file
-        manifest_path = config.output_dir / "run_manifest.yaml"
+        manifest_path = (
+            config.output_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
+        )
         experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
         logger.info(f"Saved run manifest to {manifest_path}")
 
