@@ -124,7 +124,6 @@ WANDB_MODES = SimpleNamespace(
 VALID_WANDB_MODES = list(WANDB_MODES.__dict__.values())
 
 DATA_CONFIG = SimpleNamespace(
-    NAME="name",
     STORE_DIR="store_dir",
     SBML_DFS_PATH="sbml_dfs_path",
     NAPISTU_GRAPH_PATH="napistu_graph_path",

@@ -22,7 +22,6 @@ from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 def stub_data_config():
     """Create a stubbed DataConfig for testing."""
     return DataConfig(
-        name="stubbed_config",
         sbml_dfs_path=Path("stub_sbml.pkl"),
         napistu_graph_path=Path("stub_graph.pkl"),
         napistu_data_name="edge_prediction",

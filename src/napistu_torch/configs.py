@@ -108,8 +108,6 @@ class ModelConfig(BaseModel):
 class DataConfig(BaseModel):
     """Data loading and splitting configuration. These parameters are used to setup the NapistuDataStore object and construct the NapistuData object."""
 
-    name: str = "default"
-
     # config for defining the NapistuDataStore
     store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
     sbml_dfs_path: Path = Field()

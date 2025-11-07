@@ -389,12 +389,16 @@ def resume_experiment(
     return experiment_dict
 
 
-def test(evaluation_manager, experiment_dict) -> list[dict]:
+def test(
+    experiment_dict: ExperimentDict, checkpoint: Optional[Path] = None
+) -> list[dict]:
 
-    checkpoint = evaluation_manager.best_checkpoint_path
     if checkpoint is None:
-        logger.warning("No best checkpoint found, using last checkpoint")
         checkpoint = "last"
+        logger.warning("No checkpoint provided, using last checkpoint")
+    else:
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint}")
 
     test_results = experiment_dict[EXPERIMENT_DICT.TRAINER].test(
         model=experiment_dict[EXPERIMENT_DICT.MODEL],

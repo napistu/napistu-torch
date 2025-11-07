@@ -16,11 +16,16 @@ from napistu_torch._cli import (
 )
 from napistu_torch.configs import create_template_yaml
 from napistu_torch.constants import RUN_MANIFEST, RUN_MANIFEST_DEFAULTS
+from napistu_torch.evaluation.evaluation_manager import EvaluationManager
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import (
     fit_model,
     log_experiment_overview,
     prepare_experiment,
+    resume_experiment,
+)
+from napistu_torch.lightning.workflows import (
+    test as run_test_workflow,
 )
 
 
@@ -28,6 +33,31 @@ from napistu_torch.lightning.workflows import (
 def cli():
     """Napistu-Torch: GNN training for network integration"""
     pass
+
+
+@cli.command()
+@click.argument(
+    "experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional checkpoint path to use instead of the best checkpoint discovered",
+)
+def test(experiment_dir: Path, checkpoint: Optional[Path]):
+    """Run evaluation for a finished experiment located at EXPERIMENT_DIR."""
+
+    evaluation_manager = EvaluationManager(experiment_dir)
+    checkpoint_path = checkpoint or evaluation_manager.best_checkpoint_path
+
+    if checkpoint_path is None:
+        raise click.ClickException(
+            "No checkpoint found. Provide --checkpoint or ensure checkpoints exist."
+        )
+
+    experiment_dict = resume_experiment(evaluation_manager)
+    run_test_workflow(experiment_dict, checkpoint_path)
 
 
 @cli.command()

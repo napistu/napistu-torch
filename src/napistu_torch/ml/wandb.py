@@ -8,8 +8,12 @@ from napistu_torch.configs import (
     RunManifest,
 )
 from napistu_torch.constants import (
+    DATA_CONFIG,
     EXPERIMENT_CONFIG,
+    MODEL_CONFIG,
     RUN_MANIFEST,
+    TASK_CONFIG,
+    TRAINING_CONFIG,
     WANDB_CONFIG,
 )
 
@@ -196,7 +200,7 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
         tags=getattr(wandb_config, WANDB_CONFIG.TAGS),
         save_dir=save_dir,
         log_model=getattr(wandb_config, WANDB_CONFIG.LOG_MODEL),
-        config=cfg.to_dict(),
+        config=_define_minimal_experiment_summaries(cfg),
         entity=getattr(wandb_config, WANDB_CONFIG.ENTITY),
         notes=f"Training {getattr(cfg, EXPERIMENT_CONFIG.MODEL).encoder} for {getattr(cfg, EXPERIMENT_CONFIG.TASK).task}",
         reinit=True,
@@ -205,3 +209,56 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
     )
 
     return wandb_logger
+
+
+def _define_minimal_experiment_summaries(cfg: ExperimentConfig) -> dict:
+    """
+    Extract only the key hyperparameters for W&B logging.
+
+    This keeps the W&B UI clean by excluding paths, infrastructure settings,
+    and other non-essential metadata.
+    """
+
+    model_config = getattr(cfg, EXPERIMENT_CONFIG.MODEL)
+    task_config = getattr(cfg, EXPERIMENT_CONFIG.TASK)
+    training_config = getattr(cfg, EXPERIMENT_CONFIG.TRAINING)
+
+    data_config = getattr(cfg, EXPERIMENT_CONFIG.DATA)
+
+    return {
+        # Experiment metadata
+        EXPERIMENT_CONFIG.NAME: getattr(cfg, EXPERIMENT_CONFIG.NAME),
+        EXPERIMENT_CONFIG.SEED: getattr(cfg, EXPERIMENT_CONFIG.SEED),
+        # Model architecture
+        MODEL_CONFIG.ENCODER: getattr(model_config, MODEL_CONFIG.ENCODER),
+        MODEL_CONFIG.HEAD: getattr(model_config, MODEL_CONFIG.HEAD),
+        MODEL_CONFIG.HIDDEN_CHANNELS: getattr(
+            model_config, MODEL_CONFIG.HIDDEN_CHANNELS
+        ),
+        MODEL_CONFIG.NUM_LAYERS: getattr(model_config, MODEL_CONFIG.NUM_LAYERS),
+        MODEL_CONFIG.DROPOUT: getattr(model_config, MODEL_CONFIG.DROPOUT),
+        MODEL_CONFIG.USE_EDGE_ENCODER: getattr(
+            model_config, MODEL_CONFIG.USE_EDGE_ENCODER
+        ),
+        MODEL_CONFIG.EDGE_ENCODER_DIM: getattr(
+            model_config, MODEL_CONFIG.EDGE_ENCODER_DIM
+        ),
+        # Task config
+        TASK_CONFIG.TASK: getattr(task_config, TASK_CONFIG.TASK),
+        TASK_CONFIG.METRICS: getattr(task_config, TASK_CONFIG.METRICS),
+        # Training hyperparameters
+        TRAINING_CONFIG.LR: getattr(training_config, TRAINING_CONFIG.LR),
+        TRAINING_CONFIG.WEIGHT_DECAY: getattr(
+            training_config, TRAINING_CONFIG.WEIGHT_DECAY
+        ),
+        TRAINING_CONFIG.OPTIMIZER: getattr(training_config, TRAINING_CONFIG.OPTIMIZER),
+        TRAINING_CONFIG.SCHEDULER: getattr(training_config, TRAINING_CONFIG.SCHEDULER),
+        TRAINING_CONFIG.EPOCHS: getattr(training_config, TRAINING_CONFIG.EPOCHS),
+        TRAINING_CONFIG.BATCHES_PER_EPOCH: getattr(
+            training_config, TRAINING_CONFIG.BATCHES_PER_EPOCH
+        ),
+        # Data config (just the name, not paths)
+        DATA_CONFIG.NAPISTU_DATA_NAME: getattr(
+            data_config, DATA_CONFIG.NAPISTU_DATA_NAME
+        ),
+    }

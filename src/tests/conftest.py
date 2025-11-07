@@ -247,7 +247,6 @@ def data_config():
     """Create a basic data config for testing with side-loaded data."""
 
     return DataConfig(
-        name="test_data",
         sbml_dfs_path=Path("test_sbml.pkl"),
         napistu_graph_path=Path("test_graph.pkl"),
         napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
@@ -302,7 +301,6 @@ def temp_data_config_with_store(temp_napistu_data_store_with_edge_data):
     store = temp_napistu_data_store_with_edge_data
 
     return DataConfig(
-        name="test_data_with_store",
         store_dir=store.store_dir,
         sbml_dfs_path=store.sbml_dfs_path,
         napistu_graph_path=store.napistu_graph_path,

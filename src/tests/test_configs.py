@@ -168,7 +168,6 @@ class TestDataConfig:
         """Test that all required fields exist and can be set."""
         # Test that required fields exist in the model
         model_fields = DataConfig.model_fields
-        assert DATA_CONFIG.NAME in model_fields
         assert DATA_CONFIG.STORE_DIR in model_fields
         assert DATA_CONFIG.SBML_DFS_PATH in model_fields
         assert DATA_CONFIG.NAPISTU_GRAPH_PATH in model_fields
@@ -185,7 +184,6 @@ class TestDataConfig:
             napistu_graph_path=Path("test_graph.pkl"),
         )
 
-        assert config.name == "default"
         assert config.store_dir == Path(".store")
         assert config.copy_to_store is False
         assert config.overwrite is False
@@ -196,7 +194,6 @@ class TestDataConfig:
         """Test that fields can be customized."""
         custom_path = Path("/custom/path")
         config = DataConfig(
-            name="custom_name",
             store_dir=custom_path,
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
@@ -209,7 +206,6 @@ class TestDataConfig:
             ],
         )
 
-        assert config.name == "custom_name"
         assert config.store_dir == custom_path
         assert config.sbml_dfs_path == Path("custom_sbml.pkl")
         assert config.napistu_graph_path == Path("custom_graph.pkl")
@@ -611,7 +607,6 @@ class TestExperimentConfig:
         """Test that component configs can be customized."""
         model_config = ModelConfig(hidden_channels=256, num_layers=5)
         data_config = DataConfig(
-            name="custom_data",
             sbml_dfs_path=Path("stub_sbml.pkl"),
             napistu_graph_path=Path("stub_graph.pkl"),
         )
@@ -620,7 +615,6 @@ class TestExperimentConfig:
 
         assert config.model.hidden_channels == 256
         assert config.model.num_layers == 5
-        assert config.data.name == "custom_data"
         assert config.data.sbml_dfs_path == Path("stub_sbml.pkl")
         assert config.data.napistu_graph_path == Path("stub_graph.pkl")
 
@@ -743,7 +737,6 @@ class TestConfigIntegration:
         )
 
         data_config = DataConfig(
-            name="custom_dataset",
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
             napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
@@ -776,7 +769,6 @@ class TestConfigIntegration:
         assert experiment_config.name == "integration_test"
         assert experiment_config.model.encoder == ENCODERS.GAT
         assert experiment_config.model.hidden_channels == 256
-        assert experiment_config.data.name == "custom_dataset"
         assert experiment_config.data.sbml_dfs_path == Path("custom_sbml.pkl")
         assert experiment_config.data.napistu_graph_path == Path("custom_graph.pkl")
         assert (
@@ -832,7 +824,6 @@ class TestConfigIntegration:
 
         # Customize component configs
         original_config.model.hidden_channels = 512
-        original_config.data.name = "roundtrip_data"
         original_config.data.napistu_data_name = DEFAULT_ARTIFACTS_NAMES.UNLABELED
         original_config.data.other_artifacts = [DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION]
         original_config.task.edge_prediction_neg_sampling_ratio = 3.0
@@ -852,7 +843,6 @@ class TestConfigIntegration:
             assert loaded_config.deterministic is False
             assert loaded_config.fast_dev_run is True
             assert loaded_config.model.hidden_channels == 512
-            assert loaded_config.data.name == "roundtrip_data"
             assert (
                 loaded_config.data.napistu_data_name
                 == DEFAULT_ARTIFACTS_NAMES.UNLABELED
