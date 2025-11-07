@@ -2,13 +2,25 @@
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import pytorch_lightning as pl
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
-from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.constants import (
+    EXPERIMENT_CONFIG,
+    MODEL_CONFIG,
+    TASK_CONFIG,
+    TRAINING_CONFIG,
+    WANDB_CONFIG,
+)
+from napistu_torch.evaluation.constants import EVALUATION_MANAGER
+from napistu_torch.evaluation.evaluation_manager import EvaluationManager
+from napistu_torch.lightning.constants import (
+    EXPERIMENT_DICT,
+    TRAINER_MODES,
+)
 from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
@@ -16,6 +28,7 @@ from napistu_torch.lightning.trainer import NapistuTrainer
 from napistu_torch.ml.wandb import (
     get_wandb_run_id_and_url,
     prepare_wandb_config,
+    resume_wandb_logger,
     setup_wandb_logger,
 )
 from napistu_torch.models.heads import Decoder
@@ -102,6 +115,9 @@ class ExperimentDict(BaseModel):
     )
 
 
+# public functions
+
+
 def fit_model(
     experiment_dict: Dict[str, Any],
     resume_from: Optional[Path] = None,
@@ -166,30 +182,36 @@ def log_experiment_overview(
     """
     data_module = experiment_dict[EXPERIMENT_DICT.DATA_MODULE]
     run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
-    config_dict = run_manifest.experiment_config
+    config = run_manifest.experiment_config
 
     # Extract config values from the manifest's experiment_config dict
-    task = config_dict.get("task", {}).get("task", "unknown")
-    model_config = config_dict.get("model", {})
-    model_encoder = model_config.get("encoder", "unknown")
-    model_head = model_config.get("head", "unknown")
-    model_hidden_channels = model_config.get("hidden_channels", "unknown")
-    model_num_layers = model_config.get("num_layers", "unknown")
-    model_use_edge_encoder = model_config.get("use_edge_encoder", False)
-    model_edge_encoder_dim = model_config.get("edge_encoder_dim", None)
-    training_epochs = config_dict.get("training", {}).get("epochs", "unknown")
-    training_lr = config_dict.get("training", {}).get("lr", "unknown")
-    training_batches_per_epoch = config_dict.get("training", {}).get(
-        "batches_per_epoch", "unknown"
+    task_config = getattr(config, EXPERIMENT_CONFIG.TASK)
+    task = getattr(task_config, TASK_CONFIG.TASK)
+
+    model_config = getattr(config, EXPERIMENT_CONFIG.MODEL)
+    model_encoder = getattr(model_config, MODEL_CONFIG.ENCODER)
+    model_head = getattr(model_config, MODEL_CONFIG.HEAD)
+    model_hidden_channels = getattr(model_config, MODEL_CONFIG.HIDDEN_CHANNELS)
+    model_num_layers = getattr(model_config, MODEL_CONFIG.NUM_LAYERS)
+    model_use_edge_encoder = getattr(model_config, MODEL_CONFIG.USE_EDGE_ENCODER)
+    model_edge_encoder_dim = getattr(model_config, MODEL_CONFIG.EDGE_ENCODER_DIM)
+
+    training_config = getattr(config, EXPERIMENT_CONFIG.TRAINING)
+    training_epochs = getattr(training_config, TRAINING_CONFIG.EPOCHS)
+    training_lr = getattr(training_config, TRAINING_CONFIG.LR)
+    training_batches_per_epoch = getattr(
+        training_config, TRAINING_CONFIG.BATCHES_PER_EPOCH
     )
-    seed = config_dict.get("seed", "unknown")
-    wandb_project = run_manifest.wandb_project or config_dict.get("wandb", {}).get(
-        "project", "unknown"
+
+    seed = getattr(config, EXPERIMENT_CONFIG.SEED)
+    wandb_config = getattr(config, EXPERIMENT_CONFIG.WANDB)
+    wandb_project = run_manifest.wandb_project or getattr(
+        wandb_config, WANDB_CONFIG.PROJECT
     )
-    wandb_mode = config_dict.get("wandb", {}).get("mode", "unknown")
+    wandb_mode = getattr(wandb_config, WANDB_CONFIG.MODE)
 
     # Get batches_per_epoch from data module or fallback to config
-    batches_per_epoch = getattr(data_module, "batches_per_epoch", None)
+    batches_per_epoch = getattr(data_module, TRAINING_CONFIG.BATCHES_PER_EPOCH, None)
     if batches_per_epoch is None:
         batches_per_epoch = training_batches_per_epoch
 
@@ -262,18 +284,8 @@ def prepare_experiment(
         wandb_run_id, wandb_run_url = None, None
 
     # 2. Create Data Module
-    batches_per_epoch = config.training.batches_per_epoch
-    if batches_per_epoch == 1:
-        logger.info("Creating FullGraphDataModule...")
-        data_module = FullGraphDataModule(config)
-    else:
-        logger.info(
-            "Creating EdgeBatchDataModule with batches_per_epoch = %s...",
-            batches_per_epoch,
-        )
-        data_module = EdgeBatchDataModule(
-            config=config, batches_per_epoch=batches_per_epoch
-        )
+    logger.info("Creating Data Module from config...")
+    data_module = _create_data_module(config)
 
     # define the strata for negative sampling
     stratify_by = config.task.edge_prediction_neg_sampling_stratify_by
@@ -284,6 +296,150 @@ def prepare_experiment(
     )
 
     # 3. create model
+    model = _create_model(config, data_module, edge_strata)
+
+    # 4. trainer
+    logger.info("Creating NapistuTrainer from config...")
+    trainer = NapistuTrainer(config)
+
+    # 5. create a run manifest
+    # Use the same naming scheme as wandb: config.name or generated name
+    experiment_name = config.name or config.get_experiment_name()
+    logger.info("Creating RunManifest with experiment_name = %s...", experiment_name)
+    run_manifest = RunManifest(
+        experiment_name=experiment_name,
+        wandb_run_id=wandb_run_id,
+        wandb_run_url=wandb_run_url,
+        wandb_project=config.wandb.project,
+        wandb_entity=config.wandb.entity,
+        experiment_config=config,
+    )
+
+    experiment_dict = {
+        EXPERIMENT_DICT.DATA_MODULE: data_module,
+        EXPERIMENT_DICT.MODEL: model,
+        EXPERIMENT_DICT.TRAINER: trainer,
+        EXPERIMENT_DICT.RUN_MANIFEST: run_manifest,
+        EXPERIMENT_DICT.WANDB_LOGGER: wandb_logger,
+    }
+
+    return experiment_dict
+
+
+def resume_experiment(
+    evaluation_manager: EvaluationManager,
+    logger: logging.Logger = logger,
+) -> Dict[str, Any]:
+    """
+    Resume an experiment using its EvaluationManager manifest.
+
+    Parameters
+    ----------
+    evaluation_manager: EvaluationManager
+        The evaluation manager
+    logger: logging.Logger, optional
+        Logger instance to use
+
+    Returns
+    -------
+    experiment_dict : Dict[str, Any]
+        Dictionary containing the experiment components:
+        - data_module : Union[FullGraphDataModule, EdgeBatchDataModule]
+        - model : pl.LightningModule (e.g., EdgePredictionLightning)
+        - run_manifest : RunManifest
+        - trainer : NapistuTrainer
+        - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
+    """
+
+    manifest = getattr(evaluation_manager, EVALUATION_MANAGER.MANIFEST)
+    experiment_config = getattr(
+        evaluation_manager, EVALUATION_MANAGER.EXPERIMENT_CONFIG
+    )
+
+    # 1. Resume W&B Logger
+    wandb_logger = resume_wandb_logger(manifest)
+
+    # 2. Create Data Module
+    data_module = _create_data_module(experiment_config)
+
+    stratify_by = experiment_config.task.edge_prediction_neg_sampling_stratify_by
+    logger.info("Getting edge strata from artifacts...")
+    edge_strata = get_edge_strata_from_artifacts(
+        stratify_by=stratify_by,
+        artifacts=data_module.other_artifacts,
+    )
+
+    # 3. create model
+    model = _create_model(experiment_config, data_module, edge_strata)
+
+    # 4. trainer
+    logger.info("Creating NapistuTrainer from config...")
+    trainer = NapistuTrainer(
+        experiment_config, mode=TRAINER_MODES.EVAL, wandb_logger=wandb_logger
+    )
+
+    experiment_dict = {
+        EXPERIMENT_DICT.DATA_MODULE: data_module,
+        EXPERIMENT_DICT.MODEL: model,
+        EXPERIMENT_DICT.TRAINER: trainer,
+        EXPERIMENT_DICT.RUN_MANIFEST: manifest,
+        EXPERIMENT_DICT.WANDB_LOGGER: wandb_logger,
+    }
+
+    return experiment_dict
+
+
+def test(
+    experiment_dict: ExperimentDict, checkpoint: Optional[Path] = None
+) -> list[dict]:
+
+    if checkpoint is None:
+        checkpoint = "last"
+        logger.warning("No checkpoint provided, using last checkpoint")
+    else:
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint file not found: {checkpoint}")
+
+    test_results = experiment_dict[EXPERIMENT_DICT.TRAINER].test(
+        model=experiment_dict[EXPERIMENT_DICT.MODEL],
+        datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
+        ckpt_path=checkpoint,
+    )
+
+    for key, value in test_results[0].items():
+        if experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER] is not None:
+            experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER].experiment.summary[
+                key
+            ] = value
+
+    return test_results
+
+
+# private functions
+
+
+def _create_data_module(
+    config: ExperimentConfig,
+) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
+    """Create the appropriate data module based on the configuration."""
+    batches_per_epoch = config.training.batches_per_epoch
+    if batches_per_epoch == 1:
+        logger.info("Creating FullGraphDataModule...")
+        return FullGraphDataModule(config)
+    else:
+        logger.info(
+            "Creating EdgeBatchDataModule with batches_per_epoch = %s...",
+            batches_per_epoch,
+        )
+        return EdgeBatchDataModule(config=config, batches_per_epoch=batches_per_epoch)
+
+
+def _create_model(
+    config: ExperimentConfig,
+    data_module: Union[FullGraphDataModule, EdgeBatchDataModule],
+    edge_strata: Optional[Dict[str, Any]] = None,
+) -> EdgePredictionLightning:
+    """Create the model based on the configuration."""
     # a. encoder
     logger.info("Creating MessagePassingEncoder from config...")
     encoder = MessagePassingEncoder.from_config(
@@ -303,29 +459,4 @@ def prepare_experiment(
         config=config.training,
     )
 
-    # 5. trainer
-    logger.info("Creating NapistuTrainer from config...")
-    trainer = NapistuTrainer(config)
-
-    # 6. create a run manifest
-    # Use the same naming scheme as wandb: config.name or generated name
-    experiment_name = config.name or config.get_experiment_name()
-    logger.info("Creating RunManifest with experiment_name = %s...", experiment_name)
-    run_manifest = RunManifest(
-        experiment_name=experiment_name,
-        wandb_run_id=wandb_run_id,
-        wandb_run_url=wandb_run_url,
-        wandb_project=config.wandb.project,
-        wandb_entity=config.wandb.entity,
-        experiment_config=config.model_dump(mode="json"),
-    )
-
-    experiment_dict = {
-        EXPERIMENT_DICT.DATA_MODULE: data_module,
-        EXPERIMENT_DICT.MODEL: model,
-        EXPERIMENT_DICT.TRAINER: trainer,
-        EXPERIMENT_DICT.RUN_MANIFEST: run_manifest,
-        EXPERIMENT_DICT.WANDB_LOGGER: wandb_logger,
-    }
-
-    return experiment_dict
+    return model

@@ -108,8 +108,6 @@ class ModelConfig(BaseModel):
 class DataConfig(BaseModel):
     """Data loading and splitting configuration. These parameters are used to setup the NapistuDataStore object and construct the NapistuData object."""
 
-    name: str = "default"
-
     # config for defining the NapistuDataStore
     store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
     sbml_dfs_path: Path = Field()
@@ -322,7 +320,10 @@ class ExperimentConfig(BaseModel):
         with open(filepath) as f:
             data = yaml.safe_load(f)
 
-        # Convert string paths back to Path objects
+        # Get config file's directory for resolving relative paths
+        config_dir = filepath.parent.resolve()
+
+        # Convert string paths back to Path objects and resolve relative paths to absolute
         def convert_strings_to_paths(obj, key=None):
             if isinstance(obj, dict):
                 return {k: convert_strings_to_paths(v, k) for k, v in obj.items()}
@@ -334,7 +335,13 @@ class ExperimentConfig(BaseModel):
                 DATA_CONFIG.NAPISTU_GRAPH_PATH,
                 EXPERIMENT_CONFIG.OUTPUT_DIR,
             ]:
-                return Path(obj)
+                path = Path(obj)
+                # Resolve relative paths to absolute paths relative to config file directory
+                # These paths should always be resolved to absolute paths
+                if not path.is_absolute():
+                    return (config_dir / path).resolve()
+                else:
+                    return path.resolve()
             else:
                 return obj
 
@@ -373,8 +380,10 @@ class RunManifest(BaseModel):
         default=None, description="Name of the experiment"
     )
 
-    # Full experiment config (stored as dict)
-    experiment_config: dict = Field(description="Complete experiment configuration")
+    # Full experiment config (always an ExperimentConfig object)
+    experiment_config: ExperimentConfig = Field(
+        description="Complete experiment configuration"
+    )
 
     def to_yaml(self, filepath: Path) -> None:
         """
@@ -389,7 +398,8 @@ class RunManifest(BaseModel):
 
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
-        # Convert to dict
+        # Pydantic automatically serializes nested models
+        # Use mode="json" to convert Path objects to strings
         data = self.model_dump(mode="json")
 
         # Write to YAML file
@@ -409,13 +419,14 @@ class RunManifest(BaseModel):
         Returns
         -------
         RunManifest
-            Loaded manifest object
+            Loaded manifest object with experiment_config as ExperimentConfig instance
         """
         import yaml
 
         with open(filepath) as f:
             data = yaml.safe_load(f)
 
+        # Pydantic automatically converts the dict to ExperimentConfig when creating the model
         return cls(**data)
 
 

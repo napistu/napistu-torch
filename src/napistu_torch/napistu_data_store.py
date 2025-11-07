@@ -331,7 +331,7 @@ class NapistuDataStore:
                 f"Cannot create artifacts not in registry: {missing_from_registry}. "
                 f"Available in registry: {available}. "
                 f"To use custom artifacts, save them to the store directly using "
-                f"save_napistu_data() or save_vertex_tensor() or save_pandas_df()."
+                f"store.save_napistu_data() or store.save_vertex_tensor() or store.save_pandas_df()."
             )
 
         # Load raw data ONCE (expensive operation)
@@ -463,7 +463,6 @@ class NapistuDataStore:
         >>> from pathlib import Path
         >>>
         >>> config = DataConfig(
-        ...     name="ecoli_experiment",
         ...     store_dir=Path(".store/ecoli"),
         ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
         ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),

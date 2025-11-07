@@ -12,3 +12,8 @@ PATHWAY_SIMILARITY_DEFS = SimpleNamespace(
     OVERALL="overall",
     OTHER="other",
 )
+
+EVALUATION_MANAGER = SimpleNamespace(
+    MANIFEST="manifest",
+    EXPERIMENT_CONFIG="experiment_config",
+)

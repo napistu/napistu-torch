@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from napistu_torch.configs import (
@@ -167,7 +168,6 @@ class TestDataConfig:
         """Test that all required fields exist and can be set."""
         # Test that required fields exist in the model
         model_fields = DataConfig.model_fields
-        assert DATA_CONFIG.NAME in model_fields
         assert DATA_CONFIG.STORE_DIR in model_fields
         assert DATA_CONFIG.SBML_DFS_PATH in model_fields
         assert DATA_CONFIG.NAPISTU_GRAPH_PATH in model_fields
@@ -184,7 +184,6 @@ class TestDataConfig:
             napistu_graph_path=Path("test_graph.pkl"),
         )
 
-        assert config.name == "default"
         assert config.store_dir == Path(".store")
         assert config.copy_to_store is False
         assert config.overwrite is False
@@ -195,7 +194,6 @@ class TestDataConfig:
         """Test that fields can be customized."""
         custom_path = Path("/custom/path")
         config = DataConfig(
-            name="custom_name",
             store_dir=custom_path,
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
@@ -208,7 +206,6 @@ class TestDataConfig:
             ],
         )
 
-        assert config.name == "custom_name"
         assert config.store_dir == custom_path
         assert config.sbml_dfs_path == Path("custom_sbml.pkl")
         assert config.napistu_graph_path == Path("custom_graph.pkl")
@@ -610,7 +607,6 @@ class TestExperimentConfig:
         """Test that component configs can be customized."""
         model_config = ModelConfig(hidden_channels=256, num_layers=5)
         data_config = DataConfig(
-            name="custom_data",
             sbml_dfs_path=Path("stub_sbml.pkl"),
             napistu_graph_path=Path("stub_graph.pkl"),
         )
@@ -619,7 +615,6 @@ class TestExperimentConfig:
 
         assert config.model.hidden_channels == 256
         assert config.model.num_layers == 5
-        assert config.data.name == "custom_data"
         assert config.data.sbml_dfs_path == Path("stub_sbml.pkl")
         assert config.data.napistu_graph_path == Path("stub_graph.pkl")
 
@@ -663,6 +658,50 @@ class TestExperimentConfig:
             assert isinstance(loaded_config.model, ModelConfig)
             assert isinstance(loaded_config.data, DataConfig)
 
+    def test_from_yaml_resolves_relative_paths(self):
+        """Test that from_yaml resolves relative paths to absolute paths."""
+
+        # Create a temporary YAML file with complex relative paths
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            temp_path = Path(f.name)
+            config_data = {
+                "seed": 42,
+                "data": {
+                    "store_dir": "../../.store",
+                    "sbml_dfs_path": "../../data/napistu/sbml_dfs.pkl",
+                    "napistu_graph_path": "../data/graph.pkl",
+                },
+                "output_dir": "./output/experiments",
+            }
+            yaml.dump(config_data, f)
+
+        try:
+            # Load the config
+            config = ExperimentConfig.from_yaml(temp_path)
+
+            # Verify paths are resolved to absolute paths
+            assert config.data.store_dir.is_absolute()
+            assert config.data.sbml_dfs_path.is_absolute()
+            assert config.data.napistu_graph_path.is_absolute()
+            assert config.output_dir.is_absolute()
+
+            # Verify paths are resolved relative to config file directory
+            config_dir = temp_path.parent.resolve()
+            assert config.data.store_dir == (config_dir / "../../.store").resolve()
+            assert (
+                config.data.sbml_dfs_path
+                == (config_dir / "../../data/napistu/sbml_dfs.pkl").resolve()
+            )
+            assert (
+                config.data.napistu_graph_path
+                == (config_dir / "../data/graph.pkl").resolve()
+            )
+            assert config.output_dir == (config_dir / "./output/experiments").resolve()
+
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
     def test_get_experiment_name(self, stubbed_data_config):
         """Test get_experiment_name method."""
         config = ExperimentConfig(
@@ -698,7 +737,6 @@ class TestConfigIntegration:
         )
 
         data_config = DataConfig(
-            name="custom_dataset",
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
             napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
@@ -731,7 +769,6 @@ class TestConfigIntegration:
         assert experiment_config.name == "integration_test"
         assert experiment_config.model.encoder == ENCODERS.GAT
         assert experiment_config.model.hidden_channels == 256
-        assert experiment_config.data.name == "custom_dataset"
         assert experiment_config.data.sbml_dfs_path == Path("custom_sbml.pkl")
         assert experiment_config.data.napistu_graph_path == Path("custom_graph.pkl")
         assert (
@@ -787,7 +824,6 @@ class TestConfigIntegration:
 
         # Customize component configs
         original_config.model.hidden_channels = 512
-        original_config.data.name = "roundtrip_data"
         original_config.data.napistu_data_name = DEFAULT_ARTIFACTS_NAMES.UNLABELED
         original_config.data.other_artifacts = [DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION]
         original_config.task.edge_prediction_neg_sampling_ratio = 3.0
@@ -807,7 +843,6 @@ class TestConfigIntegration:
             assert loaded_config.deterministic is False
             assert loaded_config.fast_dev_run is True
             assert loaded_config.model.hidden_channels == 512
-            assert loaded_config.data.name == "roundtrip_data"
             assert (
                 loaded_config.data.napistu_data_name
                 == DEFAULT_ARTIFACTS_NAMES.UNLABELED
@@ -844,8 +879,12 @@ class TestConfigIntegration:
 
         # Verify the loaded config has the expected values
         assert loaded_config.name == experiment_name
-        assert loaded_config.data.sbml_dfs_path == sbml_path
-        assert loaded_config.data.napistu_graph_path == graph_path
+        # Paths are resolved to absolute paths relative to config file directory
+        config_dir = template_path.parent.resolve()
+        assert loaded_config.data.sbml_dfs_path == (config_dir / sbml_path).resolve()
+        assert (
+            loaded_config.data.napistu_graph_path == (config_dir / graph_path).resolve()
+        )
 
         # Verify defaults are applied (not in template)
         assert isinstance(loaded_config.model, ModelConfig)
@@ -925,18 +964,26 @@ def test_run_manifest_round_trip(experiment_dict):
         assert loaded_manifest.wandb_project == original_manifest.wandb_project
         assert loaded_manifest.wandb_entity == original_manifest.wandb_entity
 
-        # Verify experiment_config is preserved (compare as dicts)
-        # Path objects are serialized as strings via model_dump(mode='json'), so direct comparison works
-        assert loaded_manifest.experiment_config == original_manifest.experiment_config
+        # Verify experiment_config is preserved
+        # Both should be ExperimentConfig objects now
+        assert isinstance(original_manifest.experiment_config, ExperimentConfig)
+        assert isinstance(loaded_manifest.experiment_config, ExperimentConfig)
 
-        # Verify all expected keys are present in experiment_config
-        assert EXPERIMENT_CONFIG.NAME in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.SEED in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.MODEL in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.DATA in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.TASK in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.TRAINING in loaded_manifest.experiment_config
-        assert EXPERIMENT_CONFIG.WANDB in loaded_manifest.experiment_config
+        # Compare as dicts (Path objects are serialized as strings via model_dump(mode='json'))
+        original_config_dict = original_manifest.experiment_config.model_dump(
+            mode="json"
+        )
+        loaded_config_dict = loaded_manifest.experiment_config.model_dump(mode="json")
+        assert loaded_config_dict == original_config_dict
+
+        # Verify all expected attributes are present in experiment_config
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.NAME)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.SEED)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.MODEL)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.DATA)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.TASK)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.TRAINING)
+        assert hasattr(loaded_manifest.experiment_config, EXPERIMENT_CONFIG.WANDB)
 
     finally:
         # Clean up temporary file
