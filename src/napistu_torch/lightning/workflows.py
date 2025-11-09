@@ -241,6 +241,45 @@ def log_experiment_overview(
     logger.info("=" * 80)
 
 
+def predict(
+    experiment_dict: ExperimentDict,
+    checkpoint: Optional[Path] = None,
+) -> list[dict]:
+    """
+    Predict using the provided experiment dictionary.
+
+    Parameters
+    ----------
+    experiment_dict: ExperimentDict
+        Dictionary containing the experiment components:
+        - data_module : Union[FullGraphDataModule, EdgeBatchDataModule]
+        - model : pl.LightningModule (e.g., EdgePredictionLightning)
+        - run_manifest : RunManifest
+        - trainer : NapistuTrainer
+        - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
+    checkpoint: Optional[Path] = None
+        Path to a checkpoint to use for prediction (if None, uses last checkpoint)
+
+    Returns
+    -------
+    list[dict]
+        List of dictionaries containing the predictions
+    """
+
+    if checkpoint is None:
+        checkpoint = "last"
+        logger.warning("No checkpoint provided, using last checkpoint")
+    else:
+        if not checkpoint.is_file():
+            raise FileNotFoundError(f"Checkpoint file not found at path: {checkpoint}")
+
+    return experiment_dict[EXPERIMENT_DICT.TRAINER].predict(
+        model=experiment_dict[EXPERIMENT_DICT.MODEL],
+        datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
+        ckpt_path=checkpoint,
+    )
+
+
 def prepare_experiment(
     config: ExperimentConfig,
     logger: logging.Logger = logger,

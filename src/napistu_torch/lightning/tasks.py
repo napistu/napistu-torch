@@ -11,7 +11,9 @@ from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
+from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.ml.constants import TRAINING
+from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 from napistu_torch.tasks.node_classification import NodeClassificationTask
@@ -111,6 +113,87 @@ class EdgePredictionLightning(BaseLightningTask):
         config: TrainingConfig,
     ):
         super().__init__(task, config)
+
+    @torch.no_grad()
+    def get_embeddings(self, data: NapistuData) -> torch.Tensor:
+        """
+        Extract node embeddings for the given data.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data object
+
+        Returns
+        -------
+        torch.Tensor
+            Node embeddings [num_nodes, hidden_channels] on CPU
+        """
+        self.eval()
+        data = data.to(self.device)
+
+        # Handle edge data based on encoder configuration
+        edge_data = None
+        if hasattr(self.task.encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE):
+            if (
+                self.task.encoder.edge_weighting_type
+                == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
+            ):
+                edge_data = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+            elif (
+                self.task.encoder.edge_weighting_type
+                == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS
+            ):
+                edge_data = getattr(
+                    self.task.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE, None
+                )
+
+        embeddings = self.task.get_embeddings(data.x, data.edge_index, edge_data)
+        return embeddings.cpu()
+
+    @torch.no_grad()
+    def get_learned_edge_weights(self, data: NapistuData) -> torch.Tensor:
+        """
+        Extract learned edge weights for the given data if a learned edge encoder is present.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data object containing edge attributes.
+
+        Returns
+        -------
+        torch.Tensor
+            Learned edge weights [num_edges] on CPU.
+
+        Raises
+        ------
+        ValueError
+            If the encoder is not configured with a learned edge encoder or if edge attributes are missing.
+        """
+        if (
+            getattr(
+                self.task.encoder,
+                ENCODER_DEFS.EDGE_WEIGHTING_TYPE,
+                EDGE_WEIGHTING_TYPE.NONE,
+            )
+            != EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
+        ):
+            raise ValueError(
+                "Encoder is not configured with a learned edge encoder; "
+                "learned edge weights are unavailable."
+            )
+
+        self.eval()
+        data = data.to(self.device)
+        edge_attr = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+        if edge_attr is None:
+            raise ValueError(
+                "NapistuData.edge_attr is required to compute learned edge weights."
+            )
+
+        learned_weights = self.task.get_learned_edge_weights(edge_attr)
+        return learned_weights.detach().cpu()
 
     def training_step(self, batch, batch_idx):
         """

@@ -207,3 +207,96 @@ def test_edge_prediction_with_edge_encoder(edge_masked_napistu_data, experiment_
         edge_masked_napistu_data.x.shape[0],
         32,
     )  # hidden_channels=32
+
+
+def test_embedding_helpers(edge_masked_napistu_data, experiment_config):
+    """Embedding helpers should agree between the task and Lightning wrappers."""
+
+    encoder = MessagePassingEncoder(
+        in_channels=edge_masked_napistu_data.num_node_features,
+        hidden_channels=32,
+        num_layers=2,
+        encoder_type=ENCODERS.SAGE,
+    )
+    head = DotProductHead()
+    task = EdgePredictionTask(encoder, head)
+    task.eval()
+
+    base_embeddings = task.get_embeddings(
+        edge_masked_napistu_data.x, edge_masked_napistu_data.edge_index
+    )
+
+    lightning_task = EdgePredictionLightning(task, experiment_config.training)
+    lightning_task.eval()
+    lightning_embeddings = lightning_task.get_embeddings(edge_masked_napistu_data)
+
+    assert lightning_embeddings.shape == (
+        edge_masked_napistu_data.num_nodes,
+        32,
+    )
+    assert torch.allclose(
+        lightning_embeddings, base_embeddings.detach().cpu(), atol=1e-6
+    )
+
+
+def test_learned_edge_weight_helpers(edge_masked_napistu_data, experiment_config):
+    """Learned edge weight helpers should return bounded weights from the edge encoder."""
+
+    edge_masked_napistu_data.edge_attr = torch.rand(
+        edge_masked_napistu_data.edge_index.size(1), 6
+    )
+
+    model_config = ModelConfig(
+        encoder=ENCODERS.GCN,
+        hidden_channels=32,
+        num_layers=2,
+        use_edge_encoder=True,
+        edge_encoder_dim=8,
+        edge_encoder_dropout=0.1,
+    )
+    encoder = MessagePassingEncoder.from_config(
+        model_config,
+        in_channels=edge_masked_napistu_data.num_node_features,
+        edge_in_channels=edge_masked_napistu_data.num_edge_features,
+    )
+    head = DotProductHead()
+    task = EdgePredictionTask(encoder, head)
+
+    task.eval()
+    with torch.no_grad():
+        base_weights = task.get_learned_edge_weights(edge_masked_napistu_data.edge_attr)
+
+    lightning_task = EdgePredictionLightning(task, experiment_config.training)
+    lightning_task.eval()
+    lightning_weights = lightning_task.get_learned_edge_weights(
+        edge_masked_napistu_data
+    )
+
+    assert base_weights.shape[0] == edge_masked_napistu_data.edge_index.size(1)
+    assert lightning_weights.shape == base_weights.shape
+    assert torch.allclose(lightning_weights, base_weights.detach().cpu(), atol=1e-6)
+    assert torch.all(lightning_weights >= 0.0)
+    assert torch.all(lightning_weights <= 1.0)
+
+
+def test_get_learned_edge_weights_requires_edge_encoder(edge_masked_napistu_data):
+    """Calling get_learned_edge_weights without a learned encoder should fail."""
+
+    edge_masked_napistu_data.edge_attr = torch.rand(
+        edge_masked_napistu_data.edge_index.size(1), 4
+    )
+
+    encoder = MessagePassingEncoder(
+        in_channels=edge_masked_napistu_data.num_node_features,
+        hidden_channels=32,
+        num_layers=2,
+        encoder_type=ENCODERS.SAGE,
+    )
+    head = DotProductHead()
+    task = EdgePredictionTask(encoder, head)
+
+    with pytest.raises(
+        ValueError,
+        match="Encoder is not configured with a learned edge encoder",
+    ):
+        task.get_learned_edge_weights(edge_masked_napistu_data.edge_attr)
