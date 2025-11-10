@@ -1,10 +1,9 @@
-"""
-Utility functions for PyTorch operations.
-"""
+"""Utility functions for managing torch devices and memory."""
 
 import gc
 import logging
 from contextlib import contextmanager
+from typing import Union
 
 import torch
 
@@ -68,6 +67,26 @@ def cleanup_tensors(*tensors) -> None:
 
 
 # torch utils
+
+
+def ensure_device(device: Union[str, torch.device]) -> torch.device:
+    """
+    Ensure the device is a torch.device.
+
+    Parameters
+    ----------
+    device : Union[str, torch.device]
+        The device to ensure
+    """
+
+    if isinstance(device, str):
+        return torch.device(device)
+    elif isinstance(device, torch.device):
+        return device
+    else:
+        raise ValueError(
+            f"Invalid device: {device} value, must be a string or torch.device"
+        )
 
 
 def select_device(mps_valid: bool = True):

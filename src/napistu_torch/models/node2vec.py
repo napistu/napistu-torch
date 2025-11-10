@@ -5,8 +5,8 @@ from torch.optim import Optimizer
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import Node2Vec
 
-from napistu_torch.ml.torch_utils import select_device
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.utils.torch_utils import select_device
 
 
 def get_node2vec_model(napistu_data: NapistuData, device: torch.device) -> Node2Vec:

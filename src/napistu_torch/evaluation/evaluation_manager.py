@@ -133,8 +133,10 @@ class EvaluationManager:
                 f"Checkpoint file not found at path: {checkpoint_path}"
             )
 
+        experiment_dict = self.get_experiment_dict()
+
         checkpoint = torch.load(checkpoint_path, weights_only=False)
-        model = self.experiment_dict[EXPERIMENT_DICT.MODEL]
+        model = experiment_dict[EXPERIMENT_DICT.MODEL]
         model.load_state_dict(checkpoint["state_dict"])
         model.eval()
 
