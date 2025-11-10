@@ -17,7 +17,7 @@ from napistu_torch.evaluation.constants import (
     EVALUATION_TENSORS,
     PATHWAY_SIMILARITY_DEFS,
 )
-from napistu_torch.ml.torch_utils import memory_manager
+from napistu_torch.utils.torch_utils import ensure_device, memory_manager
 from napistu_torch.vertex_tensor import VertexTensor
 
 
@@ -49,7 +49,18 @@ def calculate_pathway_similarities(
     """
 
     if filtering_mask is None:
-        filtering_mask = torch.ones_like(pathway_assignments, dtype=torch.bool)
+        # Create 1D mask for rows only
+        filtering_mask = torch.ones(pathway_assignments.shape[0], dtype=torch.bool)
+    else:
+        if embedding_matrix.shape[0] != filtering_mask.shape[0]:
+            raise ValueError(
+                "embedding_matrix and filtering_mask must have the same number of rows"
+            )
+
+    if embedding_matrix.shape[0] != pathway_assignments.shape[0]:
+        raise ValueError(
+            "embedding_matrix and pathway_assignments must have the same number of rows"
+        )
 
     per_cat_sim, overall_sim = _within_category_similarity(
         embedding_matrix[filtering_mask],
@@ -190,6 +201,7 @@ def _within_category_similarity(
     if device is None:
         device = embeddings.device
 
+    device = ensure_device(device)
     with memory_manager(device):
         # Ensure inputs are on the correct device
         embeddings = embeddings.to(device)

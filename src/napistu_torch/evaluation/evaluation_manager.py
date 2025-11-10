@@ -3,15 +3,25 @@
 import logging
 import re
 from pathlib import Path
-from typing import Tuple, Union
+from typing import TYPE_CHECKING, Optional, Tuple, Union
 
+import torch
 from pydantic import ValidationError
+
+if TYPE_CHECKING:  # for static analysis only
+    from pytorch_lightning import LightningModule
+else:
+    LightningModule = object
 
 from napistu_torch.configs import RunManifest
 from napistu_torch.constants import (
     RUN_MANIFEST,
     RUN_MANIFEST_DEFAULTS,
 )
+from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.napistu_data import NapistuData
+from napistu_torch.napistu_data_store import NapistuDataStore
+from napistu_torch.utils.optional import import_lightning, require_lightning
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +80,73 @@ class EvaluationManager:
             self.best_checkpoint_path, self.best_checkpoint_val_auc = None, None
         else:
             self.best_checkpoint_path, self.best_checkpoint_val_auc = best_checkpoint
+
+        self.experiment_dict = None
+        self.napistu_data_store = None
+
+    @require_lightning
+    def get_experiment_dict(self) -> dict:
+        from napistu_torch.lightning.workflows import (
+            resume_experiment,  # import here to avoid circular import
+        )
+
+        if self.experiment_dict is None:
+            self.experiment_dict = resume_experiment(self)
+
+        return self.experiment_dict
+
+    def get_store(self) -> NapistuDataStore:
+
+        if self.napistu_data_store is None:
+            self.napistu_data_store = NapistuDataStore(
+                self.experiment_config.data.store_dir
+            )
+
+        return self.napistu_data_store
+
+    def get_run_summary(self) -> dict:
+        from wandb import Api
+
+        api = Api()
+
+        run_path = f"{self.wandb_entity}/{self.wandb_project}/{self.wandb_run_id}"
+        run = api.run(run_path)
+
+        # Extract summary metrics
+        summary = run.summary._json_dict
+        return summary
+
+    @require_lightning
+    def load_model_from_checkpoint(
+        self, checkpoint_path: Optional[Path] = None
+    ) -> LightningModule:
+        import_lightning()
+
+        if checkpoint_path is None:
+            checkpoint_path = self.best_checkpoint_path
+            if checkpoint_path is None:
+                raise ValueError(
+                    "No checkpoint path provided and no best checkpoint found"
+                )
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint file not found at path: {checkpoint_path}"
+            )
+
+        experiment_dict = self.get_experiment_dict()
+
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
+        model = experiment_dict[EXPERIMENT_DICT.MODEL]
+        model.load_state_dict(checkpoint["state_dict"])
+        model.eval()
+
+        return model
+
+    def load_napistu_data(self, napistu_data_name: Optional[str] = None) -> NapistuData:
+        if napistu_data_name is None:
+            napistu_data_name = self.experiment_config.data.napistu_data_name
+        napistu_data_store = self.get_store()
+        return napistu_data_store.load_napistu_data(napistu_data_name)
 
 
 # public functions

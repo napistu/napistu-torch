@@ -23,10 +23,16 @@ Alternatively, you can clone this repository and perform a local install. e.g., 
 pip install .
 ```
 
+### Mac setup
+
+```bash
+uv pip install torch==2.8.0
+uv pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-2.8.0+cpu.html
+uv install 'napistu-torch[dev]'
+```
+
 ## Documentation
 - 🚸 **Project Documentation**: [napistu/wiki](https://github.com/napistu/napistu/wiki)
-
-
 
 ## Advanced setup
 

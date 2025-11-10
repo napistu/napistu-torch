@@ -250,3 +250,14 @@ RUN_MANIFEST = SimpleNamespace(
 RUN_MANIFEST_DEFAULTS = {
     RUN_MANIFEST.MANIFEST_FILENAME: "run_manifest.yaml",
 }
+
+OPTIONAL_DEPENDENCIES = SimpleNamespace(
+    VIZ="viz",
+    WANDB="wandb",
+    LIGHTNING="lightning",
+)
+
+OPTIONAL_DEFS = SimpleNamespace(
+    LIGHTNING_PACKAGE="pytorch_lightning",
+    LIGHTNING_EXTRA=OPTIONAL_DEPENDENCIES.LIGHTNING,
+)
