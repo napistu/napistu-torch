@@ -12,6 +12,7 @@ from napistu.network.ng_core import NapistuGraph
 
 from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.load.constants import (
+    STRATIFICATION_DEFS,
     STRATIFY_BY,
     VALID_STRATIFY_BY,
 )
@@ -82,7 +83,7 @@ def create_composite_edge_strata(
 
     edge_strata = (
         pd.Series(source_part, index=df.index)
-        + " -> "
+        + STRATIFICATION_DEFS.FROM_TO_SEPARATOR
         + pd.Series(target_part, index=df.index)
     )
 
@@ -118,11 +119,14 @@ def ensure_strata_series(
     elif isinstance(edge_strata, pd.Series):
         return edge_strata
     elif isinstance(edge_strata, pd.DataFrame):
-        if edge_strata.shape[1] == 1 and "edge_strata" in edge_strata.columns:
-            return edge_strata["edge_strata"]
+        if (
+            edge_strata.shape[1] == 1
+            and STRATIFICATION_DEFS.EDGE_STRATA in edge_strata.columns
+        ):
+            return edge_strata[STRATIFICATION_DEFS.EDGE_STRATA]
         else:
             raise ValueError(
-                f"DataFrame must have exactly one column named 'edge_strata', "
+                f"DataFrame must have exactly one column named '{STRATIFICATION_DEFS.EDGE_STRATA}', "
                 f"got columns: {list(edge_strata.columns)}"
             )
     else:
