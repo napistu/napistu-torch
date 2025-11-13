@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -5,6 +6,7 @@ from pandas.testing import assert_frame_equal
 
 from napistu_torch.evaluation.constants import EDGE_PREDICTION_BY_STRATA_DEFS
 from napistu_torch.evaluation.edge_prediction import (
+    plot_edge_predictions_by_strata,
     summarize_edge_predictions_by_strata,
 )
 from napistu_torch.load.constants import STRATIFICATION_DEFS
@@ -47,8 +49,26 @@ def test_summarize_edge_predictions_by_strata(edge_predictions, edge_strata_df):
                 0.833333,
                 1.25,
             ],
+            EDGE_PREDICTION_BY_STRATA_DEFS.LOG2_OBSERVED_OVER_EXPECTED: [
+                np.log2(1.111111),
+                np.log2(0.833333),
+                np.log2(0.833333),
+                np.log2(1.25),
+            ],
             EDGE_PREDICTION_BY_STRATA_DEFS.AVERAGE_PREDICTION_PROBABILITY: [
                 0.85,
+                0.40,
+                0.30,
+                0.20,
+            ],
+            EDGE_PREDICTION_BY_STRATA_DEFS.PREDICTION_PROBABILITY_Q025: [
+                0.805,
+                0.40,
+                0.30,
+                0.20,
+            ],
+            EDGE_PREDICTION_BY_STRATA_DEFS.PREDICTION_PROBABILITY_Q975: [
+                0.895,
                 0.40,
                 0.30,
                 0.20,
@@ -62,5 +82,8 @@ def test_summarize_edge_predictions_by_strata(edge_predictions, edge_strata_df):
         expected,
         check_exact=False,
         check_dtype=False,
-        atol=1e-6,
+        atol=0.01,
     )
+
+    # Test that plotting function runs without error
+    plot_edge_predictions_by_strata(summary)

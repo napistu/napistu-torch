@@ -25,6 +25,15 @@ EDGE_PREDICTION_BY_STRATA_DEFS = SimpleNamespace(
     TO_ATTRIBUTE_COUNT="to_attribute_count",
     EXPECTED_COUNT="expected_count",
     OBSERVED_OVER_EXPECTED="observed_over_expected",
+    LOG2_OBSERVED_OVER_EXPECTED="log2_observed_over_expected",
     AVERAGE_PREDICTION_PROBABILITY="average_prediction_probability",
+    PREDICTION_PROBABILITY_Q025="prediction_probability_q025",
+    PREDICTION_PROBABILITY_Q975="prediction_probability_q975",
     COUNT="count",
+)
+
+EDGE_WEIGHT_SENSITIVITY_DEFS = SimpleNamespace(
+    FEATURE_NAME="feature_name",
+    SENSITIVITY="sensitivity",
+    ABSOLUTE_SENSITIVITY="absolute_sensitivity",
 )
