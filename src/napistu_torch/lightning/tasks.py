@@ -7,6 +7,7 @@ import logging
 
 import pytorch_lightning as pl
 import torch
+import torch.nn as nn
 from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
@@ -357,6 +358,38 @@ class NodeClassificationLightning(BaseLightningTask):
         for metric_name, value in metrics.items():
             self.log(f"test_{metric_name}", value, on_epoch=True)
         return metrics
+
+
+# public functions
+
+
+def get_edge_encoder(model: nn.Module) -> nn.Module:
+    """
+    Retrieve the learned edge encoder module from a trained model.
+
+    Parameters
+    ----------
+    model : nn.Module
+        Model whose task encoder defines ``edge_weighting_value``.
+
+    Returns
+    -------
+    nn.Module
+        The learned edge encoder set to evaluation mode.
+
+    Raises
+    ------
+    ValueError
+        If the model does not include a learned edge encoder.
+    """
+    edge_encoder = getattr(model.task.encoder, "edge_weighting_value", None)
+    if edge_encoder is None or not isinstance(edge_encoder, nn.Module):
+        raise ValueError("Experiment does not include a learned edge encoder.")
+    edge_encoder.eval()
+    return edge_encoder
+
+
+# private functions
 
 
 def _validate_is_napistu_data(batch, method_name: str):

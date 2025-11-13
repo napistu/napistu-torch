@@ -124,6 +124,11 @@ STRATIFY_BY_TO_ARTIFACT_NAMES = {
     STRATIFY_BY.NODE_TYPE: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
 }
 
+STRATIFICATION_DEFS = SimpleNamespace(
+    EDGE_STRATA="edge_strata",
+    FROM_TO_SEPARATOR=" -> ",
+)
+
 # toss these attributes during augmentation
 
 IGNORED_EDGE_ATTRIBUTES = [

@@ -104,7 +104,7 @@ def plot_coordinates_with_masks(
                 label=category_name,
             )
 
-        ax.set_title(f"{category_name}\n({mask.sum()} points)", fontsize=10)
+        ax.set_title(f"{category_name} ({mask.sum()} points)", fontsize=10, loc="left")
         ax.set_xlabel("Dimension 1")
         ax.set_ylabel("Dimension 2")
         ax.legend(markerscale=2, fontsize=8)
