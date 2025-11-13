@@ -7,6 +7,7 @@ Napistu-Torch Python library documentation
 
    installation
    usage
+   cli
    api
 
 Indices and tables
