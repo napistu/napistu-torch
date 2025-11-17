@@ -28,11 +28,22 @@ from napistu_torch.lightning.workflows import (
     test as run_test_workflow,
 )
 
+# Module-level logger and console - will be initialized when CLI is invoked
+logger = None
+console = None
+
 
 @click.group()
 def cli():
     """Napistu-Torch: GNN training for network integration"""
-    pass
+    # Set up logging only when CLI is actually invoked, not at import time
+    # This prevents interfering with pytest's caplog fixture during tests
+    # Note: Individual commands may set up their own logging (e.g., train command)
+    global logger, console
+    if logger is None:
+        # Use napistu's setup_logging for basic CLI logging
+        from napistu._cli import setup_logging as napistu_setup_logging
+        logger, console = napistu_setup_logging()
 
 
 @cli.command()

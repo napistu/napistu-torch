@@ -227,6 +227,10 @@ def verbosity_option(f: Callable) -> Callable:
     Decorator that adds --verbosity option.
 
     This controls the console output level. File logs are always DEBUG.
+    
+    Note: This is a simplified version for napistu-torch that returns the verbosity
+    value as a parameter. For napistu-py style verbosity that auto-configures logging,
+    use napistu._cli.verbosity_option instead.
     """
     return click.option(
         "--verbosity",
