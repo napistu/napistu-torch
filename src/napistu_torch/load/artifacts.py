@@ -34,6 +34,7 @@ from napistu_torch.load.constants import (
     ARTIFACT_DEFS,
     DEFAULT_ARTIFACTS_NAMES,
     SPLITTING_STRATEGIES,
+    STRATIFICATION_DEFS,
     STRATIFY_BY,
     STRATIFY_BY_ARTIFACT_NAMES,
     STRATIFY_BY_TO_ARTIFACT_NAMES,
@@ -395,7 +396,7 @@ def _create_edge_strata_by_node_species_type(
     """
     return create_composite_edge_strata(
         napistu_graph, stratify_by=STRATIFY_BY.NODE_SPECIES_TYPE
-    ).to_frame(name="edge_strata")
+    ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
 def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFrame:
@@ -414,7 +415,7 @@ def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFram
     """
     return create_composite_edge_strata(
         napistu_graph, stratify_by=STRATIFY_BY.NODE_TYPE
-    ).to_frame(name="edge_strata")
+    ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
 # artifact registry

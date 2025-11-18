@@ -21,49 +21,6 @@ from napistu_torch.utils.base_utils import shortest_common_prefix
 logger = logging.getLogger(__name__)
 
 
-def compose_encoding_configs(
-    encoding_defaults: Union[Dict, EncodingManager],
-    encoding_overrides: Optional[Union[Dict, EncodingManager]] = None,
-    encoders: Dict = DEFAULT_ENCODERS,
-    verbose: bool = False,
-) -> EncodingManager:
-    """Compose encoding configurations with optional overrides.
-
-    Parameters
-    ----------
-    encoding_defaults : Union[Dict, EncodingManager]
-        Base encoding configuration.
-    encoding_overrides : Optional[Union[Dict, EncodingManager]], default=None
-        Optional override configuration to merge with defaults.
-        For column conflicts, overrides take precedence.
-    encoders : Dict, default=DEFAULT_ENCODERS
-        Encoder instances to use when configs are in simple format.
-    verbose : bool, default=False
-        If True, log config composition details.
-
-    Returns
-    -------
-    EncodingManager
-        Composed configuration (or just defaults if no overrides).
-
-    Examples
-    --------
-    >>> defaults = {ENCODINGS.NUMERIC: ['col1']}
-    >>> overrides = {ENCODINGS.CATEGORICAL: ['col2']}
-    >>> config = compose_encoding_configs(defaults, overrides)
-    """
-    # Ensure configs are EncodingManager instances
-    encoding_defaults = EncodingManager.ensure(encoding_defaults, encoders)
-    if encoding_overrides is not None:
-        encoding_overrides = EncodingManager.ensure(encoding_overrides, encoders)
-
-    # Compose configurations
-    if encoding_overrides is None:
-        return encoding_defaults
-    else:
-        return encoding_defaults.compose(encoding_overrides, verbose=verbose)
-
-
 def auto_encode(
     graph_df: pd.DataFrame,
     existing_encodings: Union[Dict, EncodingManager],
@@ -198,6 +155,49 @@ def classify_encoding(series: pd.Series, max_categories: int = 50) -> Optional[s
             return ENCODINGS.SPARSE_CATEGORICAL
         else:
             return ENCODINGS.CATEGORICAL
+
+
+def compose_encoding_configs(
+    encoding_defaults: Union[Dict, EncodingManager],
+    encoding_overrides: Optional[Union[Dict, EncodingManager]] = None,
+    encoders: Dict = DEFAULT_ENCODERS,
+    verbose: bool = False,
+) -> EncodingManager:
+    """Compose encoding configurations with optional overrides.
+
+    Parameters
+    ----------
+    encoding_defaults : Union[Dict, EncodingManager]
+        Base encoding configuration.
+    encoding_overrides : Optional[Union[Dict, EncodingManager]], default=None
+        Optional override configuration to merge with defaults.
+        For column conflicts, overrides take precedence.
+    encoders : Dict, default=DEFAULT_ENCODERS
+        Encoder instances to use when configs are in simple format.
+    verbose : bool, default=False
+        If True, log config composition details.
+
+    Returns
+    -------
+    EncodingManager
+        Composed configuration (or just defaults if no overrides).
+
+    Examples
+    --------
+    >>> defaults = {ENCODINGS.NUMERIC: ['col1']}
+    >>> overrides = {ENCODINGS.CATEGORICAL: ['col2']}
+    >>> config = compose_encoding_configs(defaults, overrides)
+    """
+    # Ensure configs are EncodingManager instances
+    encoding_defaults = EncodingManager.ensure(encoding_defaults, encoders)
+    if encoding_overrides is not None:
+        encoding_overrides = EncodingManager.ensure(encoding_overrides, encoders)
+
+    # Compose configurations
+    if encoding_overrides is None:
+        return encoding_defaults
+    else:
+        return encoding_defaults.compose(encoding_overrides, verbose=verbose)
 
 
 def deduplicate_features(

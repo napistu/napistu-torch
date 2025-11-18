@@ -11,6 +11,7 @@ from napistu.network.constants import (
     NAPISTU_GRAPH,
     NAPISTU_GRAPH_EDGES,
     NAPISTU_GRAPH_VERTICES,
+    SINGULAR_GRAPH_ENTITIES,
     VALID_VERTEX_SBML_DFS_SUMMARIES,
 )
 from napistu.network.ng_core import NapistuGraph
@@ -27,6 +28,9 @@ from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     IGNORED_EDGE_ATTRIBUTES,
+    IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+    IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
+    IGNORED_VERTEX_ATTRIBUTES,
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
@@ -46,7 +50,12 @@ def augment_napistu_graph(
     napistu_graph: NapistuGraph,
     sbml_dfs_summary_types: list = VALID_VERTEX_SBML_DFS_SUMMARIES,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
+    },
+    ignored_if_constant_attributes: dict[str, dict[str, Any]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
     },
     inplace: bool = False,
 ) -> None:
@@ -65,7 +74,9 @@ def augment_napistu_graph(
     sbml_dfs_summary_types : list, optional
         Types of summaries to include. Defaults to all valid summary types.
     ignored_attributes : dict[str, list[str]], optional
-        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES.
+        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES and IGNORED_VERTEX_ATTRIBUTES.
+    ignored_if_constant_attributes : dict[str, dict[str, Any]], optional
+        A dictionary of attribute types and dicts mapping attribute names to values to check against. For example, {"some_attr": 0} means check if all values are 0 or None. Defaults to IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES and IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES.
     inplace : bool, default=False
         If True, modify the NapistuGraph in place.
         If False, return a new NapistuGraph with the augmentations.
@@ -110,6 +121,8 @@ def augment_napistu_graph(
 
     # drop ignored attributes which aren't needed
     _ignore_graph_attributes(napistu_graph, ignored_attributes)
+    # ignore attributes if they are a constant specified value or missing for all vertices/edges
+    _ignore_if_constant(napistu_graph, ignored_if_constant_attributes)
 
     return None if inplace else napistu_graph
 
@@ -495,7 +508,8 @@ def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
 def _ignore_graph_attributes(
     napistu_graph: NapistuGraph,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
     },
 ) -> None:
     """
@@ -503,20 +517,90 @@ def _ignore_graph_attributes(
 
     This function removes the specified attributes from either vertices or edges. This is generally to restrict the vertex and edge encodings to a manageable size.
     """
+    for entity_type in [NAPISTU_GRAPH.EDGES, NAPISTU_GRAPH.VERTICES]:
+        if entity_type not in ignored_attributes:
+            continue
 
-    # currently only edge attributes are ignored
-    existing_edge_attributes = napistu_graph.es.attributes()
-    to_be_removed_edge_attributes = set(ignored_attributes[NAPISTU_GRAPH.EDGES]) & set(
-        existing_edge_attributes
-    )
+        if entity_type == NAPISTU_GRAPH.EDGES:
+            existing_attributes = napistu_graph.es.attributes()
+        else:
+            existing_attributes = napistu_graph.vs.attributes()
 
-    if len(to_be_removed_edge_attributes) > 0:
-        logger.info(
-            f"Removing the following edge attributes: {to_be_removed_edge_attributes}"
+        to_be_removed_attributes = set(ignored_attributes[entity_type]) & set(
+            existing_attributes
         )
-        napistu_graph.remove_attributes(
-            NAPISTU_GRAPH.EDGES, to_be_removed_edge_attributes
-        )
+
+        if len(to_be_removed_attributes) > 0:
+            entity_name = SINGULAR_GRAPH_ENTITIES[entity_type]
+            logger.info(
+                f"Removing the following {entity_name} attributes: {to_be_removed_attributes}"
+            )
+            napistu_graph.remove_attributes(entity_type, to_be_removed_attributes)
+
+    return None
+
+
+def _ignore_if_constant(
+    napistu_graph: NapistuGraph,
+    attributes_to_check: dict[str, dict[str, Any]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
+    },
+) -> None:
+    """
+    Remove attributes from vertices or edges if they are constant at a specific value or missing for all vertices/edges.
+
+    This function checks specified attributes and removes them if:
+    - All vertices/edges have the specified value (or None/missing)
+    - All vertices/edges have missing/None values
+
+    Parameters
+    ----------
+    napistu_graph : NapistuGraph
+        The NapistuGraph to check and modify.
+    attributes_to_check : dict[str, dict[str, Any]], optional
+        Dictionary mapping NAPISTU_GRAPH.EDGES/VERTICES to dicts mapping attribute names
+        to values to check against. For example, {"some_attr": 0} means check if all
+        values are 0 or None. Defaults to empty dicts.
+
+    Returns
+    -------
+    None
+        Modifies the NapistuGraph in place.
+    """
+    for entity_type in [NAPISTU_GRAPH.EDGES, NAPISTU_GRAPH.VERTICES]:
+        if entity_type not in attributes_to_check:
+            continue
+
+        if entity_type == NAPISTU_GRAPH.EDGES:
+            existing_attributes = napistu_graph.es.attributes()
+            entity_sequence = napistu_graph.es
+        else:
+            existing_attributes = napistu_graph.vs.attributes()
+            entity_sequence = napistu_graph.vs
+
+        attrs_to_check = attributes_to_check[entity_type]
+        to_be_removed_attributes = set()
+
+        for attr, expected_value in attrs_to_check.items():
+            if attr not in existing_attributes:
+                continue
+            values = entity_sequence[attr]
+            # Filter out NaN values and create set of unique observed values
+            non_nan_values = [v for v in values if not pd.isna(v)]
+            unique_values = set(non_nan_values)
+            # Remove if all values are NaN or if only expected_value is present
+            if len(unique_values) == 0 or unique_values == {expected_value}:
+                to_be_removed_attributes.add(attr)
+
+        if len(to_be_removed_attributes) > 0:
+            entity_name = SINGULAR_GRAPH_ENTITIES[entity_type]
+            logger.info(
+                f"Removing constant or all-missing {entity_name} attributes: {to_be_removed_attributes}"
+            )
+            napistu_graph.remove_attributes(entity_type, to_be_removed_attributes)
+
+    return None
 
 
 def _napistu_graph_to_edge_masked_napistu_data(
