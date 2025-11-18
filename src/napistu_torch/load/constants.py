@@ -140,6 +140,7 @@ IGNORED_EDGE_ATTRIBUTES = [
     "OmniPath_is_directed",
     "OmniPath_is_inhibition",
     "OmniPath_is_stimulation",
+    "sbo_term_downstream_SBO:0000336",  # interactors will always be identical between upstream and downstream vertex
 ]
 
 IGNORED_VERTEX_ATTRIBUTES = [
@@ -149,3 +150,10 @@ IGNORED_VERTEX_ATTRIBUTES = [
     "ontology_smiles",  # currently the same as OmniPath small molecule
     "ontology_other",  # currently the same as the unknown species type
 ]
+
+IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES = {
+    "STRING_database_transferred": 0,
+    "STRING_neighborhood": 0,
+}
+
+IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES = {}
