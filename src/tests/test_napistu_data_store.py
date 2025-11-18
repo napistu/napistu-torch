@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-import torch
+from utils import assert_tensors_equal
 
 from napistu_torch.constants import (
     ARTIFACT_TYPES,
@@ -96,12 +96,12 @@ def _verify_napistu_data_equality(original, loaded):
     assert original.name == loaded.name
     assert original.splitting_strategy == loaded.splitting_strategy
 
-    # Check tensors
-    assert torch.equal(original.x, loaded.x)
-    assert torch.equal(original.edge_index, loaded.edge_index)
-    assert torch.equal(original.edge_attr, loaded.edge_attr)
+    # Check tensors (handles NaN values correctly)
+    assert_tensors_equal(original.x, loaded.x)
+    assert_tensors_equal(original.edge_index, loaded.edge_index)
+    assert_tensors_equal(original.edge_attr, loaded.edge_attr)
 
-    assert torch.equal(original.edge_weight, loaded.edge_weight)
+    assert_tensors_equal(original.edge_weight, loaded.edge_weight)
     assert original.ng_vertex_names.equals(loaded.ng_vertex_names)
     assert original.ng_edge_names.equals(loaded.ng_edge_names)
     assert original.vertex_feature_names == loaded.vertex_feature_names
@@ -109,7 +109,7 @@ def _verify_napistu_data_equality(original, loaded):
 
     # Check optional tensors
     if original.y is not None:
-        assert torch.equal(original.y, loaded.y)
+        assert_tensors_equal(original.y, loaded.y)
         # Check labeling manager if it exists
         if (
             hasattr(original, NAPISTU_DATA.LABELING_MANAGER)
@@ -221,8 +221,8 @@ def _verify_vertex_tensor_equality(original, loaded):
     assert original.description == loaded.description
     assert original.feature_names == loaded.feature_names
 
-    # Check tensors
-    assert torch.equal(original.data, loaded.data)
+    # Check tensors (handles NaN values correctly)
+    assert_tensors_equal(original.data, loaded.data)
 
     # Check vertex names
     assert original.vertex_names.equals(loaded.vertex_names)

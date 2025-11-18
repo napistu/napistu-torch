@@ -3,6 +3,8 @@
 import numpy as np
 import pandas as pd
 import pytest
+from napistu.network.constants import NAPISTU_GRAPH_VERTICES
+from napistu.ontologies.constants import SPECIES_TYPES
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -406,3 +408,73 @@ def test_expand_deduplicated_features():
     canonical_idx = expanded_names.index("is_string")
     alias_idx = expanded_names.index("is_string_y")
     np.testing.assert_array_equal(expanded[:, canonical_idx], expanded[:, alias_idx])
+
+
+def test_sparse_categorical_includes_all_categories():
+    """Test that sparse categorical encoding includes all categories, including the first alphabetically."""
+    # Create DataFrame with sparse categorical column that includes the first alphabetical category
+    # This tests that drop=None is used (not drop="first")
+    df = pd.DataFrame(
+        {
+            NAPISTU_GRAPH_VERTICES.SPECIES_TYPE: [
+                SPECIES_TYPES.COMPLEX,  # First alphabetically - should NOT be dropped
+                SPECIES_TYPES.DRUG,
+                SPECIES_TYPES.METABOLITE,
+                None,  # Missing value
+                SPECIES_TYPES.OTHER,
+                SPECIES_TYPES.PROTEIN,
+                SPECIES_TYPES.REGULATORY_RNA,
+            ]
+        }
+    )
+
+    # Use DEFAULT_ENCODERS which should have drop=None for SPARSE_CATEGORICAL
+    from napistu_torch.load.encoders import DEFAULT_ENCODERS
+
+    config = {
+        ENCODINGS.SPARSE_CATEGORICAL: {
+            ENCODING_MANAGER.COLUMNS: [NAPISTU_GRAPH_VERTICES.SPECIES_TYPE],
+            ENCODING_MANAGER.TRANSFORMER: DEFAULT_ENCODERS[
+                ENCODINGS.SPARSE_CATEGORICAL
+            ],
+        }
+    }
+
+    encoded_array, feature_names, _ = encode_dataframe(df, config, deduplicate=False)
+
+    # Extract category names from feature names
+    # Feature names format: "sparse_categorical__species_type_<category>"
+    category_features = [
+        name
+        for name in feature_names
+        if name.startswith("sparse_categorical__species_type_")
+    ]
+    categories = [name.split("__species_type_")[1] for name in category_features]
+
+    # Verify all non-null categories are included
+    expected_categories = {
+        SPECIES_TYPES.COMPLEX,
+        SPECIES_TYPES.DRUG,
+        SPECIES_TYPES.METABOLITE,
+        SPECIES_TYPES.OTHER,
+        SPECIES_TYPES.PROTEIN,
+        SPECIES_TYPES.REGULATORY_RNA,
+    }
+    actual_categories = set(categories)
+
+    # Check that all expected categories are present
+    missing_categories = expected_categories - actual_categories
+    assert (
+        not missing_categories
+    ), f"Missing categories in sparse categorical encoding: {missing_categories}. Got: {actual_categories}"
+
+    # Verify "complex" (first alphabetically) is included
+    assert SPECIES_TYPES.COMPLEX in actual_categories, (
+        f"First alphabetical category '{SPECIES_TYPES.COMPLEX}' should be included. "
+        f"Got categories: {actual_categories}"
+    )
+
+    # Verify we have the expected number of categories (6 non-null + potentially nan)
+    assert len(category_features) >= len(
+        expected_categories
+    ), f"Expected at least {len(expected_categories)} category features, got {len(category_features)}"

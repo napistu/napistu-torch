@@ -27,6 +27,7 @@ from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     IGNORED_EDGE_ATTRIBUTES,
+    IGNORED_VERTEX_ATTRIBUTES,
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
@@ -46,7 +47,8 @@ def augment_napistu_graph(
     napistu_graph: NapistuGraph,
     sbml_dfs_summary_types: list = VALID_VERTEX_SBML_DFS_SUMMARIES,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
     },
     inplace: bool = False,
 ) -> None:
@@ -65,7 +67,7 @@ def augment_napistu_graph(
     sbml_dfs_summary_types : list, optional
         Types of summaries to include. Defaults to all valid summary types.
     ignored_attributes : dict[str, list[str]], optional
-        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES.
+        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES and IGNORED_VERTEX_ATTRIBUTES.
     inplace : bool, default=False
         If True, modify the NapistuGraph in place.
         If False, return a new NapistuGraph with the augmentations.
@@ -495,7 +497,8 @@ def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
 def _ignore_graph_attributes(
     napistu_graph: NapistuGraph,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
     },
 ) -> None:
     """
@@ -504,19 +507,36 @@ def _ignore_graph_attributes(
     This function removes the specified attributes from either vertices or edges. This is generally to restrict the vertex and edge encodings to a manageable size.
     """
 
-    # currently only edge attributes are ignored
-    existing_edge_attributes = napistu_graph.es.attributes()
-    to_be_removed_edge_attributes = set(ignored_attributes[NAPISTU_GRAPH.EDGES]) & set(
-        existing_edge_attributes
-    )
+    # ignore edge attributes
+    if NAPISTU_GRAPH.EDGES in ignored_attributes:
+        existing_edge_attributes = napistu_graph.es.attributes()
+        to_be_removed_edge_attributes = set(
+            ignored_attributes[NAPISTU_GRAPH.EDGES]
+        ) & set(existing_edge_attributes)
 
-    if len(to_be_removed_edge_attributes) > 0:
-        logger.info(
-            f"Removing the following edge attributes: {to_be_removed_edge_attributes}"
-        )
-        napistu_graph.remove_attributes(
-            NAPISTU_GRAPH.EDGES, to_be_removed_edge_attributes
-        )
+        if len(to_be_removed_edge_attributes) > 0:
+            logger.info(
+                f"Removing the following edge attributes: {to_be_removed_edge_attributes}"
+            )
+            napistu_graph.remove_attributes(
+                NAPISTU_GRAPH.EDGES, to_be_removed_edge_attributes
+            )
+
+    if NAPISTU_GRAPH.VERTICES in ignored_attributes:
+        existing_vertex_attributes = napistu_graph.vs.attributes()
+        to_be_removed_vertex_attributes = set(
+            ignored_attributes[NAPISTU_GRAPH.VERTICES]
+        ) & set(existing_vertex_attributes)
+
+        if len(to_be_removed_vertex_attributes) > 0:
+            logger.info(
+                f"Removing the following vertex attributes: {to_be_removed_vertex_attributes}"
+            )
+            napistu_graph.remove_attributes(
+                NAPISTU_GRAPH.VERTICES, to_be_removed_vertex_attributes
+            )
+
+    return None
 
 
 def _napistu_graph_to_edge_masked_napistu_data(

@@ -15,6 +15,7 @@ from napistu.network.constants import (
     NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
+from utils import assert_tensors_equal
 
 from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.napistu_data import NapistuData
@@ -85,10 +86,10 @@ def test_save_load_roundtrip(napistu_data):
         assert loaded_data.num_node_features == napistu_data.num_node_features
         assert loaded_data.num_edge_features == napistu_data.num_edge_features
 
-        # Verify tensors are equal
-        assert torch.equal(loaded_data.x, napistu_data.x)
-        assert torch.equal(loaded_data.edge_index, napistu_data.edge_index)
-        assert torch.equal(loaded_data.edge_attr, napistu_data.edge_attr)
+        # Verify tensors are equal (handles NaN values correctly)
+        assert_tensors_equal(loaded_data.x, napistu_data.x)
+        assert_tensors_equal(loaded_data.edge_index, napistu_data.edge_index)
+        assert_tensors_equal(loaded_data.edge_attr, napistu_data.edge_attr)
 
         # Verify feature names are preserved
         assert (
@@ -328,11 +329,13 @@ def test_copy(napistu_data):
     assert copied.num_edges == napistu_data.num_edges
 
     # Verify tensors are equal but not the same object
-    assert torch.equal(copied.x, napistu_data.x)
+    assert_tensors_equal(copied.x, napistu_data.x)
     assert copied.x is not napistu_data.x
 
     # Verify modifications to copy don't affect original
     copied.x[0, 0] = 999.0
+    # After modification, tensors should not be equal
+    # Use torch.equal directly here since we're checking they're different
     assert not torch.equal(copied.x, napistu_data.x)
     assert copied.x[0, 0] != napistu_data.x[0, 0]
 
@@ -342,16 +345,16 @@ def test_trim_default(napistu_data):
     trimmed = napistu_data.trim()
 
     # Verify core attributes are kept
-    assert torch.equal(trimmed.x, napistu_data.x)
-    assert torch.equal(trimmed.edge_index, napistu_data.edge_index)
-    assert torch.equal(trimmed.edge_attr, napistu_data.edge_attr)
+    assert_tensors_equal(trimmed.x, napistu_data.x)
+    assert_tensors_equal(trimmed.edge_index, napistu_data.edge_index)
+    assert_tensors_equal(trimmed.edge_attr, napistu_data.edge_attr)
 
     # Verify edge_weight is preserved if it exists
     if (
         hasattr(napistu_data, NAPISTU_DATA.EDGE_WEIGHT)
         and napistu_data.edge_weight is not None
     ):
-        assert torch.equal(trimmed.edge_weight, napistu_data.edge_weight)
+        assert_tensors_equal(trimmed.edge_weight, napistu_data.edge_weight)
 
     # Verify metadata is removed
     assert not hasattr(trimmed, NAPISTU_DATA.NG_VERTEX_NAMES)
