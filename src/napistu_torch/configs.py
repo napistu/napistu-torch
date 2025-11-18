@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from napistu_torch.constants import (
     DATA_CONFIG,
@@ -28,6 +28,7 @@ from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
+    HEADS,
     MODEL_DEFS,
     VALID_ENCODERS,
     VALID_HEADS,
@@ -68,6 +69,8 @@ class ModelConfig(BaseModel):
     nc_dropout: Optional[float] = Field(
         default=0.1, ge=0.0, lt=1.0
     )  # For node classification head
+    rotate_margin: Optional[float] = Field(default=9.0, gt=0.0)  # For RotatE head
+    transe_margin: Optional[float] = Field(default=1.0, gt=0.0)  # For TransE head
 
     # Edge encoder fields (optional, with defaults)
     use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
@@ -101,6 +104,17 @@ class ModelConfig(BaseModel):
         if v & (v - 1) != 0:
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
+
+    @model_validator(mode="after")
+    def validate_relation_aware_heads(self) -> "ModelConfig":
+        """Validate relation-aware head configuration."""
+        # RotatE requires even hidden_channels
+        if self.head == HEADS.ROTATE and self.hidden_channels % 2 != 0:
+            raise ValueError(
+                f"RotatE head requires even hidden_channels for complex space, "
+                f"got {self.hidden_channels}. Use a multiple of 2 (e.g., 256, 512)."
+            )
+        return self
 
     model_config = ConfigDict(extra="forbid")  # Catch typos
 

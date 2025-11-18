@@ -52,22 +52,39 @@ ENCODER_NATIVE_ARGNAMES_MAPS = {
 }
 
 HEADS = SimpleNamespace(
+    # standard node-level heads
+    NODE_CLASSIFICATION="node_classification",
+    # standard symmetric edge prediction heads
     DOT_PRODUCT="dot_product",
+    # expressive edge prediction heads
     MLP="mlp",
     BILINEAR="bilinear",
-    NODE_CLASSIFICATION="node_classification",
+    # relation prediction heads
+    ROTATE="rotate",
+    TRANSE="transe",
+    DISTMULT="distmult",
 )
 
 VALID_HEADS = list(HEADS.__dict__.values())
 
+RELATION_AWARE_HEADS = {HEADS.ROTATE, HEADS.TRANSE, HEADS.DISTMULT}
+EDGE_PREDICTION_HEADS = {
+    HEADS.DOT_PRODUCT,
+    HEADS.MLP,
+    HEADS.BILINEAR,
+} | RELATION_AWARE_HEADS
+
 # Head-specific parameter names
 HEAD_SPECIFIC_ARGS = SimpleNamespace(
+    NUM_RELATIONS="num_relations",
     MLP_HIDDEN_DIM="mlp_hidden_dim",
     MLP_NUM_LAYERS="mlp_num_layers",
     MLP_DROPOUT="mlp_dropout",
     BILINEAR_BIAS="bilinear_bias",
     NC_NUM_CLASSES="nc_num_classes",
     NC_DROPOUT="nc_dropout",
+    ROTATE_MARGIN="rotate_margin",
+    TRANSE_MARGIN="transe_margin",
 )
 
 EDGE_ENCODER_ARGS = SimpleNamespace(

@@ -1,4 +1,9 @@
-# Add to models/encoders.py (new file) or models/gnns.py
+"""
+Edge encoder for Napistu-Torch.
+
+This module provides a simple MLP-based edge encoder for learning edge importance weights.
+"""
+
 import torch
 import torch.nn as nn
 
