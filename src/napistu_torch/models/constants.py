@@ -77,11 +77,11 @@ EDGE_PREDICTION_HEADS = {
 # Head-specific parameter names
 HEAD_SPECIFIC_ARGS = SimpleNamespace(
     NUM_RELATIONS="num_relations",
+    NUM_CLASSES="num_classes",
     MLP_HIDDEN_DIM="mlp_hidden_dim",
     MLP_NUM_LAYERS="mlp_num_layers",
     MLP_DROPOUT="mlp_dropout",
     BILINEAR_BIAS="bilinear_bias",
-    NC_NUM_CLASSES="nc_num_classes",
     NC_DROPOUT="nc_dropout",
     ROTATE_MARGIN="rotate_margin",
     TRANSE_MARGIN="transe_margin",

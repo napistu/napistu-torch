@@ -89,6 +89,10 @@ def test_ensure_stratify_by_artifact_name():
         ensure_stratify_by_artifact_name(STRATIFY_BY.NODE_TYPE)
         == DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE
     )
+    assert (
+        ensure_stratify_by_artifact_name(STRATIFY_BY.EDGE_SBO_TERMS)
+        == DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_EDGE_SBO_TERMS
+    )
 
     # Test with invalid value (should raise ValueError)
     with pytest.raises(ValueError, match="Invalid stratify_by value"):

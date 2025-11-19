@@ -378,6 +378,17 @@ def _create_comprehensive_pathway_memberships(
     return get_comprehensive_source_membership(napistu_graph, sbml_dfs)
 
 
+def _create_edge_strata_by_edge_sbo_terms(
+    napistu_graph: NapistuGraph,
+) -> pd.DataFrame:
+    """
+    Create edge strata by edge SBO terms.
+    """
+    return create_composite_edge_strata(
+        napistu_graph, stratify_by=STRATIFY_BY.EDGE_SBO_TERMS
+    ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
+
+
 def _create_edge_strata_by_node_species_type(
     napistu_graph: NapistuGraph,
 ) -> pd.DataFrame:
@@ -427,6 +438,12 @@ DEFAULT_ARTIFACTS = [
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_unlabeled_data,
         description="Unlabeled NapistuData without masking",
+    ),
+    ArtifactDefinition(
+        name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_EDGE_SBO_TERMS,
+        artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
+        creation_func=_create_edge_strata_by_edge_sbo_terms,
+        description="Pandas DataFrame containing edge strata by from-to edge SBO terms",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,

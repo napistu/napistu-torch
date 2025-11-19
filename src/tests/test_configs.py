@@ -44,6 +44,7 @@ from napistu_torch.load.constants import (
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
+    HEAD_SPECIFIC_ARGS,
     HEADS,
     MODEL_DEFS,
     VALID_ENCODERS,
@@ -153,6 +154,109 @@ class TestModelConfig:
         config = ModelConfig(sage_aggregator="max", gat_heads=8)
         assert config.sage_aggregator == "max"
         assert config.gat_heads == 8
+
+    def test_head_specific_fields_exist(self):
+        """Test that head-specific fields exist and can be set."""
+        config = ModelConfig()
+
+        # Test that head-specific fields exist
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_DROPOUT)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.NC_DROPOUT)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.ROTATE_MARGIN)
+        assert hasattr(config, HEAD_SPECIFIC_ARGS.TRANSE_MARGIN)
+
+        # Test that they can be customized
+        config = ModelConfig(
+            mlp_hidden_dim=128,
+            mlp_num_layers=3,
+            mlp_dropout=0.2,
+            bilinear_bias=False,
+            nc_dropout=0.15,
+            rotate_margin=12.0,
+            transe_margin=2.0,
+        )
+        assert config.mlp_hidden_dim == 128
+        assert config.mlp_num_layers == 3
+        assert config.mlp_dropout == 0.2
+        assert config.bilinear_bias is False
+        assert config.nc_dropout == 0.15
+        assert config.rotate_margin == 12.0
+        assert config.transe_margin == 2.0
+
+    def test_mlp_parameters_validation(self):
+        """Test MLP head parameter validation."""
+        # Test valid mlp_hidden_dim
+        config = ModelConfig(mlp_hidden_dim=64)
+        assert config.mlp_hidden_dim == 64
+
+        # Test valid mlp_num_layers
+        valid_layers = [1, 2, 3, 5]
+        for num_layers in valid_layers:
+            config = ModelConfig(mlp_num_layers=num_layers)
+            assert config.mlp_num_layers == num_layers
+
+        # Test invalid mlp_num_layers (below minimum)
+        with pytest.raises(ValidationError):
+            ModelConfig(mlp_num_layers=0)
+
+        # Test valid mlp_dropout
+        valid_dropouts = [0.0, 0.1, 0.5, 0.99]
+        for dropout in valid_dropouts:
+            config = ModelConfig(mlp_dropout=dropout)
+            assert config.mlp_dropout == dropout
+
+        # Test invalid mlp_dropout
+        with pytest.raises(ValidationError):
+            ModelConfig(mlp_dropout=-0.1)  # Below minimum
+
+        with pytest.raises(ValidationError):
+            ModelConfig(mlp_dropout=1.0)  # At maximum (should be < 1.0)
+
+    def test_node_classification_parameters_validation(self):
+        """Test node classification head parameter validation."""
+        # Test valid nc_dropout
+        valid_dropouts = [0.0, 0.1, 0.5, 0.99]
+        for dropout in valid_dropouts:
+            config = ModelConfig(nc_dropout=dropout)
+            assert config.nc_dropout == dropout
+
+        # Test invalid nc_dropout
+        with pytest.raises(ValidationError):
+            ModelConfig(nc_dropout=-0.1)  # Below minimum
+
+        with pytest.raises(ValidationError):
+            ModelConfig(nc_dropout=1.0)  # At maximum (should be < 1.0)
+
+    def test_relation_aware_head_margins_validation(self):
+        """Test relation-aware head margin parameter validation."""
+        # Test valid rotate_margin
+        valid_margins = [1.0, 5.0, 9.0, 15.0]
+        for margin in valid_margins:
+            config = ModelConfig(rotate_margin=margin)
+            assert config.rotate_margin == margin
+
+        # Test invalid rotate_margin
+        with pytest.raises(ValidationError):
+            ModelConfig(rotate_margin=0.0)  # At minimum (should be > 0.0)
+
+        with pytest.raises(ValidationError):
+            ModelConfig(rotate_margin=-1.0)  # Negative value
+
+        # Test valid transe_margin
+        valid_margins = [0.5, 1.0, 2.0, 5.0]
+        for margin in valid_margins:
+            config = ModelConfig(transe_margin=margin)
+            assert config.transe_margin == margin
+
+        # Test invalid transe_margin
+        with pytest.raises(ValidationError):
+            ModelConfig(transe_margin=0.0)  # At minimum (should be > 0.0)
+
+        with pytest.raises(ValidationError):
+            ModelConfig(transe_margin=-1.0)  # Negative value
 
     def test_extra_fields_forbidden(self):
         """Test that extra fields are forbidden."""

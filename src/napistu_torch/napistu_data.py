@@ -166,6 +166,8 @@ class NapistuData(Data):
         name: str = NAPISTU_DATA_DEFAULT_NAME,
         splitting_strategy: Optional[str] = None,
         labeling_manager: Optional[LabelingManager] = None,
+        relations: Optional[torch.Tensor] = None,
+        relation_manager: Optional[LabelingManager] = None,
         **kwargs,
     ):
         # Validate required parameters
@@ -278,6 +280,18 @@ class NapistuData(Data):
                 )
             else:
                 params[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
+
+        if relations is not None:
+            if not isinstance(relations, torch.Tensor):
+                raise ValueError("if provided, relations must be a torch.Tensor")
+            params[NAPISTU_DATA.RELATIONS] = relations
+
+        if relation_manager is not None:
+            if not isinstance(relation_manager, LabelingManager):
+                raise ValueError(
+                    "if provided, relation_manager must be a LabelingManager object"
+                )
+            params[NAPISTU_DATA.RELATION_MANAGER] = relation_manager
 
         # Add any non-None kwargs
         params.update({k: v for k, v in kwargs.items() if v is not None})
@@ -503,6 +517,17 @@ class NapistuData(Data):
         indices = [i for i, m in enumerate(mask) if m]
         selected_features = self.x[:, indices]
         return selected_features, matching_feature_names
+
+    def get_num_relations(self) -> Optional[int]:
+        """
+        Get the number of relations.
+        """
+        if self.relation_manager is None:
+            raise ValueError(
+                "Relation manager not found in NapistuData. Attribute 'relation_manager' is missing."
+            )
+
+        return len(self.relation_manager.label_names)
 
     def get_vertex_feature_names(self) -> Optional[List[str]]:
         """

@@ -360,7 +360,7 @@ class TestDecoderWithNodeClassification:
     def test_decoder_forward_node_classification(self):
         """Test that forward works for node classification head."""
         decoder = Decoder(
-            hidden_channels=256, head_type=HEADS.NODE_CLASSIFICATION, nc_num_classes=10
+            hidden_channels=256, head_type=HEADS.NODE_CLASSIFICATION, num_classes=10
         )
 
         node_embeddings = torch.randn(100, 256)
@@ -376,7 +376,7 @@ class TestDecoderWithNodeClassification:
             decoder = Decoder(
                 hidden_channels=256,
                 head_type=HEADS.NODE_CLASSIFICATION,
-                nc_num_classes=num_classes,
+                num_classes=num_classes,
             )
 
             node_embeddings = torch.randn(50, 256)
@@ -465,11 +465,10 @@ class TestConfigIntegration:
             encoder="gcn",
             head="node_classification",
             hidden_channels=256,
-            nc_num_classes=5,
             nc_dropout=0.1,
         )
 
-        decoder = Decoder.from_config(config)
+        decoder = Decoder.from_config(config, num_classes=5)
 
         assert decoder.head_type == HEADS.NODE_CLASSIFICATION
         assert decoder.hidden_channels == 256

@@ -22,7 +22,7 @@ from napistu_torch.labels.constants import (
     LABELING,
     TASK_TYPES,
 )
-from napistu_torch.labels.create import create_vertex_labels
+from napistu_torch.labels.create import create_relation_labels, create_vertex_labels
 from napistu_torch.labels.labeling_manager import LABELING_MANAGERS, LabelingManager
 from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
@@ -37,6 +37,7 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import EncodingManager
+from napistu_torch.load.stratification import create_composite_edge_strata
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.splitting import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
@@ -251,6 +252,7 @@ def construct_unlabeled_napistu_data(
     napistu_graph: NapistuGraph,
     splitting_strategy: str = SPLITTING_STRATEGIES.NO_MASK,
     name: Optional[str] = None,
+    relation_strata_type: Optional[str] = None,
     **kwargs,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -270,6 +272,10 @@ def construct_unlabeled_napistu_data(
         Defaults to SPLITTING_STRATEGIES.NO_MASK.
     name : Optional[str], default=None
         Name for the NapistuData object. If None, uses the default name.
+    relation_strata_type : Optional[str], default=None
+        If provided, creates relation labels based on a edge_strata (combinations of edge and from/to vertex attributes).
+        Must be one of VALID_STRATIFY_BY values (e.g., STRATIFY_BY.NODE_SPECIES_TYPE).
+        Creates relation_strata and relation_manager for relation-aware tasks.
     **kwargs:
         Additional keyword arguments to pass to napistu_graph_to_napistu_data.
 
@@ -284,16 +290,32 @@ def construct_unlabeled_napistu_data(
     --------
     >>> # Unmasked data with default splits
     >>> data = construct_unlabeled_napistu_data(ng, splitting_strategy='no_mask')
+    >>> # With relation labels
+    >>> data = construct_unlabeled_napistu_data(
+    ...     ng, splitting_strategy='no_mask', relation_strata_type=STRATIFY_BY.NODE_SPECIES_TYPE
+    ... )
     """
 
     working_napistu_graph = augment_napistu_graph(
         sbml_dfs, napistu_graph, inplace=False
     )
 
+    # Optionally create relation labels from edge_strata
+    if relation_strata_type is not None:
+        edge_strata = create_composite_edge_strata(
+            working_napistu_graph, relation_strata_type
+        )
+        relations, relation_manager = create_relation_labels(edge_strata)
+    else:
+        relations = None
+        relation_manager = None
+
     napistu_data = napistu_graph_to_napistu_data(
         working_napistu_graph,
         splitting_strategy=splitting_strategy,
         name=name,
+        relations=relations,
+        relation_manager=relation_manager,
         **kwargs,
     )
 
@@ -314,10 +336,12 @@ def napistu_graph_to_napistu_data(
     auto_encode: bool = True,
     encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     deduplicate_features: bool = True,
-    verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
-    name: Optional[str] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relations: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
+    name: Optional[str] = None,
+    verbose: bool = True,
     **strategy_kwargs: Any,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -364,10 +388,15 @@ def napistu_graph_to_napistu_data(
         If True, log detailed information about config composition and encoding.
     labels : Optional[torch.Tensor], default=None
         Optional labels tensor to set as 'y' attribute in the resulting NapistuData object(s).
-    name : Optional[str], default=None
-        Name for the NapistuData object(s). If None, uses the default name.
     labeling_manager : Optional[LabelingManager], default=None
         Labeling manager used to encode the labels. Should be provided when labels are present.
+    relations : Optional[torch.Tensor], default=None
+        Optional relation labels tensor to set as 'relations' attribute in the resulting NapistuData object(s).
+    relation_manager : Optional[LabelingManager], default=None
+        Relation labeling manager used to encode edge/relation labels. Should be provided when
+        relation labels are created (e.g., from edge_strata).
+    name : Optional[str], default=None
+        Name for the NapistuData object(s). If None, uses the default name.
     **strategy_kwargs : Any
         Strategy-specific arguments:
         - For 'edge_mask': train_size=0.8, val_size=0.1, test_size=0.1
@@ -474,6 +503,8 @@ def napistu_graph_to_napistu_data(
         verbose=verbose,
         labels=labels,
         labeling_manager=labeling_manager,
+        relations=relations,
+        relation_manager=relation_manager,
         **filtered_kwargs,
     )
 
@@ -623,6 +654,8 @@ def _napistu_graph_to_edge_masked_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relations: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """NapistuGraph to NapistuData object with edge masks split across train, test, and validation edge sets."""
 
@@ -704,6 +737,8 @@ def _napistu_graph_to_edge_masked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
         labeling_manager=labeling_manager,
+        relations=relations,
+        relation_manager=relation_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 
@@ -728,6 +763,8 @@ def _napistu_graph_to_inductive_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relations: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with an inductive split into train, test, and validation sets.
@@ -806,6 +843,8 @@ def _napistu_graph_to_inductive_napistu_data(
             name=f"{name}_{k}",
             splitting_strategy=SPLITTING_STRATEGIES.INDUCTIVE,
             labeling_manager=labeling_manager,
+            relations=relations,
+            relation_manager=relation_manager,
         )
 
     return pyg_data
@@ -828,6 +867,8 @@ def _napistu_graph_to_unmasked_napistu_data(
     verbose: bool = False,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relations: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """Create a PyTorch Geometric Data object from a NapistuGraph without any splitting/masking of vertices or edges"""
 
@@ -889,6 +930,8 @@ def _napistu_graph_to_unmasked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
         labeling_manager=labeling_manager,
+        relations=relations,
+        relation_manager=relation_manager,
     )
 
 
@@ -912,6 +955,8 @@ def _napistu_graph_to_vertex_masked_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relations: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """
     Create PyG Data objects from a NapistuGraph with vertex masks split across train, test, and validation vertex sets.
@@ -995,6 +1040,8 @@ def _napistu_graph_to_vertex_masked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
         labeling_manager=labeling_manager,
+        relations=relations,
+        relation_manager=relation_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 

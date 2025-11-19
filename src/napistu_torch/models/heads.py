@@ -538,6 +538,8 @@ class Decoder(nn.Module):
         Type of head to create (dot_product, mlp, bilinear, node_classification)
     num_relations : int, optional
         Number of relation types (required for relation-aware heads)
+    num_classes : int, optional
+        Number of output classes for node classification head
     mlp_hidden_dim : int, optional
         Hidden layer dimension for MLP head, by default 64
     mlp_num_layers : int, optional
@@ -546,8 +548,6 @@ class Decoder(nn.Module):
         Dropout probability for MLP head, by default 0.1
     bilinear_bias : bool, optional
         Whether to add bias term for bilinear head, by default True
-    nc_num_classes : int, optional
-        Number of output classes for node classification head, by default 2
     nc_dropout : float, optional
         Dropout probability for node classification head, by default 0.1
     rotate_margin : float, optional
@@ -561,11 +561,11 @@ class Decoder(nn.Module):
         hidden_channels: int,
         head_type: str = HEADS.DOT_PRODUCT,
         num_relations: Optional[int] = None,
+        num_classes: Optional[int] = None,
         mlp_hidden_dim: int = 64,
         mlp_num_layers: int = 2,
         mlp_dropout: float = 0.1,
         bilinear_bias: bool = True,
-        nc_num_classes: int = 2,
         nc_dropout: float = 0.1,
         rotate_margin: float = 9.0,
         transe_margin: float = 1.0,
@@ -590,6 +590,13 @@ class Decoder(nn.Module):
                     f"got {hidden_channels}"
                 )
 
+        if head_type == HEADS.NODE_CLASSIFICATION:
+            if num_classes is None:
+                raise ValueError(
+                    f"num_classes is required for {head_type} head. "
+                    f"This should be inferred from the data."
+                )
+
         # Create the appropriate head based on type
         if head_type == HEADS.BILINEAR:
             self.head = BilinearHead(self.hidden_channels, bilinear_bias)
@@ -603,7 +610,7 @@ class Decoder(nn.Module):
             )
         elif head_type == HEADS.NODE_CLASSIFICATION:
             self.head = NodeClassificationHead(
-                self.hidden_channels, nc_num_classes, nc_dropout
+                self.hidden_channels, num_classes, nc_dropout
             )
         elif head_type == HEADS.ROTATE:
             self.head = RotatEHead(self.hidden_channels, num_relations, rotate_margin)
@@ -658,7 +665,12 @@ class Decoder(nn.Module):
             raise ValueError(f"Unsupported head type: {self.head_type}")
 
     @classmethod
-    def from_config(cls, config: ModelConfig, num_relations: Optional[int] = None):
+    def from_config(
+        cls,
+        config: ModelConfig,
+        num_relations: Optional[int] = None,
+        num_classes: Optional[int] = None,
+    ):
         """
         Create a Decoder from a configuration object.
 
@@ -667,7 +679,11 @@ class Decoder(nn.Module):
         config : ModelConfig
             Configuration object containing head parameters
         num_relations : int, optional
-            Number of relation types (required for relation-aware heads)
+            Number of relation types (required for relation-aware heads).
+            This should be inferred from edge_strata.
+        num_classes : int, optional
+            Number of output classes for node classification head (required for node classification head).
+            This should be inferred from the data.
 
         Returns
         -------
@@ -679,6 +695,7 @@ class Decoder(nn.Module):
             MODEL_DEFS.HIDDEN_CHANNELS: getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             MODEL_DEFS.HEAD_TYPE: getattr(config, MODEL_CONFIG.HEAD),
             HEAD_SPECIFIC_ARGS.NUM_RELATIONS: num_relations,
+            HEAD_SPECIFIC_ARGS.NUM_CLASSES: num_classes,
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: getattr(
                 config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
             ),
@@ -690,9 +707,6 @@ class Decoder(nn.Module):
             ),
             HEAD_SPECIFIC_ARGS.BILINEAR_BIAS: getattr(
                 config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS
-            ),
-            HEAD_SPECIFIC_ARGS.NC_NUM_CLASSES: getattr(
-                config, HEAD_SPECIFIC_ARGS.NC_NUM_CLASSES
             ),
             HEAD_SPECIFIC_ARGS.NC_DROPOUT: getattr(
                 config, HEAD_SPECIFIC_ARGS.NC_DROPOUT

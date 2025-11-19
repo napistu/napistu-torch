@@ -3,9 +3,11 @@ from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
+from napistu.constants import MINI_SBO_TO_NAME
 from napistu.network.constants import (
     IGRAPH_DEFS,
     NAPISTU_GRAPH_EDGES,
+    NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
 from napistu.network.ng_core import NapistuGraph
@@ -49,12 +51,28 @@ def create_composite_edge_strata(
         ]
     elif stratify_by == STRATIFY_BY.NODE_TYPE:
         endpoint_attributes = [NAPISTU_GRAPH_VERTICES.NODE_TYPE]
+    elif stratify_by == STRATIFY_BY.EDGE_SBO_TERMS:
+        # extract attributes directly from edges
+        upstream_attrs = (
+            napistu_graph.get_edge_series(NAPISTU_GRAPH_EDGES.SBO_TERM_UPSTREAM)
+            .map(MINI_SBO_TO_NAME, na_action="ignore")
+            .fillna(NAPISTU_GRAPH_NODE_TYPES.REACTION)
+        )
+        downstream_attrs = (
+            napistu_graph.get_edge_series(NAPISTU_GRAPH_EDGES.SBO_TERM_DOWNSTREAM)
+            .map(MINI_SBO_TO_NAME, na_action="ignore")
+            .fillna(NAPISTU_GRAPH_NODE_TYPES.REACTION)
+        )
     else:
         raise ValueError(
             f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY}"
         )
 
-    df = napistu_graph.get_edge_endpoint_attributes(endpoint_attributes)
+    if stratify_by == STRATIFY_BY.EDGE_SBO_TERMS:
+        df = pd.concat([upstream_attrs, downstream_attrs], axis=1)
+    else:
+        # extract attributes defined at the vertex level
+        df = napistu_graph.get_edge_endpoint_attributes(endpoint_attributes)
 
     if stratify_by == STRATIFY_BY.NODE_SPECIES_TYPE:
         source_part = np.where(
@@ -76,6 +94,9 @@ def create_composite_edge_strata(
     elif stratify_by == STRATIFY_BY.NODE_TYPE:
         source_part = df[NAPISTU_GRAPH_VERTICES.NODE_TYPE][IGRAPH_DEFS.SOURCE]
         target_part = df[NAPISTU_GRAPH_VERTICES.NODE_TYPE][IGRAPH_DEFS.TARGET]
+    elif stratify_by == STRATIFY_BY.EDGE_SBO_TERMS:
+        source_part = df[NAPISTU_GRAPH_EDGES.SBO_TERM_UPSTREAM]
+        target_part = df[NAPISTU_GRAPH_EDGES.SBO_TERM_DOWNSTREAM]
     else:
         raise ValueError(
             f"Invalid stratify_by value: {stratify_by}. Must be one of: {VALID_STRATIFY_BY}"
