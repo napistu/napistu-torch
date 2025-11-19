@@ -224,6 +224,17 @@ def edge_masked_napistu_data(sbml_dfs, napistu_graph):
 
 
 @pytest.fixture
+def edge_prediction_with_sbo_relations(sbml_dfs, napistu_graph):
+    """Create a NapistuData object with edge mask and SBO-based relation labels."""
+    return construct_unlabeled_napistu_data(
+        sbml_dfs,
+        napistu_graph,
+        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
+        relation_strata_type=STRATIFY_BY.EDGE_SBO_TERMS,
+    )
+
+
+@pytest.fixture
 def experiment_config():
     """Create a basic experiment config for testing."""
     return ExperimentConfig(
