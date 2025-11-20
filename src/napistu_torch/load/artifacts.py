@@ -357,6 +357,32 @@ def _create_species_type_prediction_data(
     )
 
 
+def _create_relation_prediction_data(
+    sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph
+) -> NapistuData:
+    """
+    Create relation prediction data with edge masking and relation-type labels.
+
+    Parameters
+    ----------
+    sbml_dfs : SBML_dfs
+        SBML data structure
+    napistu_graph : NapistuGraph
+        Napistu graph
+
+    Returns
+    -------
+    NapistuData
+        Relation prediction data with train/test/val edge masking and relation-type labels
+    """
+    return construct_unlabeled_napistu_data(
+        sbml_dfs,
+        napistu_graph,
+        splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
+        relation_strata_type=STRATIFY_BY.EDGE_SBO_TERMS,
+    )
+
+
 def _create_comprehensive_pathway_memberships(
     sbml_dfs: SBML_dfs, napistu_graph: NapistuGraph
 ) -> VertexTensor:
@@ -376,6 +402,17 @@ def _create_comprehensive_pathway_memberships(
         Comprehensive pathway membership features for all vertices
     """
     return get_comprehensive_source_membership(napistu_graph, sbml_dfs)
+
+
+def _create_edge_strata_by_edge_sbo_terms(
+    napistu_graph: NapistuGraph,
+) -> pd.DataFrame:
+    """
+    Create edge strata by edge SBO terms.
+    """
+    return create_composite_edge_strata(
+        napistu_graph, stratify_by=STRATIFY_BY.EDGE_SBO_TERMS
+    ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
 def _create_edge_strata_by_node_species_type(
@@ -435,6 +472,12 @@ DEFAULT_ARTIFACTS = [
         description="Unlabeled NapistuData with train/test/val edge masking",
     ),
     ArtifactDefinition(
+        name=DEFAULT_ARTIFACTS_NAMES.RELATION_PREDICTION,
+        artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
+        creation_func=_create_relation_prediction_data,
+        description="Unlabeled NapistuData with train/test/val with edge masking and realtion-type labels",
+    ),
+    ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.SPECIES_TYPE_PREDICTION,
         artifact_type=ARTIFACT_TYPES.NAPISTU_DATA,
         creation_func=_create_species_type_prediction_data,
@@ -445,6 +488,12 @@ DEFAULT_ARTIFACTS = [
         artifact_type=ARTIFACT_TYPES.VERTEX_TENSOR,
         creation_func=_create_comprehensive_pathway_memberships,
         description="VertexTensor containing comprehensive pathway membership features",
+    ),
+    ArtifactDefinition(
+        name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_EDGE_SBO_TERMS,
+        artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
+        creation_func=_create_edge_strata_by_edge_sbo_terms,
+        description="Pandas DataFrame containing edge strata by from-to edge SBO terms",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,

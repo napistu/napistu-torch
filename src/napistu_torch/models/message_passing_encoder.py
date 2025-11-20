@@ -1,5 +1,5 @@
 """
-Graph Neural Network models for Napistu-Torch - CLEAN VERSION
+Graph Neural Network models for Napistu-Torch
 
 Removed edge_weight parameter since it's not used for message passing.
 Edge weights are stored in edge attributes for supervision, not encoding.

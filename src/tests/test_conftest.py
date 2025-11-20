@@ -1,5 +1,6 @@
 """Test that metabolism fixtures work correctly."""
 
+import torch
 from torch_geometric.data import Data
 
 from napistu_torch.constants import NAPISTU_DATA
@@ -99,3 +100,33 @@ def test_unlabeled_napistu_data_fixture(unlabeled_napistu_data):
         assert unlabeled_napistu_data.labeling_manager is None
     assert unlabeled_napistu_data.name is not None
     assert unlabeled_napistu_data.splitting_strategy == SPLITTING_STRATEGIES.NO_MASK
+
+
+def test_edge_prediction_with_sbo_relations_fixture(edge_prediction_with_sbo_relations):
+    """Test that edge_prediction_with_sbo_relations fixture works."""
+    data = edge_prediction_with_sbo_relations
+
+    # Basic NapistuData checks
+    assert data is not None
+    assert isinstance(data, NapistuData)
+    assert isinstance(data, Data)
+    assert data.num_nodes > 0
+    assert data.num_edges > 0
+    assert data.num_node_features > 0
+    assert data.num_edge_features > 0
+
+    # Should have edge mask splitting strategy
+    assert data.splitting_strategy == SPLITTING_STRATEGIES.EDGE_MASK
+
+    # Should have relations attribute
+    assert hasattr(data, NAPISTU_DATA.RELATION_TYPE)
+    assert data.relation_type is not None
+    assert isinstance(data.relation_type, torch.Tensor)
+    assert data.relation_type.shape[0] == data.num_edges
+
+    # Should have relation_manager attribute
+    assert hasattr(data, NAPISTU_DATA.RELATION_MANAGER)
+    assert data.relation_manager is not None
+    assert isinstance(data.relation_manager, LabelingManager)
+    assert data.relation_manager.label_names is not None
+    assert len(data.relation_manager.label_names) > 0

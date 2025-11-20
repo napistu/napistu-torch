@@ -12,8 +12,8 @@ from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.load.constants import STRATIFY_BY
-from napistu_torch.models.constants import ENCODERS
-from napistu_torch.models.heads import DotProductHead
+from napistu_torch.models.constants import ENCODERS, HEADS
+from napistu_torch.models.heads import Decoder, DotProductHead
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
@@ -535,6 +535,86 @@ def test_edge_prediction_trainer_with_edge_strata(
 
     # Verify that negative edges were sampled (should have some negative edges)
     assert batch["neg_edges"].shape[1] > 0, "Should have sampled negative edges"
+
+
+def test_edge_prediction_trainer_with_relation_aware_head(
+    edge_prediction_with_sbo_relations, stub_data_config
+):
+    """Test that we can fit an edge prediction model with a relation-aware head."""
+
+    # Create experiment config
+    experiment_config = _create_test_experiment_config(
+        name="trainer_test_relation_aware",
+        data_config=stub_data_config,
+        limit_train_batches=0.1,
+        limit_val_batches=0.1,
+    )
+
+    # Create data module with relation data
+    dm = FullGraphDataModule(
+        config=experiment_config, napistu_data=edge_prediction_with_sbo_relations
+    )
+
+    # Verify that relation data is present
+    assert hasattr(edge_prediction_with_sbo_relations, "relation_type")
+    assert hasattr(edge_prediction_with_sbo_relations, "relation_manager")
+    assert edge_prediction_with_sbo_relations.relation_type is not None
+    num_relations = edge_prediction_with_sbo_relations.get_num_relations()
+    assert num_relations > 0, "Should have relations in the data"
+
+    # Create encoder
+    encoder = MessagePassingEncoder(
+        in_channels=dm.num_node_features,
+        hidden_channels=32,  # Small for fast testing
+        num_layers=2,
+        encoder_type=ENCODERS.SAGE,
+    )
+
+    # Create relation-aware head (RotatE)
+    head = Decoder(
+        hidden_channels=32,
+        head_type=HEADS.ROTATE,
+        num_relations=num_relations,
+    )
+
+    # Verify head supports relations
+    assert head.supports_relations, "RotatE head should support relations"
+
+    # Create task
+    task = EdgePredictionTask(encoder, head, neg_sampling_ratio=1.0)
+
+    # Create Lightning module
+    lightning_task = EdgePredictionLightning(task, experiment_config.training)
+
+    # Create trainer
+    trainer = _create_test_trainer(max_epochs=2)
+
+    # This should not raise any errors - relations should be used automatically
+    trainer.fit(lightning_task, dm)
+
+    # Verify the model was trained
+    encoder_params = list(lightning_task.task.encoder.parameters())
+    assert len(encoder_params) > 0, "Encoder should have parameters"
+    has_gradients = any(param.requires_grad for param in encoder_params)
+    assert has_gradients, "Model should have trainable parameters with gradients"
+
+    # Verify that relations are being used
+    assert lightning_task.task.using_relations, "Task should be using relations"
+
+    # Verify that prepare_batch includes relation types
+    batch = lightning_task.task.prepare_batch(
+        edge_prediction_with_sbo_relations, split="train"
+    )
+    assert "pos_relation_type" in batch
+    assert "neg_relation_type" in batch
+    assert batch["pos_relation_type"] is not None
+    assert batch["neg_relation_type"] is not None
+
+    # Verify relation types have correct shape
+    num_pos_edges = batch["pos_edges"].shape[1]
+    num_neg_edges = batch["neg_edges"].shape[1]
+    assert batch["pos_relation_type"].shape == (num_pos_edges,)
+    assert batch["neg_relation_type"].shape == (num_neg_edges,)
 
 
 def test_edge_prediction_trainer_with_edge_batch_datamodule(

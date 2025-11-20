@@ -39,7 +39,10 @@ NAPISTU_DATA = SimpleNamespace(
     Y="y",
     NAME="name",
     SPLITTING_STRATEGY="splitting_strategy",
+    LABELS="labels",
     LABELING_MANAGER="labeling_manager",
+    RELATION_TYPE="relation_type",
+    RELATION_MANAGER="relation_manager",
     TRAIN_MASK=SPLIT_TO_MASK[TRAINING.TRAIN],
     TEST_MASK=SPLIT_TO_MASK[TRAINING.TEST],
     VAL_MASK=SPLIT_TO_MASK[TRAINING.VALIDATION],
@@ -51,6 +54,7 @@ NAPISTU_DATA_TRIM_ARGS = SimpleNamespace(
     KEEP_EDGE_ATTR="keep_edge_attr",
     KEEP_LABELS="keep_labels",
     KEEP_MASKS="keep_masks",
+    KEEP_RELATION_TYPE="keep_relation_type",
 )
 
 # VertexTensor

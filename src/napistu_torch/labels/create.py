@@ -1,4 +1,4 @@
-from typing import Dict, Tuple, Union
+from typing import Any, Dict, Optional, Tuple, Union
 
 import pandas as pd
 import torch
@@ -14,6 +14,45 @@ from napistu_torch.labels.labeling_manager import (
     LABELING_MANAGERS,
     LabelingManager,
 )
+from napistu_torch.load.constants import STRATIFICATION_DEFS
+
+
+def create_relation_labels(
+    edge_strata: pd.Series,
+) -> Tuple[torch.Tensor, Optional[Dict[int, Any]], LabelingManager]:
+    """
+    Create edge/relation labels from edge_strata for relation-aware tasks.
+
+    Parameters
+    ----------
+    edge_strata : pd.Series
+        Edge categories (e.g., from create_composite_edge_strata).
+        Index should be MultiIndex with 'from' and 'to' columns.
+
+    Returns
+    -------
+    labels : torch.Tensor
+        Integer-encoded relation labels
+    labeling_manager : LabelingManager
+        A LabelingManager configured for relation labels
+
+    Examples
+    --------
+    >>> edge_strata = create_composite_edge_strata(napistu_graph)
+    >>> labels, lookup, manager = create_edge_labels(edge_strata)
+    """
+
+    relations, lookup = _prepare_discrete_labels(edge_strata)
+
+    # Create a RelationLabelingManager
+    labeling_manager = LabelingManager(
+        label_attribute=STRATIFICATION_DEFS.EDGE_STRATA,
+        exclude_vertex_attributes=[],  # No vertex attributes to exclude for relations
+        augment_summary_types=[],  # No augmentation needed for relations
+        label_names=lookup,
+    )
+
+    return relations, labeling_manager
 
 
 def create_vertex_labels(

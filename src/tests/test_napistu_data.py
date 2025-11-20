@@ -397,6 +397,44 @@ def test_trim_no_labels_masks(edge_masked_napistu_data):
     assert not hasattr(trimmed, NAPISTU_DATA.EDGE_FEATURE_NAMES)
 
 
+def test_trim_no_relation_type(edge_prediction_with_sbo_relations):
+    """Test trim method with keep_relation_type=False removes relation_type."""
+    # Verify original data has relation_type
+    assert hasattr(edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_TYPE)
+    assert edge_prediction_with_sbo_relations.relation_type is not None
+
+    # Trim with keep_relation_type=False
+    trimmed = edge_prediction_with_sbo_relations.trim(keep_relation_type=False)
+
+    # Verify relation_type is removed
+    assert not hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
+
+    # Verify core attributes are still present
+    assert hasattr(trimmed, NAPISTU_DATA.X)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_INDEX)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_ATTR)
+
+
+def test_trim_keep_relation_type(edge_prediction_with_sbo_relations):
+    """Test trim method with keep_relation_type=True preserves relation_type."""
+    # Verify original data has relation_type
+    assert hasattr(edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_TYPE)
+    original_relation_type = edge_prediction_with_sbo_relations.relation_type
+    assert original_relation_type is not None
+
+    # Trim with keep_relation_type=True (default)
+    trimmed = edge_prediction_with_sbo_relations.trim(keep_relation_type=True)
+
+    # Verify relation_type is preserved
+    assert hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
+    assert trimmed.relation_type is not None
+    assert torch.equal(trimmed.relation_type, original_relation_type)
+
+    # Verify get_num_relations still works
+    num_relations = trimmed.get_num_relations()
+    assert num_relations > 0
+
+
 def test_estimate_memory_footprint(napistu_data):
     """Test estimate_memory_footprint returns correct memory estimates."""
     footprint = napistu_data.estimate_memory_footprint()

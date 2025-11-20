@@ -22,6 +22,7 @@ class NegativeSampler:
         edge_index: torch.Tensor,
         edge_strata: torch.Tensor,
         edge_attr: Optional[torch.Tensor] = None,
+        relation_type: Optional[torch.Tensor] = None,
         sampling_strategy: Literal[
             NEGATIVE_SAMPLING_STRATEGIES.UNIFORM,
             NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
@@ -41,6 +42,9 @@ class NegativeSampler:
         edge_attr : torch.Tensor, optional
             Edge attributes [num_edges, num_features]
             This is unnecessary when message passing is just on positive edges but may be useful for other tasks.
+        relation_type : torch.Tensor, optional
+            Relation type for each edge [num_edges]
+            Used for relation-aware heads to sample relation types for negative edges.
         sampling_strategy : {'uniform', 'degree_weighted'}
             How to sample nodes within each strata. Either:
             - 'uniform': Sample nodes uniformly within each strata
@@ -63,6 +67,14 @@ class NegativeSampler:
         else:
             self.edge_attr = None
             self.has_edge_attr = False
+
+        # Store relation types if provided
+        if relation_type is not None:
+            self.relations = relation_type.cpu()
+            self.has_relations = True
+        else:
+            self.relations = None
+            self.has_relations = False
 
         # Move to CPU for initialization
         edge_index_cpu = edge_index.cpu()
@@ -134,8 +146,12 @@ class NegativeSampler:
             structure["to_probs"] = to_degrees / to_degrees.sum()
 
     def sample(
-        self, num_neg: int, device: Optional[str] = None, return_edge_attr: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        self,
+        num_neg: int,
+        device: Optional[str] = None,
+        return_edge_attr: bool = False,
+        return_relations: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]:
         """
         Sample negative edges with fast vectorized collision detection.
 
@@ -147,12 +163,15 @@ class NegativeSampler:
             Device to return results on. If None, returns on CPU.
         return_edge_attr : bool
             Whether to return edge attributes for the sampled edges. Default is False.
+        return_relations : bool
+            Whether to return relation types for the sampled edges. Default is False.
 
         Returns
         -------
-        tuple[torch.Tensor, Optional[torch.Tensor]]
+            tuple[torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor]]
             Tuple containing:
             - Negative edges [2, num_neg]
+            - Relation type [num_neg] if return_relations is True, otherwise None
             - Edge attributes [num_neg, num_features] if return_edge_attr is True, otherwise None
         """
         collected_src = []
@@ -200,12 +219,19 @@ class NegativeSampler:
         if return_edge_attr:
             edge_attr = self._generate_edge_attributes(all_strata)
 
+        # Generate relations if requested
+        relations = None
+        if return_relations:
+            relations = self._generate_relations(all_strata)
+
         if device is not None:
             result = result.to(device)
+            if relations is not None:
+                relations = relations.to(device)
             if edge_attr is not None:
                 edge_attr = edge_attr.to(device)
 
-        return result, edge_attr
+        return result, relations, edge_attr
 
     # private methods
 
@@ -236,77 +262,32 @@ class NegativeSampler:
         torch.Tensor
             Edge attributes [num_neg, num_features]
         """
-        num_neg = len(sampled_strata)
-        num_features = self.edge_attr.shape[1]
+        return self._sample_from_strata(sampled_strata, self.edge_attr)
 
-        # Pre-allocate result
-        neg_edge_attr = torch.empty(
-            (num_neg, num_features),
-            dtype=self.edge_attr.dtype,
-            device=self.edge_attr.device,
-        )
+    def _generate_relations(self, sampled_strata: torch.Tensor) -> torch.Tensor:
+        """
+        Generate relation types for negative samples.
 
-        # For each strata, sample attributes from real edges in that strata
-        for strata in self.strata:
-            # Find negative samples in this strata
-            mask = sampled_strata == strata
-            count = mask.sum().item()
+        For each negative edge, sample a relation type from a real edge
+        in the same strata.
 
-            if count == 0:
-                continue
+        Parameters
+        ----------
+        sampled_strata : torch.Tensor
+            Strata assignment for each sampled negative edge [num_neg]
 
-            # Get indices of real edges in this strata
-            structure = self.strata_structure[strata.item()]
-            edge_indices = structure["edge_indices"]
-
-            # Randomly sample from real edges in this strata
-            random_indices = torch.randint(
-                0, len(edge_indices), (count,), device=self.edge_attr.device
+        Returns
+        -------
+        torch.Tensor
+            Relation types [num_neg]
+        """
+        if not self.has_relations:
+            raise ValueError(
+                "Relation types not available. Cannot generate negative relation types. "
+                "Pass relation_type to NegativeSampler.__init__()"
             )
-            sampled_edge_indices = edge_indices[random_indices]
 
-            # Copy attributes
-            neg_edge_attr[mask] = self.edge_attr[sampled_edge_indices]
-
-        return neg_edge_attr
-
-    def _sample_candidates(
-        self, batch_size: int
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Sample candidate edges respecting strata structure."""
-        sampled_strata = self.strata[
-            torch.multinomial(self.strata_probs, batch_size, replacement=True)
-        ]
-
-        src_nodes = torch.empty(batch_size, dtype=torch.long)
-        dst_nodes = torch.empty(batch_size, dtype=torch.long)
-
-        for strata in self.strata:
-            mask = sampled_strata == strata
-            count = mask.sum().item()
-
-            if count == 0:
-                continue
-
-            structure = self.strata_structure[strata.item()]
-            from_nodes = structure["from_nodes"]
-            to_nodes = structure["to_nodes"]
-
-            if self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.UNIFORM:
-                src_idx = torch.randint(0, len(from_nodes), (count,))
-                dst_idx = torch.randint(0, len(to_nodes), (count,))
-            elif self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED:
-                from_probs = structure["from_probs"]
-                to_probs = structure["to_probs"]
-                src_idx = torch.multinomial(from_probs, count, replacement=True)
-                dst_idx = torch.multinomial(to_probs, count, replacement=True)
-            else:
-                raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
-
-            src_nodes[mask] = from_nodes[src_idx]
-            dst_nodes[mask] = to_nodes[dst_idx]
-
-        return src_nodes, dst_nodes, sampled_strata
+        return self._sample_from_strata(sampled_strata, self.relations)
 
     def _sample_and_filter_batch(
         self, num_needed: int
@@ -355,3 +336,100 @@ class NegativeSampler:
             )
 
         return valid_src, valid_dst, valid_strata
+
+    def _sample_candidates(
+        self, batch_size: int
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample candidate edges respecting strata structure."""
+        sampled_strata = self.strata[
+            torch.multinomial(self.strata_probs, batch_size, replacement=True)
+        ]
+
+        src_nodes = torch.empty(batch_size, dtype=torch.long)
+        dst_nodes = torch.empty(batch_size, dtype=torch.long)
+
+        for strata in self.strata:
+            mask = sampled_strata == strata
+            count = mask.sum().item()
+
+            if count == 0:
+                continue
+
+            structure = self.strata_structure[strata.item()]
+            from_nodes = structure["from_nodes"]
+            to_nodes = structure["to_nodes"]
+
+            if self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.UNIFORM:
+                src_idx = torch.randint(0, len(from_nodes), (count,))
+                dst_idx = torch.randint(0, len(to_nodes), (count,))
+            elif self.sampling_strategy == NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED:
+                from_probs = structure["from_probs"]
+                to_probs = structure["to_probs"]
+                src_idx = torch.multinomial(from_probs, count, replacement=True)
+                dst_idx = torch.multinomial(to_probs, count, replacement=True)
+            else:
+                raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
+
+            src_nodes[mask] = from_nodes[src_idx]
+            dst_nodes[mask] = to_nodes[dst_idx]
+
+        return src_nodes, dst_nodes, sampled_strata
+
+    def _sample_from_strata(
+        self, sampled_strata: torch.Tensor, source_data: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Sample data from source_data for each negative edge based on its strata.
+
+        For each negative edge, samples from a real training edge in the same strata.
+        This is a utility method that factors out common logic for sampling
+        edge attributes and relations.
+
+        Parameters
+        ----------
+        sampled_strata : torch.Tensor
+            Strata assignment for each sampled negative edge [num_neg]
+        source_data : torch.Tensor
+            Source data to sample from [num_edges, ...] (can be 1D or 2D)
+
+        Returns
+        -------
+        torch.Tensor
+            Sampled data [num_neg, ...] with same shape as source_data except first dim
+        """
+        num_neg = len(sampled_strata)
+
+        # Determine output shape (same as source_data but with num_neg as first dim)
+        if source_data.dim() == 1:
+            output_shape = (num_neg,)
+        else:
+            output_shape = (num_neg, *source_data.shape[1:])
+
+        # Pre-allocate result
+        result = torch.empty(
+            output_shape, dtype=source_data.dtype, device=source_data.device
+        )
+
+        # For each strata, sample from real edges in that strata
+        for strata in self.strata:
+            # Find negative samples in this strata
+            mask = sampled_strata == strata
+            count = mask.sum().item()
+
+            if count == 0:
+                continue
+
+            # Get indices of real edges in this strata
+            structure = self.strata_structure[strata.item()]
+            edge_indices = structure["edge_indices"]
+
+            # Randomly sample from real edges in this strata
+            random_indices = torch.randint(
+                0, len(edge_indices), (count,), device=source_data.device
+            )
+            sampled_edge_indices = edge_indices[random_indices]
+
+            # Copy sampled data
+            result[mask] = source_data[sampled_edge_indices]
+
+        return result

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+import pandas as pd
 import pytorch_lightning as pl
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -31,6 +32,7 @@ from napistu_torch.ml.wandb import (
     resume_wandb_logger,
     setup_wandb_logger,
 )
+from napistu_torch.models.constants import RELATION_AWARE_HEADS
 from napistu_torch.models.heads import Decoder
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import (
@@ -476,7 +478,7 @@ def _create_data_module(
 def _create_model(
     config: ExperimentConfig,
     data_module: Union[FullGraphDataModule, EdgeBatchDataModule],
-    edge_strata: Optional[Dict[str, Any]] = None,
+    edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
 ) -> EdgePredictionLightning:
     """Create the model based on the configuration."""
     # a. encoder
@@ -486,9 +488,18 @@ def _create_model(
         data_module.num_node_features,
         edge_in_channels=data_module.num_edge_features,
     )
+
     # b. decoder/head
     logger.info("Creating Decoder from config...")
-    head = Decoder.from_config(config.model)
+    if config.model.head in RELATION_AWARE_HEADS:
+        num_relations = data_module.napistu_data.get_num_relations()
+        logger.info(
+            f"Using relation-aware head '{config.model.head}' with {num_relations} relations"
+        )
+    else:
+        num_relations = None
+
+    head = Decoder.from_config(config.model, num_relations=num_relations)
     task = EdgePredictionTask(encoder, head, edge_strata=edge_strata)
 
     # 4. create lightning module
