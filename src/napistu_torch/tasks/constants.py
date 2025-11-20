@@ -31,4 +31,6 @@ EDGE_PREDICTION_BATCH = SimpleNamespace(
     POS_EDGES="pos_edges",
     NEG_EDGES="neg_edges",
     EDGE_DATA="edge_data",
+    POS_RELATION_TYPE="pos_relation_type",
+    NEG_RELATION_TYPE="neg_relation_type",
 )

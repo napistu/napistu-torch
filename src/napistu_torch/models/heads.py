@@ -619,6 +619,18 @@ class Decoder(nn.Module):
         else:
             raise ValueError(f"Unsupported head type: {head_type}")
 
+    @property
+    def supports_relations(self) -> bool:
+        """
+        Check if this decoder supports relation-aware heads.
+
+        Returns
+        -------
+        bool
+            True if the head type is in RELATION_AWARE_HEADS, False otherwise
+        """
+        return self.head_type in RELATION_AWARE_HEADS
+
     def forward(
         self,
         node_embeddings: torch.Tensor,
@@ -648,7 +660,7 @@ class Decoder(nn.Module):
             if relation_type is None:
                 raise ValueError(
                     f"{self.head_type} head requires relation_type parameter. "
-                    f"Make sure edge_strata is passed to prepare_batch."
+                    f"Make sure relation types are passed to prepare_batch."
                 )
             return self.head(node_embeddings, edge_index, relation_type)
 

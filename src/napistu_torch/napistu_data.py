@@ -166,7 +166,7 @@ class NapistuData(Data):
         name: str = NAPISTU_DATA_DEFAULT_NAME,
         splitting_strategy: Optional[str] = None,
         labeling_manager: Optional[LabelingManager] = None,
-        relations: Optional[torch.Tensor] = None,
+        relation_type: Optional[torch.Tensor] = None,
         relation_manager: Optional[LabelingManager] = None,
         **kwargs,
     ):
@@ -281,10 +281,10 @@ class NapistuData(Data):
             else:
                 params[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
 
-        if relations is not None:
-            if not isinstance(relations, torch.Tensor):
-                raise ValueError("if provided, relations must be a torch.Tensor")
-            params[NAPISTU_DATA.RELATIONS] = relations
+        if relation_type is not None:
+            if not isinstance(relation_type, torch.Tensor):
+                raise ValueError("if provided, relation_type must be a torch.Tensor")
+            params[NAPISTU_DATA.RELATION_TYPE] = relation_type
 
         if relation_manager is not None:
             if not isinstance(relation_manager, LabelingManager):

@@ -119,10 +119,10 @@ def test_edge_prediction_with_sbo_relations_fixture(edge_prediction_with_sbo_rel
     assert data.splitting_strategy == SPLITTING_STRATEGIES.EDGE_MASK
 
     # Should have relations attribute
-    assert hasattr(data, NAPISTU_DATA.RELATIONS)
-    assert data.relations is not None
-    assert isinstance(data.relations, torch.Tensor)
-    assert data.relations.shape[0] == data.num_edges
+    assert hasattr(data, NAPISTU_DATA.RELATION_TYPE)
+    assert data.relation_type is not None
+    assert isinstance(data.relation_type, torch.Tensor)
+    assert data.relation_type.shape[0] == data.num_edges
 
     # Should have relation_manager attribute
     assert hasattr(data, NAPISTU_DATA.RELATION_MANAGER)
