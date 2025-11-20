@@ -520,14 +520,42 @@ class NapistuData(Data):
 
     def get_num_relations(self) -> Optional[int]:
         """
-        Get the number of relations.
+        Get the number of relations from relation_type tensor.
+
+        Computes the number of unique relation types and validates that
+        they are consecutive integers starting from 0 (0, 1, 2, ..., N-1).
+
+        Returns
+        -------
+        int
+            Number of unique relation types
+
+        Raises
+        ------
+        ValueError
+            If relation_type is missing or contains non-consecutive integers
         """
-        if self.relation_manager is None:
+        relation_type = getattr(self, NAPISTU_DATA.RELATION_TYPE, None)
+        if relation_type is None:
             raise ValueError(
-                "Relation manager not found in NapistuData. Attribute 'relation_manager' is missing."
+                "Relation type not found in NapistuData. Attribute 'relation_type' is missing."
             )
 
-        return len(self.relation_manager.label_names)
+        # Get unique relation types
+        unique_relations = torch.unique(relation_type)
+        num_relations = len(unique_relations)
+
+        # Validate that relation types are consecutive integers starting from 0
+        expected_relations = torch.arange(
+            num_relations, dtype=unique_relations.dtype, device=unique_relations.device
+        )
+        if not torch.equal(unique_relations, expected_relations):
+            raise ValueError(
+                f"Relation types must be consecutive integers starting from 0 (0, 1, 2, ..., N-1). "
+                f"Found unique values: {unique_relations.tolist()}, expected: {expected_relations.tolist()}"
+            )
+
+        return num_relations
 
     def get_vertex_feature_names(self) -> Optional[List[str]]:
         """
@@ -731,6 +759,7 @@ class NapistuData(Data):
         keep_edge_attr: bool = True,
         keep_labels: bool = True,
         keep_masks: bool = True,
+        keep_relation_type: bool = True,
         inplace: bool = False,
     ) -> "NapistuData":
         """
@@ -747,7 +776,7 @@ class NapistuData(Data):
         **What's Always Removed:**
         - ng_vertex_names, ng_edge_names (pandas objects)
         - vertex_feature_names, edge_feature_names (metadata)
-        - name, splitting_strategy, labeling_manager (metadata)
+        - name, splitting_strategy, labeling_manager, relation_manager (metadata)
 
         Parameters
         ----------
@@ -759,6 +788,8 @@ class NapistuData(Data):
         keep_masks : bool, default=True
             Whether to keep train_mask, val_mask, test_mask.
             Set False if using custom splitting.
+        keep_relation_type : bool, default=True
+            Whether to keep relation_type. Set False if not using relation-aware heads.
         inplace: bool, default=False
             Whether to modify the current object in place or return a new object.
 
@@ -827,6 +858,12 @@ class NapistuData(Data):
                     mask = getattr(self, mask_name)
                     if mask is not None:
                         new_attrs[mask_name] = mask
+
+        # Add relation_type if requested
+        if keep_relation_type and hasattr(self, NAPISTU_DATA.RELATION_TYPE):
+            new_attrs[NAPISTU_DATA.RELATION_TYPE] = getattr(
+                self, NAPISTU_DATA.RELATION_TYPE
+            )
 
         if inplace:
             # Modify the object in place by clearing all attributes and setting new ones

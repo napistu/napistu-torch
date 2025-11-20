@@ -54,6 +54,7 @@ NAPISTU_DATA_TRIM_ARGS = SimpleNamespace(
     KEEP_EDGE_ATTR="keep_edge_attr",
     KEEP_LABELS="keep_labels",
     KEEP_MASKS="keep_masks",
+    KEEP_RELATION_TYPE="keep_relation_type",
 )
 
 # VertexTensor

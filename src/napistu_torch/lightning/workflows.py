@@ -493,7 +493,9 @@ def _create_model(
     logger.info("Creating Decoder from config...")
     if config.model.head in RELATION_AWARE_HEADS:
         num_relations = data_module.napistu_data.get_num_relations()
-        head = Decoder.from_config(config.model, num_relations=num_relations)
+        logger.info(
+            f"Using relation-aware head '{config.model.head}' with {num_relations} relations"
+        )
     else:
         num_relations = None
 

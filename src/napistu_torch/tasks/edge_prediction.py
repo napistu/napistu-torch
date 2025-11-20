@@ -313,6 +313,7 @@ class EdgePredictionTask(BaseTask):
         self,
         data: NapistuData,
         edge_index: torch.Tensor,
+        relation_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Predict scores for specific edge pairs.
@@ -325,6 +326,10 @@ class EdgePredictionTask(BaseTask):
             Graph data (for node features and structure)
         edge_index : torch.Tensor
             Edge pairs to score [2, num_edges]
+        relation_type : torch.Tensor, optional
+            Relation type for each edge [num_edges]. Required if using relation-aware heads.
+            If None and using relations, will attempt to extract from data.relation_type
+            if edge_index matches data.edge_index exactly.
 
         Returns
         -------
@@ -336,12 +341,41 @@ class EdgePredictionTask(BaseTask):
         >>> # Predict on new edge candidates
         >>> task = EdgePredictionTask(encoder, head)
         >>> new_edges = torch.tensor([[0, 1], [2, 3], [4, 5]]).T
-        >>> scores = task.predict_edge_scores(data, new_edges)
+        >>> relation_types = torch.tensor([0, 1, 0])  # Match edges
+        >>> scores = task.predict_edge_scores(data, new_edges, relation_type=relation_types)
         """
         self.eval()
         with torch.no_grad():
             # Ensure using_relations is set
             self._ensure_using_relations(data)
+
+            # If relation_type not provided but we're using relations, try to extract from data
+            if relation_type is None and self.using_relations:
+                data_relation_type = self._get_relation_type(data)
+                if data_relation_type is not None:
+                    # Only use data.relation_type if edge_index matches data.edge_index exactly
+                    if edge_index.shape[1] == data.edge_index.shape[1] and torch.equal(
+                        edge_index, data.edge_index
+                    ):
+                        relation_type = data_relation_type
+                    else:
+                        raise ValueError(
+                            "relation_type is required when edge_index differs from data.edge_index "
+                            "and using relation-aware heads. Provide matching relation_type for each edge."
+                        )
+                else:
+                    raise ValueError(
+                        "relation_type is required for relation-aware heads. "
+                        "Provide relation_type parameter matching edge_index."
+                    )
+
+            # Validate relation_type shape if provided
+            if relation_type is not None:
+                if relation_type.shape[0] != edge_index.shape[1]:
+                    raise ValueError(
+                        f"relation_type shape mismatch: {relation_type.shape[0]} != {edge_index.shape[1]} "
+                        f"(number of edges)"
+                    )
 
             # load a fixed tensor for weights if one exists
             if (
@@ -358,9 +392,6 @@ class EdgePredictionTask(BaseTask):
                 data.edge_index,
                 edge_data,
             )
-
-            # Extract relation types for the specified edges if available
-            relation_type = self._get_relation_type(data)
 
             # Score the specified edges
             scores = self._score_edges(

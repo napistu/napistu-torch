@@ -106,6 +106,10 @@ class EdgePredictionLightning(BaseLightningTask):
     Lightning adapter for edge prediction.
 
     This wraps EdgePredictionTask and handles the DataLoader interface.
+
+    Supports relation-aware heads automatically - if the task's head supports
+    relations and the NapistuData contains relation_type, relations will be
+    used automatically in training, validation, testing, and prediction.
     """
 
     def __init__(

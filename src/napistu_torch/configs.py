@@ -13,6 +13,7 @@ from napistu_torch.constants import (
     METRICS,
     MODEL_CONFIG,
     MODEL_CONFIG_DEFAULTS,
+    NAPISTU_DATA_TRIM_ARGS,
     OPTIMIZERS,
     TASK_CONFIG,
     TASK_CONFIG_DEFAULTS,
@@ -29,6 +30,7 @@ from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
     MODEL_DEFS,
+    RELATION_AWARE_HEADS,
     VALID_ENCODERS,
     VALID_HEADS,
 )
@@ -444,7 +446,8 @@ def config_to_data_trimming_spec(config: ExperimentConfig) -> Dict[str, bool]:
     Returns
     -------
     Dict[str, bool]
-        A dictionary with keys "keep_edge_attr", "keep_labels", "keep_masks" and values indicating whether each attribute should be kept. These match the arguments to NapistuData.trim().
+        A dictionary with keys "keep_edge_attr", "keep_labels", "keep_masks", "keep_relation_type"
+        and values indicating whether each attribute should be kept. These match the arguments to NapistuData.trim().
     """
 
     # do we need edge attributes?
@@ -475,10 +478,18 @@ def config_to_data_trimming_spec(config: ExperimentConfig) -> Dict[str, bool]:
     else:
         keep_masks = False
 
+    # do we need relation_type?
+    head = getattr(config.model, MODEL_CONFIG.HEAD)
+    if head in RELATION_AWARE_HEADS:
+        keep_relation_type = True
+    else:
+        keep_relation_type = False
+
     return {
-        "keep_edge_attr": keep_edge_attr,
-        "keep_labels": keep_labels,
-        "keep_masks": keep_masks,
+        NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR: keep_edge_attr,
+        NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS: keep_labels,
+        NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS: keep_masks,
+        NAPISTU_DATA_TRIM_ARGS.KEEP_RELATION_TYPE: keep_relation_type,
     }
 
 

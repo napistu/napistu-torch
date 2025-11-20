@@ -155,6 +155,9 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
                 ],
                 keep_labels=data_trimming_spec[NAPISTU_DATA_TRIM_ARGS.KEEP_LABELS],
                 keep_masks=data_trimming_spec[NAPISTU_DATA_TRIM_ARGS.KEEP_MASKS],
+                keep_relation_type=data_trimming_spec[
+                    NAPISTU_DATA_TRIM_ARGS.KEEP_RELATION_TYPE
+                ],
                 inplace=True,
             )
             self.napistu_data = napistu_data
