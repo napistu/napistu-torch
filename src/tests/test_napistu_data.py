@@ -15,6 +15,7 @@ from napistu.network.constants import (
     NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
+from utils import assert_tensors_equal
 
 from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.napistu_data import NapistuData
@@ -85,10 +86,10 @@ def test_save_load_roundtrip(napistu_data):
         assert loaded_data.num_node_features == napistu_data.num_node_features
         assert loaded_data.num_edge_features == napistu_data.num_edge_features
 
-        # Verify tensors are equal
-        assert torch.equal(loaded_data.x, napistu_data.x)
-        assert torch.equal(loaded_data.edge_index, napistu_data.edge_index)
-        assert torch.equal(loaded_data.edge_attr, napistu_data.edge_attr)
+        # Verify tensors are equal (handles NaN values correctly)
+        assert_tensors_equal(loaded_data.x, napistu_data.x)
+        assert_tensors_equal(loaded_data.edge_index, napistu_data.edge_index)
+        assert_tensors_equal(loaded_data.edge_attr, napistu_data.edge_attr)
 
         # Verify feature names are preserved
         assert (
@@ -328,11 +329,13 @@ def test_copy(napistu_data):
     assert copied.num_edges == napistu_data.num_edges
 
     # Verify tensors are equal but not the same object
-    assert torch.equal(copied.x, napistu_data.x)
+    assert_tensors_equal(copied.x, napistu_data.x)
     assert copied.x is not napistu_data.x
 
     # Verify modifications to copy don't affect original
     copied.x[0, 0] = 999.0
+    # After modification, tensors should not be equal
+    # Use torch.equal directly here since we're checking they're different
     assert not torch.equal(copied.x, napistu_data.x)
     assert copied.x[0, 0] != napistu_data.x[0, 0]
 
@@ -342,16 +345,16 @@ def test_trim_default(napistu_data):
     trimmed = napistu_data.trim()
 
     # Verify core attributes are kept
-    assert torch.equal(trimmed.x, napistu_data.x)
-    assert torch.equal(trimmed.edge_index, napistu_data.edge_index)
-    assert torch.equal(trimmed.edge_attr, napistu_data.edge_attr)
+    assert_tensors_equal(trimmed.x, napistu_data.x)
+    assert_tensors_equal(trimmed.edge_index, napistu_data.edge_index)
+    assert_tensors_equal(trimmed.edge_attr, napistu_data.edge_attr)
 
     # Verify edge_weight is preserved if it exists
     if (
         hasattr(napistu_data, NAPISTU_DATA.EDGE_WEIGHT)
         and napistu_data.edge_weight is not None
     ):
-        assert torch.equal(trimmed.edge_weight, napistu_data.edge_weight)
+        assert_tensors_equal(trimmed.edge_weight, napistu_data.edge_weight)
 
     # Verify metadata is removed
     assert not hasattr(trimmed, NAPISTU_DATA.NG_VERTEX_NAMES)
@@ -392,6 +395,44 @@ def test_trim_no_labels_masks(edge_masked_napistu_data):
     # Verify metadata is removed
     assert not hasattr(trimmed, NAPISTU_DATA.VERTEX_FEATURE_NAMES)
     assert not hasattr(trimmed, NAPISTU_DATA.EDGE_FEATURE_NAMES)
+
+
+def test_trim_no_relation_type(edge_prediction_with_sbo_relations):
+    """Test trim method with keep_relation_type=False removes relation_type."""
+    # Verify original data has relation_type
+    assert hasattr(edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_TYPE)
+    assert edge_prediction_with_sbo_relations.relation_type is not None
+
+    # Trim with keep_relation_type=False
+    trimmed = edge_prediction_with_sbo_relations.trim(keep_relation_type=False)
+
+    # Verify relation_type is removed
+    assert not hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
+
+    # Verify core attributes are still present
+    assert hasattr(trimmed, NAPISTU_DATA.X)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_INDEX)
+    assert hasattr(trimmed, NAPISTU_DATA.EDGE_ATTR)
+
+
+def test_trim_keep_relation_type(edge_prediction_with_sbo_relations):
+    """Test trim method with keep_relation_type=True preserves relation_type."""
+    # Verify original data has relation_type
+    assert hasattr(edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_TYPE)
+    original_relation_type = edge_prediction_with_sbo_relations.relation_type
+    assert original_relation_type is not None
+
+    # Trim with keep_relation_type=True (default)
+    trimmed = edge_prediction_with_sbo_relations.trim(keep_relation_type=True)
+
+    # Verify relation_type is preserved
+    assert hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
+    assert trimmed.relation_type is not None
+    assert torch.equal(trimmed.relation_type, original_relation_type)
+
+    # Verify get_num_relations still works
+    num_relations = trimmed.get_num_relations()
+    assert num_relations > 0
 
 
 def test_estimate_memory_footprint(napistu_data):

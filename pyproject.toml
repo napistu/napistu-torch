@@ -24,4 +24,5 @@ filterwarnings = [
     "ignore:GPU available but not used:UserWarning",
     "ignore:.*does not have many workers.*:UserWarning",
     "ignore:.*Trying to infer the `batch_size`.*:UserWarning",
+    "ignore:.*torch_geometric.distributed.*has been deprecated.*:DeprecationWarning",
 ]

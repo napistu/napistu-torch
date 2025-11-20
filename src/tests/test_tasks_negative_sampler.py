@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.tasks.negative_sampler import NegativeSampler
 
 
@@ -26,7 +27,7 @@ def test_basic_sampling():
 
     # Sample negatives
     num_neg = 100
-    neg_edges, neg_edge_attr = sampler.sample(num_neg)
+    neg_edges, _, neg_edge_attr = sampler.sample(num_neg)
 
     # Check shape
     assert neg_edges.shape == (2, num_neg)
@@ -49,7 +50,7 @@ def test_no_collision_with_positives():
     edge_categories = torch.zeros(6, dtype=torch.long)
 
     sampler = NegativeSampler(edge_index, edge_categories)
-    neg_edges, _ = sampler.sample(500)
+    neg_edges, _, _ = sampler.sample(500)
 
     # Convert to sets for comparison
     pos_edges = set(tuple(e) for e in edge_index.t().tolist())
@@ -74,7 +75,7 @@ def test_category_constraints():
     edge_categories = torch.tensor([0, 0, 0, 1, 1])
 
     sampler = NegativeSampler(edge_index, edge_categories)
-    neg_edges, neg_edge_attr = sampler.sample(200)
+    neg_edges, _, neg_edge_attr = sampler.sample(200)
 
     # Check each negative belongs to a valid category
     for src, dst in neg_edges.t():
@@ -113,8 +114,8 @@ def test_degree_weighted_sampling():
     )
 
     # Sample large batch (graph has plenty of room: 5 sources × 10 destinations = 50 possible edges, only 9 exist)
-    neg_uniform, _ = sampler_uniform.sample(500)
-    neg_degree, _ = sampler_degree.sample(500)
+    neg_uniform, _, _ = sampler_uniform.sample(500)
+    neg_degree, _, _ = sampler_degree.sample(500)
 
     # Count how often node 0 appears as source
     count_uniform = (neg_uniform[0] == 0).sum().item()
@@ -197,7 +198,7 @@ def test_edge_attr_sampling(napistu_data):
 
     # Sample negatives with edge attributes
     num_neg = 50
-    neg_edges, neg_edge_attr = sampler.sample(num_neg, return_edge_attr=True)
+    neg_edges, _, neg_edge_attr = sampler.sample(num_neg, return_edge_attr=True)
 
     # Check basic properties
     assert neg_edges.shape == (2, num_neg)
@@ -214,3 +215,60 @@ def test_edge_attr_sampling(napistu_data):
     assert not torch.all(
         neg_edge_attr == neg_edge_attr[0]
     ), "Edge attributes should vary"
+
+
+def test_relations_sampling(edge_prediction_with_sbo_relations):
+    """Test that sampler can generate relation types for negative samples."""
+
+    # Extract data from fixture
+    data = edge_prediction_with_sbo_relations
+    edge_index = data.edge_index
+    relation_type = getattr(data, NAPISTU_DATA.RELATION_TYPE, None)
+
+    # Verify relation types are available
+    assert relation_type is not None, "Fixture should have relation_type"
+    assert relation_type.shape[0] == edge_index.size(
+        1
+    ), "Relation types should match edge count"
+
+    # Get training edges and their relation types/strata
+    train_mask = data.train_mask
+    train_edges = edge_index[:, train_mask]
+    train_relation_type = relation_type[train_mask]
+
+    # Use relation types as strata (they encode the same grouping information)
+    # Since relation types are derived from edge_strata, we can use them as strata
+    edge_strata = train_relation_type
+
+    # Create sampler with relation types
+    sampler = NegativeSampler(
+        edge_index=train_edges,
+        edge_strata=edge_strata,
+        relation_type=train_relation_type,
+    )
+
+    # Sample negatives with relation types
+    num_neg = 50
+    neg_edges, neg_relation_type, _ = sampler.sample(num_neg, return_relations=True)
+
+    # Check basic properties
+    assert neg_edges.shape == (2, num_neg)
+    assert neg_edges.dtype == torch.long
+    assert neg_relation_type is not None
+    assert neg_relation_type.shape == (num_neg,)
+    assert neg_relation_type.dtype == train_relation_type.dtype
+
+    # Check no self-loops
+    assert (neg_edges[0] == neg_edges[1]).sum() == 0
+
+    # Check that relation types are valid (within the range of training relation types)
+    unique_train_relation_type = torch.unique(train_relation_type)
+    assert torch.all(
+        torch.isin(neg_relation_type, unique_train_relation_type)
+    ), "Negative relation types should be sampled from training relation types"
+
+    # Check that relation types vary (not all the same)
+    unique_neg_relation_type = torch.unique(neg_relation_type)
+    assert (
+        len(unique_neg_relation_type) > 1 or num_neg == 1
+    ), "Relation types should vary when sampling multiple negatives"

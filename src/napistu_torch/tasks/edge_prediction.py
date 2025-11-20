@@ -21,6 +21,7 @@ from napistu_torch.models.constants import (
     EDGE_WEIGHTING_TYPE,
     ENCODER_DEFS,
 )
+from napistu_torch.models.heads import Decoder
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.base import BaseTask
 from napistu_torch.tasks.constants import (
@@ -81,7 +82,7 @@ class EdgePredictionTask(BaseTask):
     def __init__(
         self,
         encoder: nn.Module,
-        head: nn.Module,
+        head: Union[Decoder, nn.Module],
         neg_sampling_ratio: float = 1.0,
         edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
         neg_sampling_strategy: str = NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
@@ -93,6 +94,9 @@ class EdgePredictionTask(BaseTask):
         self.edge_strata = edge_strata
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or ["auc", "ap"]
+
+        # Whether we're actually using relations (set during sampler initialization)
+        self.using_relations = False
 
         # Negative sampler (initialized lazily on first prepare_batch call)
         self.negative_sampler = None
@@ -134,6 +138,7 @@ class EdgePredictionTask(BaseTask):
                         weights for static weighting)
         """
         # Lazy initialization on first call
+        self._ensure_using_relations(data)
         self._ensure_negative_sampler(data)
 
         # Get positive edges for this batch
@@ -153,9 +158,25 @@ class EdgePredictionTask(BaseTask):
 
         # Sample negative edges proportional to batch size
         num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
-        neg_edge_index, _ = self.negative_sampler.sample(
-            num_neg=num_neg, device=str(pos_edge_index.device)
+        neg_edge_index, neg_relation_type, _ = self.negative_sampler.sample(
+            num_neg=num_neg,
+            device=str(pos_edge_index.device),
+            return_relations=self.using_relations,
         )
+
+        # Extract relation types if we're using them
+        relation_type = self._get_relation_type(data)
+        if relation_type is not None:
+            if edge_indices is not None:
+                # Mini-batch mode: use provided edge indices
+                pos_relation_type = relation_type[edge_indices]
+            else:
+                # Full-batch mode: use split mask
+                mask_attr = SPLIT_TO_MASK[split]
+                mask = getattr(data, mask_attr)
+                pos_relation_type = relation_type[mask]
+        else:
+            pos_relation_type = None
 
         # Handle edge data based on encoder edge weighting type
         edge_data = None
@@ -191,6 +212,8 @@ class EdgePredictionTask(BaseTask):
             EDGE_PREDICTION_BATCH.POS_EDGES: pos_edge_index,
             EDGE_PREDICTION_BATCH.NEG_EDGES: neg_edge_index,
             EDGE_PREDICTION_BATCH.EDGE_DATA: edge_data,
+            EDGE_PREDICTION_BATCH.POS_RELATION_TYPE: pos_relation_type,
+            EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE: neg_relation_type,
         }
 
         self._validate_data_dims(batch_dict, data)
@@ -220,8 +243,14 @@ class EdgePredictionTask(BaseTask):
         )
 
         # Score positive and negative edges
-        pos_scores = self.head(z, batch[EDGE_PREDICTION_BATCH.POS_EDGES])
-        neg_scores = self.head(z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES])
+        pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
+        neg_relation_type = batch.get(EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE)
+        pos_scores = self._score_edges(
+            z, batch[EDGE_PREDICTION_BATCH.POS_EDGES], relation_type=pos_relation_type
+        )
+        neg_scores = self._score_edges(
+            z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES], relation_type=neg_relation_type
+        )
 
         # Binary classification loss
         pos_loss = self.loss_fn(pos_scores, torch.ones_like(pos_scores))
@@ -254,11 +283,19 @@ class EdgePredictionTask(BaseTask):
             )
 
             # Score positive and negative edges
-            pos_scores = torch.sigmoid(
-                self.head(z, batch[EDGE_PREDICTION_BATCH.POS_EDGES])
+            pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
+            neg_relation_type = batch.get(EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE)
+            pos_scores = self._score_edges(
+                z,
+                batch[EDGE_PREDICTION_BATCH.POS_EDGES],
+                relation_type=pos_relation_type,
+                apply_sigmoid=True,
             )
-            neg_scores = torch.sigmoid(
-                self.head(z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES])
+            neg_scores = self._score_edges(
+                z,
+                batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
+                relation_type=neg_relation_type,
+                apply_sigmoid=True,
             )
 
             # Combine predictions and labels
@@ -283,6 +320,7 @@ class EdgePredictionTask(BaseTask):
         self,
         data: NapistuData,
         edge_index: torch.Tensor,
+        relation_type: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Predict scores for specific edge pairs.
@@ -295,6 +333,10 @@ class EdgePredictionTask(BaseTask):
             Graph data (for node features and structure)
         edge_index : torch.Tensor
             Edge pairs to score [2, num_edges]
+        relation_type : torch.Tensor, optional
+            Relation type for each edge [num_edges]. Required if using relation-aware heads.
+            If None and using relations, will attempt to extract from data.relation_type
+            if edge_index matches data.edge_index exactly.
 
         Returns
         -------
@@ -306,10 +348,42 @@ class EdgePredictionTask(BaseTask):
         >>> # Predict on new edge candidates
         >>> task = EdgePredictionTask(encoder, head)
         >>> new_edges = torch.tensor([[0, 1], [2, 3], [4, 5]]).T
-        >>> scores = task.predict_edge_scores(data, new_edges)
+        >>> relation_types = torch.tensor([0, 1, 0])  # Match edges
+        >>> scores = task.predict_edge_scores(data, new_edges, relation_type=relation_types)
         """
         self.eval()
         with torch.no_grad():
+            # Ensure using_relations is set
+            self._ensure_using_relations(data)
+
+            # If relation_type not provided but we're using relations, try to extract from data
+            if relation_type is None and self.using_relations:
+                data_relation_type = self._get_relation_type(data)
+                if data_relation_type is not None:
+                    # Only use data.relation_type if edge_index matches data.edge_index exactly
+                    if edge_index.shape[1] == data.edge_index.shape[1] and torch.equal(
+                        edge_index, data.edge_index
+                    ):
+                        relation_type = data_relation_type
+                    else:
+                        raise ValueError(
+                            "relation_type is required when edge_index differs from data.edge_index "
+                            "and using relation-aware heads. Provide matching relation_type for each edge."
+                        )
+                else:
+                    raise ValueError(
+                        "relation_type is required for relation-aware heads. "
+                        "Provide relation_type parameter matching edge_index."
+                    )
+
+            # Validate relation_type shape if provided
+            if relation_type is not None:
+                if relation_type.shape[0] != edge_index.shape[1]:
+                    raise ValueError(
+                        f"relation_type shape mismatch: {relation_type.shape[0]} != {edge_index.shape[1]} "
+                        f"(number of edges)"
+                    )
+
             # load a fixed tensor for weights if one exists
             if (
                 hasattr(self.encoder, "static_edge_weights")
@@ -327,11 +401,107 @@ class EdgePredictionTask(BaseTask):
             )
 
             # Score the specified edges
-            scores = torch.sigmoid(self.head(z, edge_index))
+            scores = self._score_edges(
+                z, edge_index, relation_type=relation_type, apply_sigmoid=True
+            )
 
             return scores
 
     # private methods
+
+    def _ensure_using_relations(self, data: NapistuData) -> None:
+        """
+        Determine if we should use relations based on head support and data availability.
+
+        Sets self.using_relations to True if:
+        - Head supports relations (relation-aware head, only if head is a Decoder)
+        - Relations exist in data
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data to check for relations
+        """
+        # Check if head is a Decoder and supports relations
+        if isinstance(self.head, Decoder):
+            head_supports_relations = self.head.supports_relations
+        else:
+            # Raw head instances don't support relations
+            logger.warning(
+                "Head is not a Decoder instance - assuming that it is NOT relation-aware."
+            )
+            head_supports_relations = False
+
+        relation_type_exists = (
+            getattr(data, NAPISTU_DATA.RELATION_TYPE, None) is not None
+        )
+        if head_supports_relations and not relation_type_exists:
+            raise ValueError(
+                "Relation type not found in data for a relation-aware head. Expected attribute 'relation_type'."
+            )
+
+        self.using_relations = head_supports_relations and relation_type_exists
+
+    def _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
+        """
+        Retrieve relation_type from data if using_relations is True.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data to retrieve relation_type from
+
+        Returns
+        -------
+        Optional[torch.Tensor]
+            Relation type tensor if using_relations is True, None otherwise
+        """
+        self._ensure_using_relations(data)
+        if self.using_relations:
+            if not hasattr(data, NAPISTU_DATA.RELATION_TYPE):
+                raise ValueError(
+                    f"Relation type not found in data. Expected attribute '{NAPISTU_DATA.RELATION_TYPE}'."
+                )
+            return data.relation_type
+        return None
+
+    def _score_edges(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+        relation_type: Optional[torch.Tensor] = None,
+        apply_sigmoid: bool = False,
+    ) -> torch.Tensor:
+        """
+        Score edges using the head.
+
+        Parameters
+        ----------
+        node_embeddings : torch.Tensor
+            Node embeddings [num_nodes, embedding_dim]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        relation_type : torch.Tensor, optional
+            Relation type for each edge [num_edges]. Only used if head supports relations.
+        apply_sigmoid : bool
+            Whether to apply sigmoid to the scores. Default is False.
+
+        Returns
+        -------
+        torch.Tensor
+            Edge scores [num_edges]
+        """
+        if self.using_relations:
+            if relation_type is None:
+                raise ValueError("relation_type is required for relation-aware heads")
+            scores = self.head(node_embeddings, edge_index, relation_type=relation_type)
+        else:
+            scores = self.head(node_embeddings, edge_index)
+
+        if apply_sigmoid:
+            scores = torch.sigmoid(scores)
+
+        return scores
 
     def _ensure_negative_sampler(self, data: NapistuData):
         """
@@ -350,7 +520,7 @@ class EdgePredictionTask(BaseTask):
         encoded_edge_strata = _get_encoded_edge_strata(data, self.edge_strata)
 
         # Get training edges and their strata
-        if hasattr(data, "train_mask"):
+        if hasattr(data, NAPISTU_DATA.TRAIN_MASK):
             # Transductive
             train_mask_cpu = data.train_mask.cpu()
             train_edges = data.edge_index[:, train_mask_cpu].cpu()
@@ -360,10 +530,21 @@ class EdgePredictionTask(BaseTask):
             train_edges = data.edge_index.cpu()
             edge_strata = encoded_edge_strata
 
+        # Determine if we should use relations and get training relation types
+        self._ensure_using_relations(data)
+        train_relation_type = None
+        relation_type = self._get_relation_type(data)
+        if relation_type is not None:
+            if hasattr(data, NAPISTU_DATA.TRAIN_MASK):
+                train_relation_type = relation_type[data.train_mask].cpu()
+            else:
+                train_relation_type = relation_type.cpu()
+
         # Initialize sampler (always, even without strata)
         self.negative_sampler = NegativeSampler(
             edge_index=train_edges,
             edge_strata=edge_strata,
+            relation_type=train_relation_type,
             sampling_strategy=self.neg_sampling_strategy,
             oversample_ratio=1.2,
             max_oversample_ratio=2.0,
@@ -389,6 +570,9 @@ class EdgePredictionTask(BaseTask):
 
         This is for inference - no training, no negative sampling.
         """
+        # Ensure using_relations is set
+        self._ensure_using_relations(data)
+
         if (
             hasattr(self.encoder, "static_edge_weights")
             and self.encoder.static_edge_weights is not None
@@ -404,8 +588,13 @@ class EdgePredictionTask(BaseTask):
             edge_data,
         )
 
+        # Extract relation types for all edges if available
+        relation_type = self._get_relation_type(data)
+
         # Score all edges
-        scores = torch.sigmoid(self.head(z, data.edge_index))
+        scores = self._score_edges(
+            z, data.edge_index, relation_type=relation_type, apply_sigmoid=True
+        )
 
         return scores
 
@@ -456,6 +645,23 @@ class EdgePredictionTask(BaseTask):
                 raise CorruptionError(
                     f"edge_data shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
                 )
+
+        if batch_dict[EDGE_PREDICTION_BATCH.POS_RELATION_TYPE] is not None:
+            if batch_dict[EDGE_PREDICTION_BATCH.POS_RELATION_TYPE].shape != (
+                n_pos_edges,
+            ):
+                raise ValueError(
+                    f"pos_relation_type shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.POS_RELATION_TYPE].shape} != ({n_pos_edges},)"
+                )
+
+        if batch_dict[EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE] is not None:
+            if batch_dict[EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE].shape != (
+                n_neg_edges,
+            ):
+                raise ValueError(
+                    f"neg_relation_type shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE].shape} != ({n_neg_edges},)"
+                )
+
         return None
 
 

@@ -11,7 +11,9 @@ from napistu.network.constants import (
 
 DEFAULT_ARTIFACTS_NAMES = SimpleNamespace(
     UNLABELED="unlabeled",
+    EDGE_STRATA_BY_EDGE_SBO_TERMS="edge_strata_by_edge_sbo_terms",
     EDGE_PREDICTION="edge_prediction",
+    RELATION_PREDICTION="relation_prediction",
     SPECIES_TYPE_PREDICTION="species_type_prediction",
     COMPREHENSIVE_PATHWAY_MEMBERSHIPS="comprehensive_pathway_memberships",
     EDGE_STRATA_BY_NODE_SPECIES_TYPE="edge_strata_by_node_species_type",
@@ -26,6 +28,7 @@ ARTIFACT_DEFS = SimpleNamespace(
 )
 
 STRATIFY_BY_ARTIFACT_NAMES = {
+    DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_EDGE_SBO_TERMS,
     DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
     DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
 }
@@ -88,11 +91,14 @@ VERTEX_DEFAULT_TRANSFORMS = {
 EDGE_DEFAULT_TRANSFORMS = {
     ENCODINGS.CATEGORICAL: {
         NAPISTU_GRAPH_EDGES.DIRECTION,
-        NAPISTU_GRAPH_EDGES.SBO_TERM,
+        NAPISTU_GRAPH_EDGES.SBO_TERM_DOWNSTREAM,
+        NAPISTU_GRAPH_EDGES.SBO_TERM_UPSTREAM,
     },
     ENCODINGS.NUMERIC: {
-        NAPISTU_GRAPH_EDGES.STOICHIOMETRY,
+        NAPISTU_GRAPH_EDGES.STOICHIOMETRY_DOWNSTREAM,
+        NAPISTU_GRAPH_EDGES.STOICHIOMETRY_UPSTREAM,
         NAPISTU_GRAPH_EDGES.WEIGHT,
+        NAPISTU_GRAPH_EDGES.WEIGHT_UPSTREAM,
     },
     ENCODINGS.BINARY: {
         NAPISTU_GRAPH_EDGES.R_ISREVERSIBLE,
@@ -113,6 +119,7 @@ VALID_SPLITTING_STRATEGIES = list(SPLITTING_STRATEGIES.__dict__.values())
 # stratification
 
 STRATIFY_BY = SimpleNamespace(
+    EDGE_SBO_TERMS="edge_sbo_terms",
     NODE_SPECIES_TYPE="node_species_type",
     NODE_TYPE="node_type",
 )
@@ -120,6 +127,7 @@ STRATIFY_BY = SimpleNamespace(
 VALID_STRATIFY_BY = list(STRATIFY_BY.__dict__.values())
 
 STRATIFY_BY_TO_ARTIFACT_NAMES = {
+    STRATIFY_BY.EDGE_SBO_TERMS: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_EDGE_SBO_TERMS,
     STRATIFY_BY.NODE_SPECIES_TYPE: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_SPECIES_TYPE,
     STRATIFY_BY.NODE_TYPE: DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
 }
@@ -133,9 +141,24 @@ STRATIFICATION_DEFS = SimpleNamespace(
 
 IGNORED_EDGE_ATTRIBUTES = [
     "string_wt",  # defined in graph_attrs_spec.yaml, same pattern of missingness as other STRING vars. Should be uppercase to be consistent with them so a readable prefix is generated during deduplication.
-    NAPISTU_GRAPH_EDGES.UPSTREAM_WEIGHT,  # identical to "weight"
     "IntAct_interaction_method_unknown",
     "OmniPath_is_directed",
     "OmniPath_is_inhibition",
     "OmniPath_is_stimulation",
+    "sbo_term_downstream_SBO:0000336",  # interactors will always be identical between upstream and downstream vertex
 ]
+
+IGNORED_VERTEX_ATTRIBUTES = [
+    "ontology_reactome",  # identical to the Reactome source assignments
+    "ontology_intact",  # identical to the IntAct source assignments
+    "ontology_kegg.drug",  # currently these are the only species types for drug
+    "ontology_smiles",  # currently the same as OmniPath small molecule
+    "ontology_other",  # currently the same as the unknown species type
+]
+
+IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES = {
+    "STRING_database_transferred": 0,
+    "STRING_neighborhood": 0,
+}
+
+IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES = {}

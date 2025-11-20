@@ -2,6 +2,7 @@
 
 import logging
 
+import numpy as np
 import pytest
 import torch
 from napistu.network.constants import NAPISTU_GRAPH
@@ -18,6 +19,7 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.napistu_graphs import (
     _ignore_graph_attributes,
+    _ignore_if_constant,
     _name_napistu_data,
     napistu_graph_to_napistu_data,
 )
@@ -181,14 +183,77 @@ def test_name_napistu_data():
 
 
 def test_ignore_graph_attributes(napistu_graph):
-    """Test that _ignore_graph_attributes removes specified edge attributes."""
-    # Add a test attribute
-    test_attr = "test_ignore_attr"
-    napistu_graph.es[test_attr] = [1.0] * napistu_graph.ecount()
-    assert test_attr in napistu_graph.es.attributes()
+    """Test that _ignore_graph_attributes removes specified edge and vertex attributes."""
+    # Test edge attributes
+    test_edge_attr = "test_ignore_edge_attr"
+    napistu_graph.es[test_edge_attr] = [1.0] * napistu_graph.ecount()
+    assert test_edge_attr in napistu_graph.es.attributes()
 
-    # Remove it
-    _ignore_graph_attributes(napistu_graph, {NAPISTU_GRAPH.EDGES: [test_attr]})
+    # Test vertex attributes
+    test_vertex_attr = "test_ignore_vertex_attr"
+    napistu_graph.vs[test_vertex_attr] = [2.0] * napistu_graph.vcount()
+    assert test_vertex_attr in napistu_graph.vs.attributes()
 
-    # Verify it's gone
-    assert test_attr not in napistu_graph.es.attributes()
+    # Remove both
+    _ignore_graph_attributes(
+        napistu_graph,
+        {
+            NAPISTU_GRAPH.EDGES: [test_edge_attr],
+            NAPISTU_GRAPH.VERTICES: [test_vertex_attr],
+        },
+    )
+
+    # Verify both are gone
+    assert test_edge_attr not in napistu_graph.es.attributes()
+    assert test_vertex_attr not in napistu_graph.vs.attributes()
+
+
+def test_ignore_if_constant(napistu_graph):
+    """Test that _ignore_if_constant removes attributes that are constant at specified value or all NaN."""
+    # Test edge attribute constant at 0
+    test_edge_attr_zero = "test_edge_zero"
+    napistu_graph.es[test_edge_attr_zero] = [0.0] * napistu_graph.ecount()
+    assert test_edge_attr_zero in napistu_graph.es.attributes()
+
+    # Test edge attribute with mix of 0 and NaN (should be removed)
+    test_edge_attr_mixed = "test_edge_mixed"
+    values_mixed = [
+        0.0 if i % 2 == 0 else np.nan for i in range(napistu_graph.ecount())
+    ]
+    napistu_graph.es[test_edge_attr_mixed] = values_mixed
+    assert test_edge_attr_mixed in napistu_graph.es.attributes()
+
+    # Test edge attribute with different values (should NOT be removed)
+    test_edge_attr_varied = "test_edge_varied"
+    napistu_graph.es[test_edge_attr_varied] = [0.0, 1.0] * (
+        napistu_graph.ecount() // 2 + 1
+    )
+    napistu_graph.es[test_edge_attr_varied] = napistu_graph.es[test_edge_attr_varied][
+        : napistu_graph.ecount()
+    ]
+    assert test_edge_attr_varied in napistu_graph.es.attributes()
+
+    # Test vertex attribute constant at 0
+    test_vertex_attr_zero = "test_vertex_zero"
+    napistu_graph.vs[test_vertex_attr_zero] = [0.0] * napistu_graph.vcount()
+    assert test_vertex_attr_zero in napistu_graph.vs.attributes()
+
+    # Remove constant attributes
+    _ignore_if_constant(
+        napistu_graph,
+        {
+            NAPISTU_GRAPH.EDGES: {
+                test_edge_attr_zero: 0.0,
+                test_edge_attr_mixed: 0.0,
+                test_edge_attr_varied: 0.0,
+            },
+            NAPISTU_GRAPH.VERTICES: {test_vertex_attr_zero: 0.0},
+        },
+    )
+
+    # Verify constant attributes are removed
+    assert test_edge_attr_zero not in napistu_graph.es.attributes()
+    assert test_edge_attr_mixed not in napistu_graph.es.attributes()
+    # Verify varied attribute is NOT removed (has values other than 0)
+    assert test_edge_attr_varied in napistu_graph.es.attributes()
+    assert test_vertex_attr_zero not in napistu_graph.vs.attributes()

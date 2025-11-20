@@ -11,6 +11,7 @@ from napistu.network.constants import (
     NAPISTU_GRAPH,
     NAPISTU_GRAPH_EDGES,
     NAPISTU_GRAPH_VERTICES,
+    SINGULAR_GRAPH_ENTITIES,
     VALID_VERTEX_SBML_DFS_SUMMARIES,
 )
 from napistu.network.ng_core import NapistuGraph
@@ -21,18 +22,22 @@ from napistu_torch.labels.constants import (
     LABELING,
     TASK_TYPES,
 )
-from napistu_torch.labels.create import create_vertex_labels
+from napistu_torch.labels.create import create_relation_labels, create_vertex_labels
 from napistu_torch.labels.labeling_manager import LABELING_MANAGERS, LabelingManager
 from napistu_torch.load import encoding
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     IGNORED_EDGE_ATTRIBUTES,
+    IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+    IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
+    IGNORED_VERTEX_ATTRIBUTES,
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
 )
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import EncodingManager
+from napistu_torch.load.stratification import create_composite_edge_strata
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.splitting import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
@@ -46,7 +51,12 @@ def augment_napistu_graph(
     napistu_graph: NapistuGraph,
     sbml_dfs_summary_types: list = VALID_VERTEX_SBML_DFS_SUMMARIES,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
+    },
+    ignored_if_constant_attributes: dict[str, dict[str, Any]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
     },
     inplace: bool = False,
 ) -> None:
@@ -65,7 +75,9 @@ def augment_napistu_graph(
     sbml_dfs_summary_types : list, optional
         Types of summaries to include. Defaults to all valid summary types.
     ignored_attributes : dict[str, list[str]], optional
-        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES.
+        A dictionary of attribute types and lists of attributes to ignore. Defaults to IGNORED_EDGE_ATTRIBUTES and IGNORED_VERTEX_ATTRIBUTES.
+    ignored_if_constant_attributes : dict[str, dict[str, Any]], optional
+        A dictionary of attribute types and dicts mapping attribute names to values to check against. For example, {"some_attr": 0} means check if all values are 0 or None. Defaults to IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES and IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES.
     inplace : bool, default=False
         If True, modify the NapistuGraph in place.
         If False, return a new NapistuGraph with the augmentations.
@@ -110,6 +122,8 @@ def augment_napistu_graph(
 
     # drop ignored attributes which aren't needed
     _ignore_graph_attributes(napistu_graph, ignored_attributes)
+    # ignore attributes if they are a constant specified value or missing for all vertices/edges
+    _ignore_if_constant(napistu_graph, ignored_if_constant_attributes)
 
     return None if inplace else napistu_graph
 
@@ -238,6 +252,7 @@ def construct_unlabeled_napistu_data(
     napistu_graph: NapistuGraph,
     splitting_strategy: str = SPLITTING_STRATEGIES.NO_MASK,
     name: Optional[str] = None,
+    relation_strata_type: Optional[str] = None,
     **kwargs,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -257,6 +272,10 @@ def construct_unlabeled_napistu_data(
         Defaults to SPLITTING_STRATEGIES.NO_MASK.
     name : Optional[str], default=None
         Name for the NapistuData object. If None, uses the default name.
+    relation_strata_type : Optional[str], default=None
+        If provided, creates relation labels based on a edge_strata (combinations of edge and from/to vertex attributes).
+        Must be one of VALID_STRATIFY_BY values (e.g., STRATIFY_BY.NODE_SPECIES_TYPE).
+        Creates relation_strata and relation_manager for relation-aware tasks.
     **kwargs:
         Additional keyword arguments to pass to napistu_graph_to_napistu_data.
 
@@ -271,16 +290,32 @@ def construct_unlabeled_napistu_data(
     --------
     >>> # Unmasked data with default splits
     >>> data = construct_unlabeled_napistu_data(ng, splitting_strategy='no_mask')
+    >>> # With relation labels
+    >>> data = construct_unlabeled_napistu_data(
+    ...     ng, splitting_strategy='no_mask', relation_strata_type=STRATIFY_BY.NODE_SPECIES_TYPE
+    ... )
     """
 
     working_napistu_graph = augment_napistu_graph(
         sbml_dfs, napistu_graph, inplace=False
     )
 
+    # Optionally create relation labels from edge_strata
+    if relation_strata_type is not None:
+        edge_strata = create_composite_edge_strata(
+            working_napistu_graph, relation_strata_type
+        )
+        relation_type, relation_manager = create_relation_labels(edge_strata)
+    else:
+        relation_type = None
+        relation_manager = None
+
     napistu_data = napistu_graph_to_napistu_data(
         working_napistu_graph,
         splitting_strategy=splitting_strategy,
         name=name,
+        relation_type=relation_type,
+        relation_manager=relation_manager,
         **kwargs,
     )
 
@@ -301,10 +336,12 @@ def napistu_graph_to_napistu_data(
     auto_encode: bool = True,
     encoders: Dict[str, Any] = DEFAULT_ENCODERS,
     deduplicate_features: bool = True,
-    verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
-    name: Optional[str] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relation_type: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
+    name: Optional[str] = None,
+    verbose: bool = True,
     **strategy_kwargs: Any,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -351,10 +388,15 @@ def napistu_graph_to_napistu_data(
         If True, log detailed information about config composition and encoding.
     labels : Optional[torch.Tensor], default=None
         Optional labels tensor to set as 'y' attribute in the resulting NapistuData object(s).
-    name : Optional[str], default=None
-        Name for the NapistuData object(s). If None, uses the default name.
     labeling_manager : Optional[LabelingManager], default=None
         Labeling manager used to encode the labels. Should be provided when labels are present.
+    relation_type : Optional[torch.Tensor], default=None
+        Optional relation type tensor to set as 'relation_type' attribute in the resulting NapistuData object(s).
+    relation_manager : Optional[LabelingManager], default=None
+        Relation labeling manager used to encode edge/relation labels. Should be provided when
+        relation labels are created (e.g., from edge_strata).
+    name : Optional[str], default=None
+        Name for the NapistuData object(s). If None, uses the default name.
     **strategy_kwargs : Any
         Strategy-specific arguments:
         - For 'edge_mask': train_size=0.8, val_size=0.1, test_size=0.1
@@ -461,6 +503,8 @@ def napistu_graph_to_napistu_data(
         verbose=verbose,
         labels=labels,
         labeling_manager=labeling_manager,
+        relation_type=relation_type,
+        relation_manager=relation_manager,
         **filtered_kwargs,
     )
 
@@ -495,7 +539,8 @@ def _extract_edge_weights(edge_df: pd.DataFrame) -> Optional[torch.Tensor]:
 def _ignore_graph_attributes(
     napistu_graph: NapistuGraph,
     ignored_attributes: dict[str, list[str]] = {
-        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES
+        NAPISTU_GRAPH.EDGES: IGNORED_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_VERTEX_ATTRIBUTES,
     },
 ) -> None:
     """
@@ -503,20 +548,90 @@ def _ignore_graph_attributes(
 
     This function removes the specified attributes from either vertices or edges. This is generally to restrict the vertex and edge encodings to a manageable size.
     """
+    for entity_type in [NAPISTU_GRAPH.EDGES, NAPISTU_GRAPH.VERTICES]:
+        if entity_type not in ignored_attributes:
+            continue
 
-    # currently only edge attributes are ignored
-    existing_edge_attributes = napistu_graph.es.attributes()
-    to_be_removed_edge_attributes = set(ignored_attributes[NAPISTU_GRAPH.EDGES]) & set(
-        existing_edge_attributes
-    )
+        if entity_type == NAPISTU_GRAPH.EDGES:
+            existing_attributes = napistu_graph.es.attributes()
+        else:
+            existing_attributes = napistu_graph.vs.attributes()
 
-    if len(to_be_removed_edge_attributes) > 0:
-        logger.info(
-            f"Removing the following edge attributes: {to_be_removed_edge_attributes}"
+        to_be_removed_attributes = set(ignored_attributes[entity_type]) & set(
+            existing_attributes
         )
-        napistu_graph.remove_attributes(
-            NAPISTU_GRAPH.EDGES, to_be_removed_edge_attributes
-        )
+
+        if len(to_be_removed_attributes) > 0:
+            entity_name = SINGULAR_GRAPH_ENTITIES[entity_type]
+            logger.info(
+                f"Removing the following {entity_name} attributes: {to_be_removed_attributes}"
+            )
+            napistu_graph.remove_attributes(entity_type, to_be_removed_attributes)
+
+    return None
+
+
+def _ignore_if_constant(
+    napistu_graph: NapistuGraph,
+    attributes_to_check: dict[str, dict[str, Any]] = {
+        NAPISTU_GRAPH.EDGES: IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
+        NAPISTU_GRAPH.VERTICES: IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
+    },
+) -> None:
+    """
+    Remove attributes from vertices or edges if they are constant at a specific value or missing for all vertices/edges.
+
+    This function checks specified attributes and removes them if:
+    - All vertices/edges have the specified value (or None/missing)
+    - All vertices/edges have missing/None values
+
+    Parameters
+    ----------
+    napistu_graph : NapistuGraph
+        The NapistuGraph to check and modify.
+    attributes_to_check : dict[str, dict[str, Any]], optional
+        Dictionary mapping NAPISTU_GRAPH.EDGES/VERTICES to dicts mapping attribute names
+        to values to check against. For example, {"some_attr": 0} means check if all
+        values are 0 or None. Defaults to empty dicts.
+
+    Returns
+    -------
+    None
+        Modifies the NapistuGraph in place.
+    """
+    for entity_type in [NAPISTU_GRAPH.EDGES, NAPISTU_GRAPH.VERTICES]:
+        if entity_type not in attributes_to_check:
+            continue
+
+        if entity_type == NAPISTU_GRAPH.EDGES:
+            existing_attributes = napistu_graph.es.attributes()
+            entity_sequence = napistu_graph.es
+        else:
+            existing_attributes = napistu_graph.vs.attributes()
+            entity_sequence = napistu_graph.vs
+
+        attrs_to_check = attributes_to_check[entity_type]
+        to_be_removed_attributes = set()
+
+        for attr, expected_value in attrs_to_check.items():
+            if attr not in existing_attributes:
+                continue
+            values = entity_sequence[attr]
+            # Filter out NaN values and create set of unique observed values
+            non_nan_values = [v for v in values if not pd.isna(v)]
+            unique_values = set(non_nan_values)
+            # Remove if all values are NaN or if only expected_value is present
+            if len(unique_values) == 0 or unique_values == {expected_value}:
+                to_be_removed_attributes.add(attr)
+
+        if len(to_be_removed_attributes) > 0:
+            entity_name = SINGULAR_GRAPH_ENTITIES[entity_type]
+            logger.info(
+                f"Removing constant or all-missing {entity_name} attributes: {to_be_removed_attributes}"
+            )
+            napistu_graph.remove_attributes(entity_type, to_be_removed_attributes)
+
+    return None
 
 
 def _napistu_graph_to_edge_masked_napistu_data(
@@ -539,6 +654,8 @@ def _napistu_graph_to_edge_masked_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relation_type: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """NapistuGraph to NapistuData object with edge masks split across train, test, and validation edge sets."""
 
@@ -620,6 +737,8 @@ def _napistu_graph_to_edge_masked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
         labeling_manager=labeling_manager,
+        relation_type=relation_type,
+        relation_manager=relation_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 
@@ -644,6 +763,8 @@ def _napistu_graph_to_inductive_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relation_type: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> Dict[str, NapistuData]:
     """
     Create PyG Data objects from a NapistuGraph with an inductive split into train, test, and validation sets.
@@ -722,6 +843,8 @@ def _napistu_graph_to_inductive_napistu_data(
             name=f"{name}_{k}",
             splitting_strategy=SPLITTING_STRATEGIES.INDUCTIVE,
             labeling_manager=labeling_manager,
+            relation_type=relation_type,
+            relation_manager=relation_manager,
         )
 
     return pyg_data
@@ -744,6 +867,8 @@ def _napistu_graph_to_unmasked_napistu_data(
     verbose: bool = False,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relation_type: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """Create a PyTorch Geometric Data object from a NapistuGraph without any splitting/masking of vertices or edges"""
 
@@ -805,6 +930,8 @@ def _napistu_graph_to_unmasked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.NO_MASK,
         labeling_manager=labeling_manager,
+        relation_type=relation_type,
+        relation_manager=relation_manager,
     )
 
 
@@ -828,6 +955,8 @@ def _napistu_graph_to_vertex_masked_napistu_data(
     verbose: bool = True,
     labels: Optional[torch.Tensor] = None,
     labeling_manager: Optional[LabelingManager] = None,
+    relation_type: Optional[torch.Tensor] = None,
+    relation_manager: Optional[LabelingManager] = None,
 ) -> NapistuData:
     """
     Create PyG Data objects from a NapistuGraph with vertex masks split across train, test, and validation vertex sets.
@@ -911,6 +1040,8 @@ def _napistu_graph_to_vertex_masked_napistu_data(
         name=name,
         splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK,
         labeling_manager=labeling_manager,
+        relation_type=relation_type,
+        relation_manager=relation_manager,
         **masks,  # Unpack train_mask, test_mask, val_mask
     )
 
