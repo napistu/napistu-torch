@@ -212,7 +212,9 @@ def fit_model(
                 current_checkpoint = None
 
             # Log corruption event to WandB if available
-            _log_corruption_to_wandb(experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e)
+            _log_corruption_to_wandb(
+                experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e
+            )
 
             # Aggressive MPS cleanup before retry
             if torch.backends.mps.is_available():
@@ -654,6 +656,4 @@ def _log_corruption_to_wandb(
                 }
             )
         except Exception as wandb_error:
-            logger.warning(
-                f"Failed to log corruption event to WandB: {wandb_error}"
-            )
+            logger.warning(f"Failed to log corruption event to WandB: {wandb_error}")
