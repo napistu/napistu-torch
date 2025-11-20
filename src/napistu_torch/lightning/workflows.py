@@ -1,11 +1,13 @@
 """Workflows for configuring, training and evaluating models"""
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import pandas as pd
 import pytorch_lightning as pl
+import torch
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
@@ -39,6 +41,7 @@ from napistu_torch.tasks.edge_prediction import (
     EdgePredictionTask,
     get_edge_strata_from_artifacts,
 )
+from napistu_torch.utils.base_utils import CorruptionError
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +126,7 @@ class ExperimentDict(BaseModel):
 def fit_model(
     experiment_dict: Dict[str, Any],
     resume_from: Optional[Path] = None,
+    max_corruption_restarts: int = 10,
     logger: Optional = logger,
 ) -> NapistuTrainer:
     """
@@ -139,6 +143,8 @@ def fit_model(
         - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
     resume_from : Path, optional
         Path to a checkpoint to resume from
+    max_corruption_restarts : int, default=10
+        Maximum number of times to restart after corruption detection
     logger : logging.Logger, optional
         Logger instance to use
 
@@ -157,12 +163,73 @@ def fit_model(
         wandb_logger=experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER],
     )
 
-    logger.info("Starting training...")
-    experiment_dict[EXPERIMENT_DICT.TRAINER].fit(
-        experiment_dict[EXPERIMENT_DICT.MODEL],
-        datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
-        ckpt_path=resume_from,
+    # Get checkpoint directory from the run manifest's experiment_config
+    run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
+    checkpoint_dir = run_manifest.experiment_config.training.get_checkpoint_dir(
+        run_manifest.experiment_config.output_dir
     )
+
+    _cleanup_stale_checkpoints(
+        checkpoint_dir, keep_checkpoint=resume_from, logger=logger
+    )
+
+    restart_count = 0
+    current_checkpoint = resume_from
+
+    while restart_count <= max_corruption_restarts:
+        try:
+            logger.info("Starting training...")
+            experiment_dict[EXPERIMENT_DICT.TRAINER].fit(
+                experiment_dict[EXPERIMENT_DICT.MODEL],
+                datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
+                ckpt_path=current_checkpoint,
+            )
+
+            logger.info("Training workflow completed successfully")
+            return experiment_dict[EXPERIMENT_DICT.TRAINER]
+
+        except CorruptionError as e:
+            if restart_count >= max_corruption_restarts:
+                logger.error(
+                    f"MPS memory corruption persisted after {max_corruption_restarts} restarts. "
+                    f"Consider reducing memory pressure (fewer batches_per_epoch, disable edge encoder, etc.)"
+                )
+                raise
+
+            restart_count += 1
+            logger.warning(
+                f"MPS memory corruption detected: {e}\n"
+                f"Restart {restart_count}/{max_corruption_restarts} - attempting recovery..."
+            )
+
+            # Find last checkpoint to resume from
+            last_ckpt = checkpoint_dir / "last.ckpt"
+            if last_ckpt.exists():
+                current_checkpoint = last_ckpt
+                logger.info(f"Resuming from last checkpoint: {current_checkpoint}")
+            else:
+                logger.warning("No last.ckpt found, restarting from beginning")
+                current_checkpoint = None
+
+            # Log corruption event to WandB if available
+            _log_corruption_to_wandb(
+                experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e
+            )
+
+            # Aggressive MPS cleanup before retry
+            if torch.backends.mps.is_available():
+                logger.info("Cleaning up MPS cache...")
+                torch.mps.synchronize()
+                torch.mps.empty_cache()
+            gc.collect()
+
+            # Brief pause to let MPS settle
+            import time
+
+            time.sleep(1)
+
+            logger.info("Resuming training after cleanup...")
+            continue
 
     logger.info("Training workflow completed")
     return experiment_dict[EXPERIMENT_DICT.TRAINER]
@@ -459,6 +526,57 @@ def test(
 # private functions
 
 
+def _cleanup_stale_checkpoints(
+    checkpoint_dir: Path,
+    keep_checkpoint: Optional[Path] = None,
+    logger: logging.Logger = logger,
+) -> None:
+    """
+    Remove old checkpoints from previous runs before starting new training.
+
+    This prevents accidentally resuming from stale checkpoints during corruption recovery.
+
+    Parameters
+    ----------
+    checkpoint_dir : Path
+        Directory containing checkpoints
+    keep_checkpoint : Path, optional
+        Specific checkpoint to preserve (e.g., if explicitly resuming from it)
+    logger : logging.Logger
+        Logger instance
+    """
+    if not checkpoint_dir.exists():
+        logger.info(f"Checkpoint directory does not exist yet: {checkpoint_dir}")
+        return
+
+    checkpoint_files = list(checkpoint_dir.glob("*.ckpt"))
+
+    if not checkpoint_files:
+        logger.info("No existing checkpoints to clean up")
+        return
+
+    # Determine which checkpoint to keep (if any)
+    keep_path = keep_checkpoint.resolve() if keep_checkpoint else None
+
+    removed_count = 0
+    for ckpt_file in checkpoint_files:
+        if keep_path and ckpt_file.resolve() == keep_path:
+            logger.info(f"Preserving checkpoint for resume: {ckpt_file.name}")
+            continue
+
+        try:
+            ckpt_file.unlink()
+            removed_count += 1
+            logger.debug(f"Removed stale checkpoint: {ckpt_file.name}")
+        except Exception as e:
+            logger.warning(f"Failed to remove {ckpt_file.name}: {e}")
+
+    if removed_count > 0:
+        logger.info(
+            f"Cleaned up {removed_count} stale checkpoint(s) from previous runs"
+        )
+
+
 def _create_data_module(
     config: ExperimentConfig,
 ) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
@@ -510,3 +628,32 @@ def _create_model(
     )
 
     return model
+
+
+def _log_corruption_to_wandb(
+    wandb_logger: Optional[Any],
+    restart_count: int,
+    error: Exception,
+) -> None:
+    """
+    Log corruption event to WandB if logger is available.
+
+    Parameters
+    ----------
+    wandb_logger : Optional[Any]
+        WandB logger instance, or None if not available
+    restart_count : int
+        Current restart attempt number
+    error : Exception
+        The corruption error that occurred
+    """
+    if wandb_logger is not None:
+        try:
+            wandb_logger.experiment.log(
+                {
+                    "corruption_restart": restart_count,
+                    "corruption_error": str(error),
+                }
+            )
+        except Exception as wandb_error:
+            logger.warning(f"Failed to log corruption event to WandB: {wandb_error}")

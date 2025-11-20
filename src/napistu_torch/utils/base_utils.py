@@ -51,3 +51,9 @@ def shortest_common_prefix(names: List[str], min_length: int = 3) -> str:
         return sorted(names)[0]
 
     return prefix_str
+
+
+class CorruptionError(ValueError):
+    """Raised when MPS memory corruption is detected."""
+
+    pass
