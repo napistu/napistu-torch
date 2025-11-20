@@ -163,6 +163,16 @@ def fit_model(
         wandb_logger=experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER],
     )
 
+    # Get checkpoint directory from the run manifest's experiment_config
+    run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
+    checkpoint_dir = run_manifest.experiment_config.training.get_checkpoint_dir(
+        run_manifest.experiment_config.output_dir
+    )
+
+    _cleanup_stale_checkpoints(
+        checkpoint_dir, keep_checkpoint=resume_from, logger=logger
+    )
+
     restart_count = 0
     current_checkpoint = resume_from
 
@@ -193,17 +203,16 @@ def fit_model(
             )
 
             # Find last checkpoint to resume from
-            last_ckpt = (
-                experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].output_dir
-                / "checkpoints"
-                / "last.ckpt"
-            )
+            last_ckpt = checkpoint_dir / "last.ckpt"
             if last_ckpt.exists():
                 current_checkpoint = last_ckpt
                 logger.info(f"Resuming from last checkpoint: {current_checkpoint}")
             else:
                 logger.warning("No last.ckpt found, restarting from beginning")
                 current_checkpoint = None
+
+            # Log corruption event to WandB if available
+            _log_corruption_to_wandb(experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e)
 
             # Aggressive MPS cleanup before retry
             if torch.backends.mps.is_available():
@@ -515,6 +524,57 @@ def test(
 # private functions
 
 
+def _cleanup_stale_checkpoints(
+    checkpoint_dir: Path,
+    keep_checkpoint: Optional[Path] = None,
+    logger: logging.Logger = logger,
+) -> None:
+    """
+    Remove old checkpoints from previous runs before starting new training.
+
+    This prevents accidentally resuming from stale checkpoints during corruption recovery.
+
+    Parameters
+    ----------
+    checkpoint_dir : Path
+        Directory containing checkpoints
+    keep_checkpoint : Path, optional
+        Specific checkpoint to preserve (e.g., if explicitly resuming from it)
+    logger : logging.Logger
+        Logger instance
+    """
+    if not checkpoint_dir.exists():
+        logger.info(f"Checkpoint directory does not exist yet: {checkpoint_dir}")
+        return
+
+    checkpoint_files = list(checkpoint_dir.glob("*.ckpt"))
+
+    if not checkpoint_files:
+        logger.info("No existing checkpoints to clean up")
+        return
+
+    # Determine which checkpoint to keep (if any)
+    keep_path = keep_checkpoint.resolve() if keep_checkpoint else None
+
+    removed_count = 0
+    for ckpt_file in checkpoint_files:
+        if keep_path and ckpt_file.resolve() == keep_path:
+            logger.info(f"Preserving checkpoint for resume: {ckpt_file.name}")
+            continue
+
+        try:
+            ckpt_file.unlink()
+            removed_count += 1
+            logger.debug(f"Removed stale checkpoint: {ckpt_file.name}")
+        except Exception as e:
+            logger.warning(f"Failed to remove {ckpt_file.name}: {e}")
+
+    if removed_count > 0:
+        logger.info(
+            f"Cleaned up {removed_count} stale checkpoint(s) from previous runs"
+        )
+
+
 def _create_data_module(
     config: ExperimentConfig,
 ) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
@@ -566,3 +626,34 @@ def _create_model(
     )
 
     return model
+
+
+def _log_corruption_to_wandb(
+    wandb_logger: Optional[Any],
+    restart_count: int,
+    error: Exception,
+) -> None:
+    """
+    Log corruption event to WandB if logger is available.
+
+    Parameters
+    ----------
+    wandb_logger : Optional[Any]
+        WandB logger instance, or None if not available
+    restart_count : int
+        Current restart attempt number
+    error : Exception
+        The corruption error that occurred
+    """
+    if wandb_logger is not None:
+        try:
+            wandb_logger.experiment.log(
+                {
+                    "corruption_restart": restart_count,
+                    "corruption_error": str(error),
+                }
+            )
+        except Exception as wandb_error:
+            logger.warning(
+                f"Failed to log corruption event to WandB: {wandb_error}"
+            )

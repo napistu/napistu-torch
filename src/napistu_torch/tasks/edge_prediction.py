@@ -218,12 +218,6 @@ class EdgePredictionTask(BaseTask):
 
         self._validate_data_dims(batch_dict, data)
 
-        # temp
-        import random
-
-        if self.negative_sampler and random.random() < 0.01:  # 1% chance
-            raise CorruptionError("Simulated MPS corruption for testing")
-
         return batch_dict
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -650,7 +644,7 @@ class EdgePredictionTask(BaseTask):
             if batch_dict[EDGE_PREDICTION_BATCH.POS_RELATION_TYPE].shape != (
                 n_pos_edges,
             ):
-                raise ValueError(
+                raise CorruptionError(
                     f"pos_relation_type shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.POS_RELATION_TYPE].shape} != ({n_pos_edges},)"
                 )
 
@@ -658,7 +652,7 @@ class EdgePredictionTask(BaseTask):
             if batch_dict[EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE].shape != (
                 n_neg_edges,
             ):
-                raise ValueError(
+                raise CorruptionError(
                     f"neg_relation_type shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE].shape} != ({n_neg_edges},)"
                 )
 
