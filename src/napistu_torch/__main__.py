@@ -43,6 +43,7 @@ def cli():
     if logger is None:
         # Use napistu's setup_logging for basic CLI logging
         from napistu._cli import setup_logging as napistu_setup_logging
+
         logger, console = napistu_setup_logging()
 
 

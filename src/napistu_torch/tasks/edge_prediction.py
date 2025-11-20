@@ -28,6 +28,7 @@ from napistu_torch.tasks.constants import (
     NEGATIVE_SAMPLING_STRATEGIES,
 )
 from napistu_torch.tasks.negative_sampler import NegativeSampler
+from napistu_torch.utils.base_utils import CorruptionError
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +194,12 @@ class EdgePredictionTask(BaseTask):
         }
 
         self._validate_data_dims(batch_dict, data)
+
+        # temp
+        import random
+
+        if self.negative_sampler and random.random() < 0.01:  # 1% chance
+            raise CorruptionError("Simulated MPS corruption for testing")
 
         return batch_dict
 
@@ -411,7 +418,7 @@ class EdgePredictionTask(BaseTask):
             data.num_nodes,
             data.num_node_features,
         ):
-            raise ValueError(
+            raise CorruptionError(
                 f"x shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.X].shape} != ({data.num_nodes}, {data.num_node_features})"
             )
 
@@ -420,19 +427,19 @@ class EdgePredictionTask(BaseTask):
             2,
             n_supervision_edges,
         ):
-            raise ValueError(
+            raise CorruptionError(
                 f"supervision_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES].shape} != (2, {n_supervision_edges})"
             )
 
         n_pos_edges = batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape[1]
         if batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape != (2, n_pos_edges):
-            raise ValueError(
+            raise CorruptionError(
                 f"pos_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.POS_EDGES].shape} != (2, {n_pos_edges})"
             )
 
         n_neg_edges = batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape[1]
         if batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape != (2, n_neg_edges):
-            raise ValueError(
+            raise CorruptionError(
                 f"neg_edges shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.NEG_EDGES].shape} != (2, {n_neg_edges})"
             )
 
@@ -446,7 +453,7 @@ class EdgePredictionTask(BaseTask):
                 batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA].shape[0]
                 != n_supervision_edges
             ):
-                raise ValueError(
+                raise CorruptionError(
                     f"edge_data shape mismatch: {batch_dict[EDGE_PREDICTION_BATCH.EDGE_DATA].shape[0]} edge_data entries versus {n_supervision_edges} supervision edges"
                 )
         return None

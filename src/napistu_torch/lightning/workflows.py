@@ -1,10 +1,12 @@
 """Workflows for configuring, training and evaluating models"""
 
+import gc
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import pytorch_lightning as pl
+import torch
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
@@ -37,6 +39,7 @@ from napistu_torch.tasks.edge_prediction import (
     EdgePredictionTask,
     get_edge_strata_from_artifacts,
 )
+from napistu_torch.utils.base_utils import CorruptionError
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +124,7 @@ class ExperimentDict(BaseModel):
 def fit_model(
     experiment_dict: Dict[str, Any],
     resume_from: Optional[Path] = None,
+    max_corruption_restarts: int = 10,
     logger: Optional = logger,
 ) -> NapistuTrainer:
     """
@@ -137,6 +141,8 @@ def fit_model(
         - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
     resume_from : Path, optional
         Path to a checkpoint to resume from
+    max_corruption_restarts : int, default=10
+        Maximum number of times to restart after corruption detection
     logger : logging.Logger, optional
         Logger instance to use
 
@@ -155,12 +161,62 @@ def fit_model(
         wandb_logger=experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER],
     )
 
-    logger.info("Starting training...")
-    experiment_dict[EXPERIMENT_DICT.TRAINER].fit(
-        experiment_dict[EXPERIMENT_DICT.MODEL],
-        datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
-        ckpt_path=resume_from,
-    )
+    restart_count = 0
+    current_checkpoint = resume_from
+
+    while restart_count <= max_corruption_restarts:
+        try:
+            logger.info("Starting training...")
+            experiment_dict[EXPERIMENT_DICT.TRAINER].fit(
+                experiment_dict[EXPERIMENT_DICT.MODEL],
+                datamodule=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
+                ckpt_path=current_checkpoint,
+            )
+
+            logger.info("Training workflow completed successfully")
+            return experiment_dict[EXPERIMENT_DICT.TRAINER]
+
+        except CorruptionError as e:
+            if restart_count >= max_corruption_restarts:
+                logger.error(
+                    f"MPS memory corruption persisted after {max_corruption_restarts} restarts. "
+                    f"Consider reducing memory pressure (fewer batches_per_epoch, disable edge encoder, etc.)"
+                )
+                raise
+
+            restart_count += 1
+            logger.warning(
+                f"MPS memory corruption detected: {e}\n"
+                f"Restart {restart_count}/{max_corruption_restarts} - attempting recovery..."
+            )
+
+            # Find last checkpoint to resume from
+            last_ckpt = (
+                experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].output_dir
+                / "checkpoints"
+                / "last.ckpt"
+            )
+            if last_ckpt.exists():
+                current_checkpoint = last_ckpt
+                logger.info(f"Resuming from last checkpoint: {current_checkpoint}")
+            else:
+                logger.warning("No last.ckpt found, restarting from beginning")
+                current_checkpoint = None
+
+            # Aggressive MPS cleanup before retry
+            if torch.backends.mps.is_available():
+                logger.info("Cleaning up MPS cache...")
+                torch.mps.synchronize()
+                torch.mps.empty_cache()
+            gc.collect()
+
+            # Brief pause to let MPS settle
+            import time
+
+            time.sleep(1)
+
+            logger.info("Resuming training after cleanup...")
+            continue
 
     logger.info("Training workflow completed")
     return experiment_dict[EXPERIMENT_DICT.TRAINER]
