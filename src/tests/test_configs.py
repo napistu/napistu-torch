@@ -867,6 +867,7 @@ class TestExperimentConfig:
         experiment_name = config.get_experiment_name()
         assert experiment_name == "gat-bilinear_h256_l5_node_classification"
 
+    @pytest.mark.skip_on_windows
     def test_anonymize(self, stubbed_data_config):
         """Test anonymize method masks all Path-like values."""
         # Create config with absolute paths
