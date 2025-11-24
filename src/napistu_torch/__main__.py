@@ -40,12 +40,123 @@ def cli():
     # Set up logging only when CLI is actually invoked, not at import time
     # This prevents interfering with pytest's caplog fixture during tests
     # Note: Individual commands may set up their own logging (e.g., train command)
+    # Also allows sphinx-click to introspect the CLI without executing this code
     global logger, console
     if logger is None:
-        # Use napistu's setup_logging for basic CLI logging
-        from napistu._cli import setup_logging as napistu_setup_logging
+        try:
+            # Use napistu's setup_logging for basic CLI logging
+            from napistu._cli import setup_logging as napistu_setup_logging
 
-        logger, console = napistu_setup_logging()
+            logger, console = napistu_setup_logging()
+        except ImportError:
+            # Fallback for documentation builds or when napistu isn't available
+            import logging
+
+            logger = logging.getLogger(__name__)
+            console = None
+
+
+@cli.command()
+@click.argument(
+    "experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.argument("repo_id", type=str)
+@click.option(
+    "--checkpoint",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Checkpoint to publish (default: best checkpoint)",
+)
+@click.option(
+    "--message",
+    type=str,
+    default=None,
+    help="Custom commit message (default: auto-generated from experiment)",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    default=False,
+    help="Explicitly confirm overwriting existing model in repo",
+)
+def publish(
+    experiment_dir: Path,
+    repo_id: str,
+    checkpoint: Optional[Path],
+    message: Optional[str],
+    overwrite: bool,
+):
+    """
+    Publish a trained model to HuggingFace Hub.
+
+    Automatically creates a private repository if it doesn't exist.
+    Repositories can be made public manually on huggingface.co after curation.
+
+    EXPERIMENT_DIR: Path to experiment directory containing manifest and checkpoints
+
+    REPO_ID: HuggingFace repository in format 'username/repo-name'
+
+    \b
+    Examples:
+        # First upload - creates new private repo
+        $ napistu-torch publish experiments/run_001 shackett/napistu-sage-octopus
+
+        # Update existing model
+        $ napistu-torch publish experiments/run_002 shackett/napistu-sage-octopus --overwrite
+
+        # Publish specific checkpoint with custom message
+        $ napistu-torch publish experiments/run_001 shackett/napistu-transe-v1 \\
+            --checkpoint experiments/run_001/checkpoints/epoch=50.ckpt \\
+            --message "Improved model with increased dropout"
+
+    \b
+    Note: Requires 'napistu-torch[lightning]' to be installed.
+          Authenticate first with: huggingface-cli login
+    """
+    # Import EvaluationManager
+    from napistu_torch.evaluation.evaluation_manager import EvaluationManager
+
+    # Initialize manager
+    evaluation_manager = EvaluationManager(experiment_dir)
+
+    # Determine checkpoint path
+    checkpoint_path = checkpoint or evaluation_manager.best_checkpoint_path
+    if checkpoint_path is None:
+        raise click.ClickException(
+            "No checkpoint found. Provide --checkpoint or ensure checkpoints exist."
+        )
+
+    # Publish to HuggingFace Hub
+    try:
+        repo_url = evaluation_manager.publish_to_huggingface(
+            repo_id=repo_id,
+            checkpoint_path=checkpoint,
+            commit_message=message,
+            overwrite=overwrite,
+        )
+
+        # Success output
+        click.echo()
+        click.echo(click.style("✅ Published successfully!", fg="green", bold=True))
+        click.echo(f"   URL: {repo_url}")
+        click.echo()
+        click.echo("   Uploaded files:")
+        click.echo("     • model.ckpt")
+        click.echo("     • config.json")
+        click.echo("     • README.md")
+        click.echo()
+        click.echo(click.style("💡 Repository is private by default", fg="yellow"))
+        click.echo(f"   Make public at: {repo_url}/settings")
+
+    except RuntimeError as e:
+        # Authentication error
+        if "authentication" in str(e).lower():
+            click.echo(click.style("\n✗ HuggingFace authentication failed", fg="red"))
+            click.echo("\nAuthenticate with: huggingface-cli login")
+        raise click.ClickException(str(e))
+    except ValueError as e:
+        # Validation error (e.g., repo exists without --overwrite)
+        raise click.ClickException(str(e))
 
 
 @cli.command()

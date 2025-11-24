@@ -6,6 +6,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from napistu_torch.constants import (
+    ANONYMIZATION_PLACEHOLDER_DEFAULT,
     DATA_CONFIG,
     DATA_CONFIG_DEFAULTS,
     EXPERIMENT_CONFIG,
@@ -385,7 +386,9 @@ class ExperimentConfig(BaseModel):
         return f"{arch_str}_{self.task.task}"
 
     def anonymize(
-        self, inplace: bool = False, placeholder: str = "<<local_path>>"
+        self,
+        inplace: bool = False,
+        placeholder: str = ANONYMIZATION_PLACEHOLDER_DEFAULT,
     ) -> "ExperimentConfig":
         """
         Create an anonymized copy of the config with all Path-like values masked.
@@ -397,7 +400,7 @@ class ExperimentConfig(BaseModel):
         ----------
         inplace : bool, default=False
             If True, modifies the config in place. If False, returns a new config.
-        placeholder : str, default="<<local_path>>"
+        placeholder : str, default="[REDACTED]"
             String to use as placeholder for masked paths.
 
         Returns
@@ -416,9 +419,9 @@ class ExperimentConfig(BaseModel):
         ... )
         >>> anonymized = config.anonymize()
         >>> str(anonymized.output_dir)
-        '<<local_path>>'
+        '[REDACTED]'
         >>> str(anonymized.data.sbml_dfs_path)
-        '<<local_path>>'
+        '[REDACTED]'
         """
         # Convert to dict for processing (mode="json" converts Paths to strings)
         data = self.model_dump(mode="json")

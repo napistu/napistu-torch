@@ -241,6 +241,8 @@ EXPERIMENT_CONFIG_DEFAULTS = {
     EXPERIMENT_CONFIG.OUTPUT_DIR: Path("./output"),
 }
 
+ANONYMIZATION_PLACEHOLDER_DEFAULT = "[REDACTED]"
+
 RUN_MANIFEST = SimpleNamespace(
     EXPERIMENT_NAME="experiment_name",
     WANDB_RUN_ID="wandb_run_id",

@@ -20,6 +20,7 @@ from napistu_torch.configs import (
     task_config_to_artifact_names,
 )
 from napistu_torch.constants import (
+    ANONYMIZATION_PLACEHOLDER_DEFAULT,
     DATA_CONFIG,
     EXPERIMENT_CONFIG,
     METRICS,
@@ -889,11 +890,13 @@ class TestExperimentConfig:
         assert str(config.output_dir) == "/PATH/TO/EXPERIMENTS/test"
         assert str(config.data.sbml_dfs_path) == "/PATH/TO/DATA/sbml.pkl"
 
-        # Anonymized config should have masked paths
-        assert str(anonymized.output_dir) == "<<local_path>>"
-        assert str(anonymized.data.store_dir) == "<<local_path>>"
-        assert str(anonymized.data.sbml_dfs_path) == "<<local_path>>"
-        assert str(anonymized.data.napistu_graph_path) == "<<local_path>>"
+        # Anonymized config should have masked paths (default placeholder is [REDACTED])
+        assert str(anonymized.output_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert str(anonymized.data.store_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert str(anonymized.data.sbml_dfs_path) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert (
+            str(anonymized.data.napistu_graph_path) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        )
 
         # Non-path values should be unchanged
         assert anonymized.data.copy_to_store == config.data.copy_to_store
@@ -908,15 +911,15 @@ class TestExperimentConfig:
 
         # Should return self
         assert result is config2
-        assert str(config2.output_dir) == "<<local_path>>"
+        assert str(config2.output_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
 
         # Test custom placeholder
         config3 = ExperimentConfig(
             output_dir=Path("/tmp/test"),
             data=stubbed_data_config,
         )
-        anonymized3 = config3.anonymize(placeholder="[REDACTED]")
-        assert str(anonymized3.output_dir) == "[REDACTED]"
+        anonymized3 = config3.anonymize(placeholder="<<local_path>>")
+        assert str(anonymized3.output_dir) == "<<local_path>>"
 
     def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""

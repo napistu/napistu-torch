@@ -159,7 +159,7 @@ class HuggingFacePublisher(HuggingFaceClient):
         if repo_exists and not overwrite:
             raise ValueError(
                 f"Repository '{repo_id}' already exists.\n"
-                f"To update it, add --overwrite flag to confirm."
+                f"To update it, call the function with overwrite=True or use the --overwrite CLI option."
             )
 
         # Create repo if needed (always private)
@@ -235,8 +235,10 @@ class HuggingFacePublisher(HuggingFaceClient):
         commit_message : str
             Commit message
         """
+        # Anonymize config to mask local file paths before uploading
+        anonymized_config = config.anonymize(inplace=False)
         # Use Pydantic's model_dump_json() which automatically handles Path serialization
-        config_json = config.model_dump_json(indent=2)
+        config_json = anonymized_config.model_dump_json(indent=2)
 
         self.api.upload_file(
             path_or_fileobj=config_json.encode("utf-8"),
