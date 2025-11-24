@@ -9,6 +9,7 @@ from typing import Optional
 import click
 
 from napistu_torch._cli import (
+    format_named_overrides,
     log_deferred_messages,
     prepare_config,
     setup_logging,
@@ -74,13 +75,6 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 
 @cli.command()
 @click.argument("config_path", type=click.Path(exists=True, path_type=Path))
-@click.option("--seed", type=int, help="Override random seed")
-@click.option(
-    "--wandb-mode",
-    type=click.Choice(["online", "offline", "disabled"], case_sensitive=False),
-    help="Override W&B logging mode",
-)
-@click.option("--fast-dev-run", is_flag=True, help="Run 1 batch for quick debugging")
 @click.option(
     "--out-dir",
     type=click.Path(path_type=Path),
@@ -93,6 +87,28 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
     type=click.Path(exists=True, path_type=Path),
     help="Resume training from checkpoint",
 )
+@click.option("--seed", type=int, help="Override random seed")
+@click.option("--fast_dev_run", is_flag=True, help="Run 1 batch for quick debugging")
+@click.option(
+    "--encoder", type=str, help="The model encoder (e.g., sage, gcn, gat, graph_conv)"
+)
+@click.option(
+    "--head",
+    type=str,
+    help="The model head (e.g., node_classification, dot_product, mlp, bilinear, rotate, transe, distmult)",
+)
+@click.option("--hidden_channels", "hidden_channels", type=int, help="Hidden channels")
+@click.option("--dropout", type=float, help="Dropout rate")
+@click.option("--lr", type=float, help="Learning rate")
+@click.option("--weight_decay", "weight_decay", type=float, help="Weight decay")
+@click.option("--optimizer", type=str, help="Optimizer")
+@click.option("--epochs", type=int, help="Number of epochs")
+@click.option("--wandb_group", type=str, help="WandB group")
+@click.option(
+    "--wandb_mode",
+    type=click.Choice(["online", "offline", "disabled"], case_sensitive=False),
+    help="Override W&B logging mode",
+)
 @click.option(
     "--set",
     "overrides",
@@ -102,11 +118,20 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 @verbosity_option
 def train(
     config_path: Path,
-    seed: Optional[int],
-    wandb_mode: Optional[str],
-    fast_dev_run: bool,
     out_dir: Optional[Path],
     resume: Optional[Path],
+    seed: Optional[int],
+    fast_dev_run: bool,
+    encoder: Optional[str],
+    head: Optional[str],
+    hidden_channels: Optional[int],
+    dropout: Optional[float],
+    lr: Optional[float],
+    weight_decay: Optional[float],
+    optimizer: Optional[str],
+    epochs: Optional[int],
+    wandb_mode: Optional[str],
+    wandb_group: Optional[str],
     overrides: tuple[str, ...],
     verbosity: str,
 ):
@@ -127,20 +152,39 @@ def train(
         $ napistu-torch train config.yaml --set training.epochs=50 --out-dir ./quick_test
 
         # Quick debug run
-        $ napistu-torch train config.yaml --fast-dev-run --wandb-mode disabled
+        $ napistu-torch train config.yaml --fast_dev_run --wandb_mode disabled
 
         # Resume from checkpoint
         $ napistu-torch train config.yaml --resume checkpoints/best.ckpt
     """
 
-    # Prepare config to respect named and wildcard overrides
+    # Convert all named CLI parameters to overrides
+    named_overrides, named_messages = format_named_overrides(
+        seed=seed,
+        fast_dev_run=fast_dev_run,
+        encoder=encoder,
+        head=head,
+        hidden_channels=hidden_channels,
+        dropout=dropout,
+        lr=lr,
+        optimizer=optimizer,
+        weight_decay=weight_decay,
+        epochs=epochs,
+        wandb_group=wandb_group,
+        wandb_mode=wandb_mode,
+    )
+
+    # Combine with existing --set overrides
+    all_overrides = tuple(list(overrides) + named_overrides)
+
+    # Prepare config - now much simpler!
     config, config_messages = prepare_config(
         config_path=config_path,
-        seed=seed,
-        wandb_mode=wandb_mode,
-        fast_dev_run=fast_dev_run,
-        overrides=overrides,
+        overrides=all_overrides,
     )
+
+    # Combine all messages (named overrides + config messages)
+    all_messages = named_messages + config_messages
 
     # Override output_dir if --out-dir provided
     if out_dir is not None:
@@ -163,7 +207,7 @@ def train(
     # Log all deferred messages
     log_deferred_messages(
         logger=logger,
-        config_messages=config_messages,
+        config_messages=all_messages,
         config=config,
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
