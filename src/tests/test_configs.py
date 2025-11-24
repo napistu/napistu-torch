@@ -258,6 +258,41 @@ class TestModelConfig:
         with pytest.raises(ValidationError):
             ModelConfig(transe_margin=-1.0)  # Negative value
 
+    def test_get_architecture_string(self):
+        """Test get_architecture_string method."""
+        # Test with encoder and head
+        config = ModelConfig(
+            encoder=ENCODERS.SAGE,
+            head=HEADS.DOT_PRODUCT,
+            hidden_channels=128,
+            num_layers=3,
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "sage-dot_product_h128_l3"
+
+        # Test with different encoder and head combinations
+        config = ModelConfig(
+            encoder=ENCODERS.GRAPH_CONV,
+            head=HEADS.MLP,
+            hidden_channels=64,
+            num_layers=2,
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "graph_conv-mlp_h64_l2"
+
+        # Test with different encoder and head combinations
+        config = ModelConfig(
+            encoder=ENCODERS.GAT, head=HEADS.BILINEAR, hidden_channels=256, num_layers=5
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "gat-bilinear_h256_l5"
+
+        # Test with default values (should use defaults for hidden_channels and num_layers)
+        config = ModelConfig(encoder=ENCODERS.SAGE, head=HEADS.MLP)
+        arch_str = config.get_architecture_string()
+        # Defaults are hidden_channels=128, num_layers=3
+        assert arch_str == "sage-mlp_h128_l3"
+
     def test_extra_fields_forbidden(self):
         """Test that extra fields are forbidden."""
         with pytest.raises(ValidationError) as exc_info:
@@ -815,14 +850,21 @@ class TestExperimentConfig:
         )
 
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat_h128_l3_edge_prediction"
+        # get_experiment_name uses get_architecture_string which includes head
+        # Default head is dot_product, so format is "encoder-head_h{hidden_channels}_l{num_layers}_{task}"
+        assert experiment_name == "gat-dot_product_h128_l3_edge_prediction"
 
         # Test with different values
         config.model.hidden_channels = 256
         config.model.num_layers = 5
         config.task.task = TASKS.NODE_CLASSIFICATION
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat_h256_l5_node_classification"
+        assert experiment_name == "gat-dot_product_h256_l5_node_classification"
+
+        # Test with explicit head
+        config.model.head = HEADS.BILINEAR
+        experiment_name = config.get_experiment_name()
+        assert experiment_name == "gat-bilinear_h256_l5_node_classification"
 
     def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""

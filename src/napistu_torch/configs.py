@@ -103,6 +103,34 @@ class ModelConfig(BaseModel):
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
 
+    def get_architecture_string(self) -> str:
+        """
+        Generate a string representation of the model architecture.
+
+        Returns the encoder, head, hidden channels, and number of layers in the format
+        "encoder-head_h{hidden_channels}_l{num_layers}".
+
+        Returns
+        -------
+        str
+            Architecture string like "sage-dot_product_h128_l3" or "graph_conv-mlp_h64_l2"
+
+        Examples
+        --------
+        >>> config = ModelConfig(encoder="sage", head="dot_product", hidden_channels=128, num_layers=3)
+        >>> config.get_architecture_string()
+        'sage-dot_product_h128_l3'
+
+        >>> config = ModelConfig(encoder="graph_conv", head="mlp", hidden_channels=64, num_layers=2)
+        >>> config.get_architecture_string()
+        'graph_conv-mlp_h64_l2'
+        """
+        arch_str = self.encoder
+        if self.head:
+            arch_str += f"-{self.head}"
+        arch_str += f"_h{self.hidden_channels}_l{self.num_layers}"
+        return arch_str
+
     model_config = ConfigDict(extra="forbid")  # Catch typos
 
 
@@ -353,7 +381,8 @@ class ExperimentConfig(BaseModel):
 
     def get_experiment_name(self) -> str:
         """Generate a descriptive experiment name based on model and task configs"""
-        return f"{self.model.encoder}_h{self.model.hidden_channels}_l{self.model.num_layers}_{self.task.task}"
+        arch_str = self.model.get_architecture_string()
+        return f"{arch_str}_{self.task.task}"
 
 
 class RunManifest(BaseModel):
