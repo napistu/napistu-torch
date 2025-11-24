@@ -14,6 +14,111 @@ from rich.logging import RichHandler
 
 import napistu_torch
 from napistu_torch.configs import ExperimentConfig
+from napistu_torch.constants import PARAM_OVERRIDE_MAP, TRAIN_NAMED_ARGS
+
+
+def format_named_overrides(
+    seed: Optional[int] = None,
+    fast_dev_run: bool = False,
+    encoder: Optional[str] = None,
+    head: Optional[str] = None,
+    hidden_channels: Optional[int] = None,
+    dropout: Optional[float] = None,
+    lr: Optional[float] = None,
+    weight_decay: Optional[float] = None,
+    optimizer: Optional[str] = None,
+    epochs: Optional[int] = None,
+    wandb_group: Optional[str] = None,
+    wandb_mode: Optional[str] = None,
+) -> tuple[list[str], list[str]]:
+    """
+    Convert named CLI parameters to config overrides and log messages.
+
+    This utility converts direct CLI parameters (typically from WandB sweeps
+    or manual CLI usage) into config overrides and corresponding log messages.
+
+    Parameters
+    ----------
+    seed : Optional[int]
+        Random seed
+    fast_dev_run : bool
+        Fast dev run flag
+    encoder : Optional[str]
+        Model encoder (e.g., sage, gcn, gat, graph_conv)
+    head : Optional[str]
+        Model head (e.g., node_classification, dot_product, mlp, bilinear, rotate, transe, distmult)
+    hidden_channels : Optional[int]
+        Model hidden channels
+    dropout : Optional[float]
+        Dropout rate
+    lr : Optional[float]
+        Learning rate
+    weight_decay : Optional[float]
+        Weight decay
+    optimizer : Optional[str]
+        Optimizer name (adam, adamw)
+    epochs : Optional[int]
+        Number of training epochs
+    wandb_group : Optional[str]
+        WandB group name
+    wandb_mode : Optional[str]
+        WandB mode (online, offline, disabled)
+
+    Returns
+    -------
+    tuple[list[str], list[str]]
+        - List of override strings in "key.subkey=value" format
+        - List of log messages describing the overrides
+
+    Examples
+    --------
+    >>> overrides, messages = format_named_overrides(
+    ...     lr=0.001,
+    ...     optimizer="adam",
+    ...     seed=42
+    ... )
+    >>> overrides
+    ['training.lr=0.001', 'training.optimizer=adam', 'seed=42']
+    >>> messages
+    ['CLI override: training.lr=0.001', 'CLI override: training.optimizer=adam', 'CLI override: seed=42']
+    """
+    overrides = []
+    messages = []
+
+    # Get all kwargs passed to the function
+    kwargs = {
+        TRAIN_NAMED_ARGS.SEED: seed,
+        TRAIN_NAMED_ARGS.FAST_DEV_RUN: fast_dev_run,
+        TRAIN_NAMED_ARGS.ENCODER: encoder,
+        TRAIN_NAMED_ARGS.HEAD: head,
+        TRAIN_NAMED_ARGS.HIDDEN_CHANNELS: hidden_channels,
+        TRAIN_NAMED_ARGS.DROPOUT: dropout,
+        TRAIN_NAMED_ARGS.LR: lr,
+        TRAIN_NAMED_ARGS.WEIGHT_DECAY: weight_decay,
+        TRAIN_NAMED_ARGS.OPTIMIZER: optimizer,
+        TRAIN_NAMED_ARGS.EPOCHS: epochs,
+        TRAIN_NAMED_ARGS.WANDB_GROUP: wandb_group,
+        TRAIN_NAMED_ARGS.WANDB_MODE: wandb_mode,
+    }
+
+    # Loop through the mapping and build overrides
+    for param_name, override_path in PARAM_OVERRIDE_MAP.items():
+        value = kwargs[param_name]
+
+        # Skip None values (except for fast_dev_run which is boolean)
+        if value is None:
+            continue
+
+        # Handle boolean fast_dev_run - only add if True
+        if param_name == "fast_dev_run" and not value:
+            continue
+
+        # Format the override string
+        override_str = f"{override_path}={value}"
+        overrides.append(override_str)
+        messages.append(f"CLI override: {override_str}")
+
+    return overrides, messages
 
 
 def log_deferred_messages(
@@ -69,9 +174,6 @@ def log_deferred_messages(
 
 def prepare_config(
     config_path: Path,
-    seed: Optional[int] = None,
-    wandb_mode: Optional[str] = None,
-    fast_dev_run: bool = False,
     overrides: tuple[str] = (),
 ) -> tuple[ExperimentConfig, list[str]]:
     """
@@ -81,12 +183,6 @@ def prepare_config(
     ----------
     config_path: Path
         Path to the configuration file
-    seed: Optional[int]
-        An optional random seed to override the one in the loaded config file (including defaults)
-    wandb_mode: Optional[str]
-        W&B mode to use for the experiment to override the one in the loaded config file (including defaults)
-    fast_dev_run: bool
-        Whether to run a fast development run (1 batch per epoch)
     overrides: tuple[str]
         A tuple of strings in the format "key.subkey=value" to override the values in the loaded config file (including defaults)
 
@@ -110,20 +206,7 @@ def prepare_config(
         print(f"ERROR: Config file validation failed:\n{e}")
         raise click.Abort()
 
-    # Apply explicit CLI flags (these take precedence over --set)
-    if seed is not None:
-        messages.append(f"Overriding seed: {config.seed} → {seed}")
-        config.seed = seed
-
-    if wandb_mode is not None:
-        messages.append(f"Overriding W&B mode: {config.wandb.mode} → {wandb_mode}")
-        config.wandb.mode = wandb_mode
-
-    if fast_dev_run:
-        messages.append("Fast dev run enabled (1 batch per epoch)")
-        config.fast_dev_run = True
-
-    # Apply --set overrides
+    # Apply --set overrides (now includes named CLI params too)
     if overrides:
         config, override_messages = _apply_config_overrides(config, overrides)
         messages.extend(override_messages)
@@ -263,13 +346,34 @@ def _apply_config_overrides(
     -------
     tuple[ExperimentConfig, list[str]]
         The modified config and a list of log messages
+
+    Raises
+    ------
+    click.Abort
+        If a parameter is specified multiple times in overrides
     """
     messages = []
     messages.append(f"Applying {len(overrides)} config override(s):")
 
+    # Track which parameters have been overridden to detect conflicts
+    overridden_params = set()
+
     for override in overrides:
         try:
             key, value = override.split("=", 1)
+
+            # Check for conflicts
+            if key in overridden_params:
+                print(
+                    f"ERROR: Parameter '{key}' specified multiple times in overrides.\n"
+                    f"This can happen when using both --set and named CLI parameters (e.g., --lr).\n"
+                    f"Please use only one method to set each parameter."
+                )
+                raise click.Abort()
+
+            # Track this parameter
+            overridden_params.add(key)
+
             messages.append(f"  {key} = {value}")
 
             # Parse the nested key path (e.g., "training.lr" -> ["training", "lr"])

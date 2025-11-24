@@ -44,6 +44,12 @@ class BilinearHead(nn.Module):
         self.embedding_dim = embedding_dim
         self.bilinear = nn.Bilinear(embedding_dim, embedding_dim, 1, bias=bias)
 
+        # Initialize bilinear weights properly to avoid NaN
+        # Use Xavier uniform initialization for stability
+        nn.init.xavier_uniform_(self.bilinear.weight)
+        if bias:
+            nn.init.zeros_(self.bilinear.bias)
+
     def forward(
         self, node_embeddings: torch.Tensor, edge_index: torch.Tensor
     ) -> torch.Tensor:
@@ -70,6 +76,11 @@ class BilinearHead(nn.Module):
         edge_scores = self.bilinear(src_embeddings, tgt_embeddings).squeeze(
             -1
         )  # [num_edges]
+
+        # Clamp to prevent overflow (values becoming too large/too negative) that could lead to NaN
+        # This is a safety measure - if scores are extremely large, clamp them
+        # The range [-50, 50] is safe for sigmoid (sigmoid(50) ≈ 1, sigmoid(-50) ≈ 0)
+        edge_scores = torch.clamp(edge_scores, min=-50.0, max=50.0)
 
         return edge_scores
 
