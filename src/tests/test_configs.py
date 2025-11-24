@@ -866,6 +866,58 @@ class TestExperimentConfig:
         experiment_name = config.get_experiment_name()
         assert experiment_name == "gat-bilinear_h256_l5_node_classification"
 
+    def test_anonymize(self, stubbed_data_config):
+        """Test anonymize method masks all Path-like values."""
+        # Create config with absolute paths
+        config = ExperimentConfig(
+            output_dir=Path("/PATH/TO/EXPERIMENTS/test"),
+            data=DataConfig(
+                store_dir=Path("/PATH/TO/STORE/.store"),
+                sbml_dfs_path=Path("/PATH/TO/DATA/sbml.pkl"),
+                napistu_graph_path=Path("/PATH/TO/DATA/graph.pkl"),
+                copy_to_store=False,
+                overwrite=False,
+                napistu_data_name="test",
+                other_artifacts=[],
+            ),
+        )
+
+        # Test non-inplace anonymization
+        anonymized = config.anonymize(inplace=False)
+
+        # Original config should be unchanged
+        assert str(config.output_dir) == "/PATH/TO/EXPERIMENTS/test"
+        assert str(config.data.sbml_dfs_path) == "/PATH/TO/DATA/sbml.pkl"
+
+        # Anonymized config should have masked paths
+        assert str(anonymized.output_dir) == "<<local_path>>"
+        assert str(anonymized.data.store_dir) == "<<local_path>>"
+        assert str(anonymized.data.sbml_dfs_path) == "<<local_path>>"
+        assert str(anonymized.data.napistu_graph_path) == "<<local_path>>"
+
+        # Non-path values should be unchanged
+        assert anonymized.data.copy_to_store == config.data.copy_to_store
+        assert anonymized.data.napistu_data_name == config.data.napistu_data_name
+
+        # Test inplace anonymization
+        config2 = ExperimentConfig(
+            output_dir=Path("/tmp/test"),
+            data=stubbed_data_config,
+        )
+        result = config2.anonymize(inplace=True)
+
+        # Should return self
+        assert result is config2
+        assert str(config2.output_dir) == "<<local_path>>"
+
+        # Test custom placeholder
+        config3 = ExperimentConfig(
+            output_dir=Path("/tmp/test"),
+            data=stubbed_data_config,
+        )
+        anonymized3 = config3.anonymize(placeholder="[REDACTED]")
+        assert str(anonymized3.output_dir) == "[REDACTED]"
+
     def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""
         with pytest.raises(ValidationError) as exc_info:

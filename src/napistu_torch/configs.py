@@ -384,6 +384,82 @@ class ExperimentConfig(BaseModel):
         arch_str = self.model.get_architecture_string()
         return f"{arch_str}_{self.task.task}"
 
+    def anonymize(
+        self, inplace: bool = False, placeholder: str = "<<local_path>>"
+    ) -> "ExperimentConfig":
+        """
+        Create an anonymized copy of the config with all Path-like values masked.
+
+        Replaces all Path objects and absolute path strings with a placeholder string.
+        Useful for sharing configs without exposing local file paths.
+
+        Parameters
+        ----------
+        inplace : bool, default=False
+            If True, modifies the config in place. If False, returns a new config.
+        placeholder : str, default="<<local_path>>"
+            String to use as placeholder for masked paths.
+
+        Returns
+        -------
+        ExperimentConfig
+            Anonymized config (new instance if inplace=False, self if inplace=True)
+
+        Examples
+        --------
+        >>> config = ExperimentConfig(
+        ...     output_dir=Path("/Users/me/experiments/run1"),
+        ...     data=DataConfig(
+        ...         sbml_dfs_path=Path("/Users/me/data/sbml.pkl"),
+        ...         napistu_graph_path=Path("/Users/me/data/graph.pkl")
+        ...     )
+        ... )
+        >>> anonymized = config.anonymize()
+        >>> str(anonymized.output_dir)
+        '<<local_path>>'
+        >>> str(anonymized.data.sbml_dfs_path)
+        '<<local_path>>'
+        """
+        # Convert to dict for processing (mode="json" converts Paths to strings)
+        data = self.model_dump(mode="json")
+
+        def mask_paths(obj):
+            """Recursively mask Path objects and absolute path strings."""
+            if isinstance(obj, dict):
+                return {k: mask_paths(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [mask_paths(item) for item in obj]
+            elif isinstance(obj, str):
+                # Check if string looks like an absolute path
+                # Paths typically start with / (Unix) or C:\ (Windows) or ~
+                if obj.startswith(("/", "~")) or (len(obj) > 1 and obj[1] == ":"):
+                    try:
+                        # Try to create a Path to verify it's a valid absolute path
+                        path = Path(obj)
+                        if path.is_absolute() or obj.startswith("~"):
+                            return placeholder
+                    except (ValueError, OSError):
+                        # Not a valid path, keep as-is
+                        pass
+                return obj
+            else:
+                return obj
+
+        # Mask all paths
+        anonymized_data = mask_paths(data)
+
+        # Create new config from anonymized data
+        # The placeholder strings will be converted to Path objects by Pydantic validation
+        anonymized_config = self.model_validate(anonymized_data)
+
+        if inplace:
+            # Update self with anonymized values
+            for field_name in self.__class__.model_fields:
+                setattr(self, field_name, getattr(anonymized_config, field_name))
+            return self
+        else:
+            return anonymized_config
+
 
 class RunManifest(BaseModel):
     """Manifest file containing all information about a training run."""
