@@ -202,7 +202,7 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
         log_model=getattr(wandb_config, WANDB_CONFIG.LOG_MODEL),
         config=_define_minimal_experiment_summaries(cfg),
         entity=getattr(wandb_config, WANDB_CONFIG.ENTITY),
-        notes=f"Training {getattr(cfg, EXPERIMENT_CONFIG.MODEL).encoder} for {getattr(cfg, EXPERIMENT_CONFIG.TASK).task}",
+        notes=f"Training {getattr(cfg, EXPERIMENT_CONFIG.MODEL).get_architecture_string()} for {getattr(cfg, EXPERIMENT_CONFIG.TASK).task}",
         reinit=True,
         offline=getattr(wandb_config, WANDB_CONFIG.MODE)
         == "offline",  # Set offline mode if needed

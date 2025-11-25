@@ -20,6 +20,7 @@ from napistu_torch.configs import (
     task_config_to_artifact_names,
 )
 from napistu_torch.constants import (
+    ANONYMIZATION_PLACEHOLDER_DEFAULT,
     DATA_CONFIG,
     EXPERIMENT_CONFIG,
     METRICS,
@@ -257,6 +258,41 @@ class TestModelConfig:
 
         with pytest.raises(ValidationError):
             ModelConfig(transe_margin=-1.0)  # Negative value
+
+    def test_get_architecture_string(self):
+        """Test get_architecture_string method."""
+        # Test with encoder and head
+        config = ModelConfig(
+            encoder=ENCODERS.SAGE,
+            head=HEADS.DOT_PRODUCT,
+            hidden_channels=128,
+            num_layers=3,
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "sage-dot_product_h128_l3"
+
+        # Test with different encoder and head combinations
+        config = ModelConfig(
+            encoder=ENCODERS.GRAPH_CONV,
+            head=HEADS.MLP,
+            hidden_channels=64,
+            num_layers=2,
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "graph_conv-mlp_h64_l2"
+
+        # Test with different encoder and head combinations
+        config = ModelConfig(
+            encoder=ENCODERS.GAT, head=HEADS.BILINEAR, hidden_channels=256, num_layers=5
+        )
+        arch_str = config.get_architecture_string()
+        assert arch_str == "gat-bilinear_h256_l5"
+
+        # Test with default values (should use defaults for hidden_channels and num_layers)
+        config = ModelConfig(encoder=ENCODERS.SAGE, head=HEADS.MLP)
+        arch_str = config.get_architecture_string()
+        # Defaults are hidden_channels=128, num_layers=3
+        assert arch_str == "sage-mlp_h128_l3"
 
     def test_extra_fields_forbidden(self):
         """Test that extra fields are forbidden."""
@@ -815,14 +851,76 @@ class TestExperimentConfig:
         )
 
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat_h128_l3_edge_prediction"
+        # get_experiment_name uses get_architecture_string which includes head
+        # Default head is dot_product, so format is "encoder-head_h{hidden_channels}_l{num_layers}_{task}"
+        assert experiment_name == "gat-dot_product_h128_l3_edge_prediction"
 
         # Test with different values
         config.model.hidden_channels = 256
         config.model.num_layers = 5
         config.task.task = TASKS.NODE_CLASSIFICATION
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat_h256_l5_node_classification"
+        assert experiment_name == "gat-dot_product_h256_l5_node_classification"
+
+        # Test with explicit head
+        config.model.head = HEADS.BILINEAR
+        experiment_name = config.get_experiment_name()
+        assert experiment_name == "gat-bilinear_h256_l5_node_classification"
+
+    @pytest.mark.skip_on_windows
+    def test_anonymize(self, stubbed_data_config):
+        """Test anonymize method masks all Path-like values."""
+        # Create config with absolute paths
+        config = ExperimentConfig(
+            output_dir=Path("/PATH/TO/EXPERIMENTS/test"),
+            data=DataConfig(
+                store_dir=Path("/PATH/TO/STORE/.store"),
+                sbml_dfs_path=Path("/PATH/TO/DATA/sbml.pkl"),
+                napistu_graph_path=Path("/PATH/TO/DATA/graph.pkl"),
+                copy_to_store=False,
+                overwrite=False,
+                napistu_data_name="test",
+                other_artifacts=[],
+            ),
+        )
+
+        # Test non-inplace anonymization
+        anonymized = config.anonymize(inplace=False)
+
+        # Original config should be unchanged
+        assert str(config.output_dir) == "/PATH/TO/EXPERIMENTS/test"
+        assert str(config.data.sbml_dfs_path) == "/PATH/TO/DATA/sbml.pkl"
+
+        # Anonymized config should have masked paths (default placeholder is [REDACTED])
+        assert str(anonymized.output_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert str(anonymized.data.store_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert str(anonymized.data.sbml_dfs_path) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        assert (
+            str(anonymized.data.napistu_graph_path) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+        )
+
+        # Non-path values should be unchanged
+        assert anonymized.data.copy_to_store == config.data.copy_to_store
+        assert anonymized.data.napistu_data_name == config.data.napistu_data_name
+
+        # Test inplace anonymization
+        config2 = ExperimentConfig(
+            output_dir=Path("/tmp/test"),
+            data=stubbed_data_config,
+        )
+        result = config2.anonymize(inplace=True)
+
+        # Should return self
+        assert result is config2
+        assert str(config2.output_dir) == ANONYMIZATION_PLACEHOLDER_DEFAULT
+
+        # Test custom placeholder
+        config3 = ExperimentConfig(
+            output_dir=Path("/tmp/test"),
+            data=stubbed_data_config,
+        )
+        anonymized3 = config3.anonymize(placeholder="<<local_path>>")
+        assert str(anonymized3.output_dir) == "<<local_path>>"
 
     def test_extra_fields_forbidden(self, stubbed_data_config):
         """Test that extra fields are forbidden."""
