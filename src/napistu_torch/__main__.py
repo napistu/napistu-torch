@@ -18,7 +18,7 @@ from napistu_torch._cli import (
 from napistu_torch.configs import create_template_yaml
 from napistu_torch.constants import RUN_MANIFEST, RUN_MANIFEST_DEFAULTS
 from napistu_torch.evaluation.evaluation_manager import EvaluationManager
-from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.lightning.constants import EXPERIMENT_DICT, TRAINER_MODES
 from napistu_torch.lightning.workflows import (
     fit_model,
     log_experiment_overview,
@@ -161,6 +161,85 @@ def publish(
 
 @cli.command()
 @click.argument(
+    "out_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.option(
+    "--checkpoint",
+    type=str,
+    default="last",
+    help="Checkpoint name or path. Can be 'last' (default), a checkpoint filename (e.g., 'best-epoch=50-val_auc=0.85.ckpt'), or a full path.",
+)
+@verbosity_option
+def resume(out_dir: Path, checkpoint: str, verbosity: str):
+    """
+    Resume training for an existing experiment.
+
+    Resumes training from the last checkpoint (or specified checkpoint) and reuses
+    the existing WandB run ID from the experiment manifest.
+
+    OUT_DIR: Path to experiment directory containing manifest and checkpoints
+
+    \b
+    Examples:
+        # Resume from last checkpoint (default)
+        $ napistu-torch resume ./experiments/run_001
+
+        # Resume from best checkpoint
+        $ napistu-torch resume ./experiments/run_001 --checkpoint best-epoch=50-val_auc=0.85.ckpt
+
+        # Resume from specific checkpoint by filename
+        $ napistu-torch resume ./experiments/run_001 --checkpoint best-epoch=34-val_auc=0.7533.ckpt
+
+        # Resume from checkpoint by full path
+        $ napistu-torch resume ./experiments/run_001 --checkpoint /path/to/checkpoint.ckpt
+    """
+    # Setup logging
+    log_dir = out_dir / "logs"
+    logger, _ = setup_logging(log_dir=log_dir, verbosity=verbosity)
+
+    logger.info("=" * 80)
+    logger.info("Resuming experiment...")
+    logger.info(f"  Experiment directory: {out_dir}")
+
+    try:
+        # Load experiment from manifest
+        evaluation_manager = EvaluationManager(out_dir)
+
+        # Determine checkpoint to use
+        try:
+            checkpoint_path = evaluation_manager._resolve_checkpoint_path(checkpoint)
+        except ValueError as e:
+            raise click.ClickException(
+                "No checkpoint found. Provide --checkpoint or ensure checkpoints exist."
+            ) from e
+        except FileNotFoundError as e:
+            raise click.ClickException(str(e)) from e
+
+        logger.info(f"  Resuming from: {checkpoint_path}")
+        logger.info("=" * 80)
+
+        # Resume experiment (in train mode)
+        experiment_dict = resume_experiment(
+            evaluation_manager, mode=TRAINER_MODES.TRAIN, logger=logger
+        )
+
+        # Continue training
+        fit_model(experiment_dict, resume_from=checkpoint_path, logger=logger)
+
+        logger.info("Training resumed and completed successfully! 🎉")
+
+    except click.Abort:
+        sys.exit(1)
+    except KeyboardInterrupt:
+        logger.warning("Training interrupted by user")
+        sys.exit(130)
+    except Exception as e:
+        logger.exception(f"Failed to resume experiment: {e}")
+        sys.exit(1)
+
+
+@cli.command()
+@click.argument(
     "experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
 @click.option(
@@ -192,11 +271,6 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
     default=None,
     help="Output directory for all run artifacts (logs, checkpoints, manifest). "
     "If not specified, uses checkpoint_dir from config.",
-)
-@click.option(
-    "--resume",
-    type=click.Path(exists=True, path_type=Path),
-    help="Resume training from checkpoint",
 )
 @click.option("--seed", type=int, help="Override random seed")
 @click.option("--fast_dev_run", is_flag=True, help="Run 1 batch for quick debugging")
@@ -230,7 +304,6 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 def train(
     config_path: Path,
     out_dir: Optional[Path],
-    resume: Optional[Path],
     seed: Optional[int],
     fast_dev_run: bool,
     encoder: Optional[str],
@@ -264,9 +337,6 @@ def train(
 
         # Quick debug run
         $ napistu-torch train config.yaml --fast_dev_run --wandb_mode disabled
-
-        # Resume from checkpoint
-        $ napistu-torch train config.yaml --resume checkpoints/best.ckpt
     """
 
     # Convert all named CLI parameters to overrides
@@ -323,28 +393,24 @@ def train(
         checkpoint_dir=checkpoint_dir,
         log_dir=log_dir,
         wandb_dir=wandb_dir,
-        resume=resume,
     )
 
-    if resume:
-        logger.info(f"  Resume from: {resume}")
     logger.info("=" * 80)
 
     # Run training workflow
     try:
         logger.info("Starting training workflow...")
 
-        experiment_dict = prepare_experiment(config, logger=logger)
-        log_experiment_overview(experiment_dict, logger=logger)
-
-        # save manifest to file
+        # Prepare new experiment
         manifest_path = (
             config.output_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
         )
+        experiment_dict = prepare_experiment(config, logger=logger)
+        log_experiment_overview(experiment_dict, logger=logger)
         experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
         logger.info(f"Saved run manifest to {manifest_path}")
 
-        fit_model(experiment_dict, resume_from=resume, logger=logger)
+        fit_model(experiment_dict, resume_from=None, logger=logger)
 
         logger.info("Training completed successfully! 🎉")
 

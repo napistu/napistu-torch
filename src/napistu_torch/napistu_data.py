@@ -930,7 +930,7 @@ class NapistuData(Data):
                 )
         elif not isinstance(encoding_manager, EncodingManager):
             ValueError(
-                f"Invalid value for `encoding_manager` it shoudl be either None or an EncodingManager object but was given a {type(encoding_manager)}: {encoding_manager}"
+                f"Invalid value for `encoding_manager` it should be either None or an EncodingManager object but was given a {type(encoding_manager)}: {encoding_manager}"
             )
 
         # Filter encoding manager to only include the attribute of interest
