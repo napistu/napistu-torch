@@ -210,8 +210,10 @@ class NapistuTrainer:
                     filename="best-{epoch}-{val_auc:.4f}",
                     monitor=self.config.training.checkpoint_metric,
                     mode="max",
-                    save_top_k=1,
+                    save_top_k=1,  # save just the best checkpoint
                     save_last=True,
+                    every_n_epochs=1,  # Save checkpoint every epoch
+                    save_on_train_epoch_end=False,  # Only save after validation, never mid-epoch
                     verbose=True,
                 )
             )
