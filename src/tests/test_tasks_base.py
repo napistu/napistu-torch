@@ -16,8 +16,8 @@ from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
 
 
-def test_to_model_config_dict_with_edge_encoder(edge_masked_napistu_data):
-    """Test that to_model_config_dict includes edge encoder config when present."""
+def test_get_summary_with_edge_encoder(edge_masked_napistu_data):
+    """Test that get_summary includes edge encoder summary when present."""
     # Create model config with edge encoder enabled
     model_config = ModelConfig(
         encoder=ENCODERS.GCN,  # GCN supports edge weights
@@ -45,30 +45,41 @@ def test_to_model_config_dict_with_edge_encoder(edge_masked_napistu_data):
     # Create task
     task = EdgePredictionTask(encoder=encoder, head=head)
 
-    # Get config dictionary
-    config_dict = task.to_model_config_dict()
+    # Get summary dictionary (nested structure)
+    summary_dict = task.get_summary()
 
-    # Verify encoder config is present
-    assert isinstance(config_dict, dict)
-    assert MODEL_DEFS.ENCODER_TYPE in config_dict
-    assert MODEL_DEFS.HIDDEN_CHANNELS in config_dict
-    assert MODEL_DEFS.NUM_LAYERS in config_dict
-    assert config_dict[MODEL_DEFS.ENCODER_TYPE] == ENCODERS.GCN
-    assert config_dict[MODEL_DEFS.HIDDEN_CHANNELS] == 32
-    assert config_dict[MODEL_DEFS.NUM_LAYERS] == 2
+    # Verify top-level structure
+    assert isinstance(summary_dict, dict)
+    assert MODEL_DEFS.ENCODER in summary_dict
+    assert MODEL_DEFS.EDGE_ENCODER in summary_dict
+    assert MODEL_DEFS.HEAD in summary_dict
 
-    # Verify edge encoder config is present with model config names
-    assert EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM in config_dict
-    assert EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT in config_dict
-    assert config_dict[EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM] == 16
-    assert config_dict[EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT] == 0.1
+    # Verify encoder config is present in nested structure
+    encoder_summary = summary_dict[MODEL_DEFS.ENCODER]
+    assert isinstance(encoder_summary, dict)
+    assert MODEL_DEFS.ENCODER_TYPE in encoder_summary
+    assert MODEL_DEFS.HIDDEN_CHANNELS in encoder_summary
+    assert MODEL_DEFS.NUM_LAYERS in encoder_summary
+    assert encoder_summary[MODEL_DEFS.ENCODER_TYPE] == ENCODERS.GCN
+    assert encoder_summary[MODEL_DEFS.HIDDEN_CHANNELS] == 32
+    assert encoder_summary[MODEL_DEFS.NUM_LAYERS] == 2
 
-    # Verify head config is present (Decoder instances have config property)
+    # Verify edge encoder config is present with model config names in nested structure
+    edge_encoder_summary = summary_dict[MODEL_DEFS.EDGE_ENCODER]
+    assert isinstance(edge_encoder_summary, dict)
+    assert EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM in edge_encoder_summary
+    assert EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT in edge_encoder_summary
+    assert edge_encoder_summary[EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM] == 16
+    assert edge_encoder_summary[EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT] == 0.1
+
+    # Verify head config is present in nested structure (Decoder instances have get_summary method)
     assert isinstance(head, Decoder)
-    head_config = head.config
+    head_summary = summary_dict[MODEL_DEFS.HEAD]
+    assert isinstance(head_summary, dict)
+    head_config = head.get_summary()
     for key, value in head_config.items():
-        assert key in config_dict
-        assert config_dict[key] == value
+        assert key in head_summary
+        assert head_summary[key] == value
 
     # Verify edge encoder is actually present in encoder
     assert hasattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)

@@ -111,11 +111,9 @@ class ModelMetadataCallback(Callback):
         data_metadata = {}
 
         # Get task-level configuration (includes encoder, edge encoder, and head)
-        if hasattr(pl_module, "task") and hasattr(
-            pl_module.task, "to_model_config_dict"
-        ):
-            task_config = pl_module.task.to_model_config_dict()
-            model_metadata.update(task_config)
+        if hasattr(pl_module, "task") and hasattr(pl_module.task, "get_summary"):
+            task_model_summary = pl_module.task.get_summary()
+            model_metadata.update(task_model_summary)
 
         # Get data metadata
         if trainer.datamodule is not None:

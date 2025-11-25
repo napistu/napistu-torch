@@ -2,6 +2,7 @@
 
 import gc
 import logging
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
@@ -18,11 +19,7 @@ from napistu_torch.constants import (
     TRAINING_CONFIG,
     WANDB_CONFIG,
 )
-from napistu_torch.evaluation.constants import EVALUATION_MANAGER
-from napistu_torch.evaluation.evaluation_manager import (
-    EvaluationManager,
-    find_best_checkpoint,
-)
+from napistu_torch.evaluation.evaluation_manager import find_best_checkpoint
 from napistu_torch.lightning.constants import (
     EXPERIMENT_DICT,
     TRAINER_MODES,
@@ -127,64 +124,70 @@ class ExperimentDict(BaseModel):
 
 
 def fit_model(
-    experiment_dict: Dict[str, Any],
+    run_manifest: RunManifest,
     resume_from: Optional[Path] = None,
     max_corruption_restarts: int = 30,
-    keep_best: bool = False,
     logger: Optional[logging.Logger] = logger,
 ) -> NapistuTrainer:
     """
-    Train a model using the provided experiment dictionary.
+    Train a model using the provided run manifest.
+
+    Handles both initial training and resuming from checkpoints, with automatic
+    corruption recovery that reloads the experiment from manifest.
 
     Parameters
     ----------
-    experiment_dict : Dict[str, Any]
-        Dictionary containing the experiment components:
-        - data_module : Union[FullGraphDataModule, EdgeBatchDataModule]
-        - model : pl.LightningModule (e.g., EdgePredictionLightning)
-        - run_manifest : RunManifest
-        - trainer : NapistuTrainer
-        - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
+    run_manifest : RunManifest
+        Run manifest containing experiment configuration and metadata
     resume_from : Path, optional
         Path to a checkpoint to resume from (if None, starts from scratch)
-    max_corruption_restarts : int, default=10
+    max_corruption_restarts : int, default=30
         Maximum number of times to restart after corruption detection
-    keep_best : bool, default=False
-        Whether to retain the best checkpoint (highest validation AUC). This is helpful if training was interupted and we want to
-        resume from 'last' while preserving the best checkpoint for early stopping.
     logger : logging.Logger, optional
         Logger instance to use
 
     Returns
     -------
     NapistuTrainer
-        The trainer instance
+        The trained model's trainer instance
     """
 
-    # Validate experiment_dict structure - Pydantic will raise ValidationError with detailed info
-    ExperimentDict(
-        data_module=experiment_dict[EXPERIMENT_DICT.DATA_MODULE],
-        model=experiment_dict[EXPERIMENT_DICT.MODEL],
-        run_manifest=experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST],
-        trainer=experiment_dict[EXPERIMENT_DICT.TRAINER],
-        wandb_logger=experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER],
-    )
+    # Get checkpoint directory
+    config = run_manifest.experiment_config
+    checkpoint_dir = config.training.get_checkpoint_dir(config.output_dir)
 
-    # Get checkpoint directory from the run manifest's experiment_config
-    run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
-    checkpoint_dir = run_manifest.experiment_config.training.get_checkpoint_dir(
-        run_manifest.experiment_config.output_dir
-    )
-
-    _cleanup_stale_checkpoints(
-        checkpoint_dir, keep_checkpoint=resume_from, keep_best=keep_best, logger=logger
-    )
+    # Cleanup strategy depends on whether we're resuming
+    if resume_from is None:
+        # Fresh training - clean everything unless keep_best specified
+        _cleanup_stale_checkpoints(
+            checkpoint_dir, keep_checkpoint=None, keep_best=False, logger=logger
+        )
+    else:
+        # Resuming - always preserve the checkpoint we're resuming from and the best
+        _cleanup_stale_checkpoints(
+            checkpoint_dir, keep_checkpoint=resume_from, keep_best=True, logger=logger
+        )
 
     restart_count = 0
     current_checkpoint = resume_from
+    experiment_dict = None
 
     while restart_count <= max_corruption_restarts:
         try:
+            # Create/reload experiment dict for this attempt
+            if experiment_dict is None:
+                # we are rusing an experiment regardless of whether its fresh because we are working off of a manifest
+                experiment_dict = resume_experiment(
+                    run_manifest, mode=TRAINER_MODES.TRAIN, logger=logger
+                )
+            else:
+                # Retry after corruption - reload everything with resume_experiment
+                logger.info("Reloading experiment from manifest for clean state...")
+                experiment_dict = resume_experiment(
+                    run_manifest, mode=TRAINER_MODES.TRAIN, logger=logger
+                )
+
+            # Train with the current checkpoint
             logger.info("Starting training...")
             experiment_dict[EXPERIMENT_DICT.TRAINER].fit(
                 experiment_dict[EXPERIMENT_DICT.MODEL],
@@ -199,7 +202,7 @@ def fit_model(
             if restart_count >= max_corruption_restarts:
                 logger.error(
                     f"MPS memory corruption persisted after {max_corruption_restarts} restarts. "
-                    f"Consider reducing memory pressure (fewer batches_per_epoch, disable edge encoder, etc.)"
+                    f"Consider reducing memory pressure."
                 )
                 raise
 
@@ -213,26 +216,35 @@ def fit_model(
             last_ckpt = checkpoint_dir / "last.ckpt"
             if last_ckpt.exists():
                 current_checkpoint = last_ckpt
-                logger.info(f"Resuming from last checkpoint: {current_checkpoint}")
+                logger.info(f"Will resume from: {current_checkpoint}")
+
+                # Verify checkpoint state
+                ckpt_data = torch.load(
+                    current_checkpoint, weights_only=False, map_location="cpu"
+                )
+                logger.info(
+                    f"Checkpoint state: epoch={ckpt_data['epoch']}, "
+                    f"global_step={ckpt_data['global_step']}"
+                )
             else:
-                logger.warning("No last.ckpt found, restarting from beginning")
-                current_checkpoint = None
+                logger.error("No last.ckpt found for corruption recovery!")
+                raise RuntimeError(
+                    "Corruption recovery requires last.ckpt. "
+                    "Enable save_checkpoints in config."
+                )
 
             # Log corruption event to WandB if available
-            _log_corruption_to_wandb(
-                experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e
-            )
+            if experiment_dict and experiment_dict.get(EXPERIMENT_DICT.WANDB_LOGGER):
+                _log_corruption_to_wandb(
+                    experiment_dict[EXPERIMENT_DICT.WANDB_LOGGER], restart_count, e
+                )
 
-            # Aggressive MPS cleanup before retry
+            # Aggressive MPS cleanup
             if torch.backends.mps.is_available():
                 logger.info("Cleaning up MPS cache...")
                 torch.mps.synchronize()
                 torch.mps.empty_cache()
             gc.collect()
-
-            # Brief pause to let MPS settle
-            import time
-
             time.sleep(1)
 
             logger.info("Resuming training after cleanup...")
@@ -447,7 +459,7 @@ def resume_experiment(
     logger: logging.Logger = logger,
 ) -> Dict[str, Any]:
     """
-    Resume an experiment using its EvaluationManager manifest.
+    Resume an experiment using its run manifest.
 
     Parameters
     ----------

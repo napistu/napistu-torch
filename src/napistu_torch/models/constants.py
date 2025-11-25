@@ -3,6 +3,7 @@ from types import SimpleNamespace
 MODEL_DEFS = SimpleNamespace(
     ENCODER="encoder",
     ENCODER_TYPE="encoder_type",
+    EDGE_ENCODER="edge_encoder",
     GCN="gcn",
     HEAD="head",
     HEAD_TYPE="head_type",

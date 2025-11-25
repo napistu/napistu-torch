@@ -7,12 +7,12 @@ import torch
 import torch.nn as nn
 
 from napistu_torch.ml.constants import TRAINING
-from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
+from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS, MODEL_DEFS
 from napistu_torch.models.edge_encoder import EdgeEncoder
 from napistu_torch.models.heads import Decoder
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.napistu_data import NapistuData
-from napistu_torch.models.constants import MODEL_DEFS
+
 
 class BaseTask(ABC, nn.Module):
     """
@@ -48,12 +48,12 @@ class BaseTask(ABC, nn.Module):
         Get node embeddings from the encoder.
     get_learned_edge_weights(self, edge_attr: torch.Tensor) -> torch.Tensor:
         Compute learned edge weights using the encoder's edge encoder.
+    get_summary(self) -> Dict[str, Any]:
+        Get the complete summary dictionary for this task.
     predict(self, data: NapistuData) -> torch.Tensor:
         Make predictions (inference mode).
     prepare_batch(self, data: NapistuData, split: str = TRAINING.TRAIN) -> Dict[str, torch.Tensor]:
         Prepare data batch for this task.
-    to_model_config_dict(self) -> Dict[str, Any]:
-        Get the complete configuration dictionary for this task.
 
     Private Methods
     --------------
