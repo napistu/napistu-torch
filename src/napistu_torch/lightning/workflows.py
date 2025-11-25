@@ -442,7 +442,7 @@ def prepare_experiment(
 
 
 def resume_experiment(
-    evaluation_manager: EvaluationManager,
+    run_manifest: RunManifest,
     mode: str = TRAINER_MODES.EVAL,
     logger: logging.Logger = logger,
 ) -> Dict[str, Any]:
@@ -451,8 +451,8 @@ def resume_experiment(
 
     Parameters
     ----------
-    evaluation_manager: EvaluationManager
-        The evaluation manager
+    run_manifest: RunManifest
+        The run manifest
     mode: str, default=TRAINER_MODES.EVAL
         Trainer mode: TRAINER_MODES.TRAIN for training, TRAINER_MODES.EVAL for evaluation
     logger: logging.Logger, optional
@@ -469,13 +469,10 @@ def resume_experiment(
         - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
     """
 
-    manifest = getattr(evaluation_manager, EVALUATION_MANAGER.MANIFEST)
-    experiment_config = getattr(
-        evaluation_manager, EVALUATION_MANAGER.EXPERIMENT_CONFIG
-    )
+    experiment_config = run_manifest.experiment_config
 
     # 1. Resume W&B Logger
-    wandb_logger = resume_wandb_logger(manifest)
+    wandb_logger = resume_wandb_logger(run_manifest)
 
     # 2. Create Data Module
     data_module = _create_data_module(experiment_config)
@@ -498,7 +495,7 @@ def resume_experiment(
         EXPERIMENT_DICT.DATA_MODULE: data_module,
         EXPERIMENT_DICT.MODEL: model,
         EXPERIMENT_DICT.TRAINER: trainer,
-        EXPERIMENT_DICT.RUN_MANIFEST: manifest,
+        EXPERIMENT_DICT.RUN_MANIFEST: run_manifest,
         EXPERIMENT_DICT.WANDB_LOGGER: wandb_logger,
     }
 

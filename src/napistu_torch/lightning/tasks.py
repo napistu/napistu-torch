@@ -221,6 +221,16 @@ class EdgePredictionLightning(BaseLightningTask):
         # Detect batch type and extract data
         data, edge_indices = self._unpack_batch(batch)
 
+        # Ensure data is on the correct device
+        # In full-batch mode, Lightning moves the NapistuData batch automatically, so data is already on device
+        # In mini-batch mode, datamodule.data is stored data (not a batch), so it may still be on CPU
+        # Calling .to() is idempotent, so safe to call in both cases
+        data = data.to(self.device)
+        if edge_indices is not None:
+            # edge_indices is part of the batch, so Lightning moves it automatically
+            # but ensure it's on the same device as data (defensive)
+            edge_indices = edge_indices.to(self.device)
+
         # Prepare batch for the task
         prepared_batch = self.task.prepare_batch(
             data,
@@ -315,6 +325,8 @@ class EdgePredictionLightning(BaseLightningTask):
             logger.debug(f"Mini-batch mode: {len(batch)} edge indices")
 
             # Get full data from datamodule
+            # Note: Lightning moves batches to device automatically, but datamodule.data
+            # is stored data (not a batch) that may still be on CPU
             data = self.trainer.datamodule.data
 
             return data, batch

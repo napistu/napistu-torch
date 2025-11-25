@@ -4,8 +4,16 @@ Edge encoder for Napistu-Torch.
 This module provides a simple MLP-based edge encoder for learning edge importance weights.
 """
 
+from typing import Any, Dict
+
 import torch
 import torch.nn as nn
+
+from napistu_torch.models.constants import (
+    EDGE_ENCODER_ARGS,
+    EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES,
+    MODEL_DEFS,
+)
 
 
 class EdgeEncoder(nn.Module):
@@ -35,6 +43,17 @@ class EdgeEncoder(nn.Module):
         - 0.0 → sigmoid(0) = 0.5 (neutral, equal weighting)
         - 1.4 → sigmoid(1.4) ≈ 0.8 (optimistic, most edges good)
         - -1.4 → sigmoid(-1.4) ≈ 0.2 (pessimistic, most edges bad)
+
+    Public Methods
+    --------------
+    config(self) -> Dict[str, Any]:
+        Get the configuration dictionary for this edge encoder.
+    forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
+        Compute edge importance weights from edge features.
+    from_heuristic(cls, edge_dim: int, heuristic_weight_idx: int, hidden_dim: int = 32) -> "EdgeEncoder":
+        Create an EdgeEncoder initialized to use a heuristic weight column.
+    get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
+        Get the summary dictionary for this edge encoder.
 
     Examples
     --------
@@ -68,6 +87,14 @@ class EdgeEncoder(nn.Module):
     ):
         super().__init__()
 
+        # Store all initialization parameters FIRST
+        self._init_args = {
+            MODEL_DEFS.EDGE_IN_CHANNELS: edge_dim,
+            EDGE_ENCODER_ARGS.HIDDEN_DIM: hidden_dim,
+            EDGE_ENCODER_ARGS.DROPOUT: dropout,
+            EDGE_ENCODER_ARGS.INIT_BIAS: init_bias,
+        }
+
         self.edge_dim = edge_dim
         self.hidden_dim = hidden_dim
 
@@ -83,6 +110,11 @@ class EdgeEncoder(nn.Module):
         # Initialize output layer bias
         with torch.no_grad():
             self.net[-2].bias.fill_(init_bias)
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """Get the configuration dictionary for this edge encoder."""
+        return self._init_args.copy()
 
     def forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
         """
@@ -156,3 +188,23 @@ class EdgeEncoder(nn.Module):
             encoder.net[-2].bias.zero_()
 
         return encoder
+
+    def get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
+        """
+        Get the summary dictionary for this edge encoder.
+
+        Returns a dict containing all initialization parameters needed
+        to reconstruct this edge encoder instance.
+        """
+
+        if to_model_config_names:
+            summary = {}
+            for k, v in self._init_args.items():
+                if k in EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES:
+                    summary[EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES[k]] = v
+                else:
+                    summary[k] = v
+        else:
+            summary = self.config
+
+        return summary

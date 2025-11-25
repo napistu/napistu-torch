@@ -7,7 +7,11 @@ from napistu_torch.configs import ModelConfig
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.ml.constants import TRAINING
-from napistu_torch.models.constants import ENCODERS
+from napistu_torch.models.constants import (
+    EDGE_WEIGHTING_TYPE,
+    ENCODER_DEFS,
+    ENCODERS,
+)
 from napistu_torch.models.heads import DotProductHead
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
@@ -173,7 +177,6 @@ def test_edge_prediction_with_edge_encoder(edge_masked_napistu_data, experiment_
     assert "ap" in metrics
 
     # Verify edge encoder was created and integrated in the encoder
-    from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 
     assert hasattr(encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE)
     assert (

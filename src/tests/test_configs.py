@@ -133,7 +133,7 @@ class TestModelConfig:
         valid_values = [0.0, 0.2, 0.5, 0.99]
         for value in valid_values:
             config = ModelConfig(dropout=value)
-            assert hasattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT)
+            assert hasattr(config, MODEL_DEFS.DROPOUT)
             assert config.dropout == value
 
         # Test invalid values

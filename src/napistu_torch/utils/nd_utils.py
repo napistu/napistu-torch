@@ -14,7 +14,7 @@ def format_summary(data: Dict[str, Any]) -> pd.DataFrame:
     Parameters
     ----------
     data : Dict[str, Any]
-        Summary dictionary from NapistuData.summary()
+        Summary dictionary from NapistuData.get_summary()
 
     Returns
     -------

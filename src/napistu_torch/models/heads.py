@@ -5,7 +5,7 @@ This module provides implementations of different prediction heads for various t
 like edge prediction, node classification, etc. All heads follow a consistent interface.
 """
 
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -565,6 +565,17 @@ class Decoder(nn.Module):
         Margin for RotatE head, by default 9.0
     transe_margin : float, optional
         Margin for TransE head, by default 1.0
+
+    Public Methods
+    --------------
+    config(self) -> Dict[str, Any]:
+        Get the configuration dictionary for this decoder.
+    from_config(config: ModelConfig, num_relations: Optional[int] = None, num_classes: Optional[int] = None) -> Decoder:
+        Create a Decoder from a ModelConfig instance.
+    forward(node_embeddings: torch.Tensor, edge_index: Optional[torch.Tensor] = None, relation_type: Optional[torch.Tensor] = None) -> torch.Tensor:
+        Forward pass through the head.
+    supports_relations(self) -> bool:
+        Check if this decoder supports relation-aware heads.
     """
 
     def __init__(
@@ -582,8 +593,25 @@ class Decoder(nn.Module):
         transe_margin: float = 1.0,
     ):
         super().__init__()
-        self.hidden_channels = hidden_channels
+
+        # Store all initialization parameters FIRST (before any validation)
+        self._init_args = {
+            MODEL_DEFS.HIDDEN_CHANNELS: hidden_channels,
+            MODEL_DEFS.HEAD_TYPE: head_type,
+            MODEL_DEFS.NUM_RELATIONS: num_relations,
+            MODEL_DEFS.NUM_CLASSES: num_classes,
+            HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: mlp_hidden_dim,
+            HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS: mlp_num_layers,
+            HEAD_SPECIFIC_ARGS.MLP_DROPOUT: mlp_dropout,
+            HEAD_SPECIFIC_ARGS.BILINEAR_BIAS: bilinear_bias,
+            HEAD_SPECIFIC_ARGS.NC_DROPOUT: nc_dropout,
+            HEAD_SPECIFIC_ARGS.ROTATE_MARGIN: rotate_margin,
+            HEAD_SPECIFIC_ARGS.TRANSE_MARGIN: transe_margin,
+        }
+
         self.head_type = head_type
+        self.hidden_channels = hidden_channels
+        self.num_relations = num_relations
 
         if head_type not in VALID_HEADS:
             raise ValueError(f"Unknown head: {head_type}. Must be one of {VALID_HEADS}")
@@ -629,6 +657,82 @@ class Decoder(nn.Module):
             self.head = TransEHead(self.hidden_channels, num_relations, transe_margin)
         else:
             raise ValueError(f"Unsupported head type: {head_type}")
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """
+        Get the configuration dictionary for this decoder.
+
+        Returns a dict containing all initialization parameters needed
+        to reconstruct this decoder instance.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Configuration dictionary with all __init__ parameters
+        """
+        return self._init_args.copy()
+
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        Get decoder metadata summary for checkpointing.
+
+        Returns essential metadata needed to reconstruct the decoder
+        from a checkpoint, including ALL parameters that were used.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing all initialization parameters,
+            with None values filtered out for head-type-specific params
+        """
+        summary = {}
+
+        # Always include these
+        summary[MODEL_DEFS.HEAD_TYPE] = self._init_args[MODEL_DEFS.HEAD_TYPE]
+        summary[MODEL_DEFS.HIDDEN_CHANNELS] = self._init_args[
+            MODEL_DEFS.HIDDEN_CHANNELS
+        ]
+
+        # Add parameters based on head type
+        if self.head_type in RELATION_AWARE_HEADS:
+            summary[MODEL_DEFS.NUM_RELATIONS] = self._init_args[
+                MODEL_DEFS.NUM_RELATIONS
+            ]
+
+        if self.head_type == HEADS.NODE_CLASSIFICATION:
+            summary[HEAD_SPECIFIC_ARGS.NUM_CLASSES] = self._init_args[
+                HEAD_SPECIFIC_ARGS.NUM_CLASSES
+            ]
+            summary[HEAD_SPECIFIC_ARGS.NC_DROPOUT] = self._init_args[
+                HEAD_SPECIFIC_ARGS.NC_DROPOUT
+            ]
+
+        # Head-specific parameters
+        if self.head_type == HEADS.MLP:
+            summary[HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM] = self._init_args[
+                HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
+            ]
+            summary[HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS] = self._init_args[
+                HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS
+            ]
+            summary[HEAD_SPECIFIC_ARGS.MLP_DROPOUT] = self._init_args[
+                HEAD_SPECIFIC_ARGS.MLP_DROPOUT
+            ]
+        elif self.head_type == HEADS.BILINEAR:
+            summary[HEAD_SPECIFIC_ARGS.BILINEAR_BIAS] = self._init_args[
+                HEAD_SPECIFIC_ARGS.BILINEAR_BIAS
+            ]
+        elif self.head_type == HEADS.ROTATE:
+            summary[HEAD_SPECIFIC_ARGS.ROTATE_MARGIN] = self._init_args[
+                HEAD_SPECIFIC_ARGS.ROTATE_MARGIN
+            ]
+        elif self.head_type == HEADS.TRANSE:
+            summary[HEAD_SPECIFIC_ARGS.TRANSE_MARGIN] = self._init_args[
+                HEAD_SPECIFIC_ARGS.TRANSE_MARGIN
+            ]
+
+        return summary
 
     @property
     def supports_relations(self) -> bool:
@@ -717,8 +821,8 @@ class Decoder(nn.Module):
         head_kwargs = {
             MODEL_DEFS.HIDDEN_CHANNELS: getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             MODEL_DEFS.HEAD_TYPE: getattr(config, MODEL_CONFIG.HEAD),
-            HEAD_SPECIFIC_ARGS.NUM_RELATIONS: num_relations,
-            HEAD_SPECIFIC_ARGS.NUM_CLASSES: num_classes,
+            MODEL_DEFS.NUM_RELATIONS: num_relations,
+            MODEL_DEFS.NUM_CLASSES: num_classes,
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: getattr(
                 config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
             ),

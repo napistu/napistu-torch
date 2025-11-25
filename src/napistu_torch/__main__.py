@@ -222,7 +222,9 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
 
         # Resume experiment (in train mode)
         experiment_dict = resume_experiment(
-            evaluation_manager, mode=TRAINER_MODES.TRAIN, logger=logger
+            evaluation_manager,
+            mode=TRAINER_MODES.TRAIN,
+            logger=logger,
         )
 
         # Continue training (preserve best checkpoint for early stopping)
@@ -414,7 +416,8 @@ def train(
         experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
         logger.info(f"Saved run manifest to {manifest_path}")
 
-        fit_model(experiment_dict, resume_from=None, keep_best=True, logger=logger)
+        # When training from scratch, clean up all existing checkpoints
+        fit_model(experiment_dict, resume_from=None, keep_best=False, logger=logger)
 
         logger.info("Training completed successfully! 🎉")
 

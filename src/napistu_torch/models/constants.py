@@ -6,6 +6,13 @@ MODEL_DEFS = SimpleNamespace(
     GCN="gcn",
     HEAD="head",
     HEAD_TYPE="head_type",
+    # structural properties defined based on data
+    IN_CHANNELS="in_channels",
+    EDGE_IN_CHANNELS="edge_in_channels",
+    NUM_RELATIONS="num_relations",
+    NUM_CLASSES="num_classes",
+    # generally applicable parameters
+    DROPOUT="dropout",
     HIDDEN_CHANNELS="hidden_channels",
     NUM_LAYERS="num_layers",
 )
@@ -20,7 +27,6 @@ ENCODERS = SimpleNamespace(
 VALID_ENCODERS = list(ENCODERS.__dict__.values())
 
 ENCODER_SPECIFIC_ARGS = SimpleNamespace(
-    DROPOUT="dropout",
     GAT_HEADS="gat_heads",
     GAT_CONCAT="gat_concat",
     GRAPH_CONV_AGGREGATOR="graph_conv_aggregator",
@@ -42,7 +48,7 @@ ENCODER_DEFS = SimpleNamespace(
 ENCODER_NATIVE_ARGNAMES_MAPS = {
     ENCODERS.GAT: {
         ENCODER_SPECIFIC_ARGS.GAT_HEADS: "heads",
-        ENCODER_SPECIFIC_ARGS.DROPOUT: "dropout",
+        MODEL_DEFS.DROPOUT: "dropout",
         ENCODER_SPECIFIC_ARGS.GAT_CONCAT: "concat",
     },
     ENCODERS.GRAPH_CONV: {
@@ -76,8 +82,6 @@ EDGE_PREDICTION_HEADS = {
 
 # Head-specific parameter names
 HEAD_SPECIFIC_ARGS = SimpleNamespace(
-    NUM_RELATIONS="num_relations",
-    NUM_CLASSES="num_classes",
     MLP_HIDDEN_DIM="mlp_hidden_dim",
     MLP_NUM_LAYERS="mlp_num_layers",
     MLP_DROPOUT="mlp_dropout",
@@ -88,10 +92,20 @@ HEAD_SPECIFIC_ARGS = SimpleNamespace(
 )
 
 EDGE_ENCODER_ARGS = SimpleNamespace(
-    EDGE_IN_CHANNELS="edge_in_channels",
+    HIDDEN_DIM="hidden_dim",
+    DROPOUT="dropout",
+    INIT_BIAS="init_bias",
+    # names used in the ModelConfig
     EDGE_ENCODER_DIM="edge_encoder_dim",
     EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
+    EDGE_ENCODER_INIT_BIAS="edge_encoder_init_bias",
 )
+
+EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES = {
+    EDGE_ENCODER_ARGS.HIDDEN_DIM: EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM,
+    EDGE_ENCODER_ARGS.DROPOUT: EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT,
+    EDGE_ENCODER_ARGS.INIT_BIAS: EDGE_ENCODER_ARGS.EDGE_ENCODER_INIT_BIAS,
+}
 
 EDGE_WEIGHTING_TYPE = SimpleNamespace(
     NONE="none",

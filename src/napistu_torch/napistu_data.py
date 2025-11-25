@@ -563,15 +563,22 @@ class NapistuData(Data):
 
         return num_relations
 
-    def get_summary(self) -> Dict[str, Any]:
+    def get_summary(self, simplify: bool = False) -> Dict[str, Any]:
         """
         Get a summary of the NapistuData object.
+
+        Parameters
+        ----------
+        simplify : bool, default=False
+            If True, return a simplified summary with only essential information.
 
         Returns
         -------
         Dict[str, Any]
             Dictionary containing summary information about the data object
         """
+
+        # core attributes
         summary_dict = {
             NAPISTU_DATA.NAME: self.name,
             PYG.NUM_NODES: self.num_nodes,
@@ -580,7 +587,6 @@ class NapistuData(Data):
             PYG.NUM_EDGE_FEATURES: self.num_edge_features,
         }
 
-        # Optional attributes
         if (
             hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY)
             and getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY) is not None
@@ -588,7 +594,6 @@ class NapistuData(Data):
             summary_dict[NAPISTU_DATA.SPLITTING_STRATEGY] = getattr(
                 self, NAPISTU_DATA.SPLITTING_STRATEGY
             )
-
         if (
             hasattr(self, NAPISTU_DATA.RELATION_TYPE)
             and getattr(self, NAPISTU_DATA.RELATION_TYPE) is not None
@@ -596,8 +601,6 @@ class NapistuData(Data):
             summary_dict[NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS] = int(
                 getattr(self, NAPISTU_DATA.RELATION_TYPE).unique().numel()
             )
-
-        # Mask statistics
         if (
             hasattr(self, NAPISTU_DATA.TRAIN_MASK)
             and getattr(self, NAPISTU_DATA.TRAIN_MASK) is not None
@@ -619,6 +622,9 @@ class NapistuData(Data):
             summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TEST_EDGES] = int(
                 getattr(self, NAPISTU_DATA.TEST_MASK).sum()
             )
+
+        if simplify:
+            return summary_dict
 
         # Feature names (optional but useful)
         vertex_feature_names = self.get_vertex_feature_names()
