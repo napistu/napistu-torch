@@ -27,9 +27,104 @@ logger = logging.getLogger(__name__)
 
 
 class EvaluationManager:
-    """Manage the evaluation of an experiment."""
+    """
+    Manager for post-training evaluation of a model.
+
+    This class provides a unified interface for accessing experiment artifacts,
+    loading models from checkpoints, publishing to HuggingFace Hub, and managing
+    experiment metadata. It loads the experiment manifest and provides convenient
+    access to checkpoints, WandB information, and data stores.
+
+    Parameters
+    ----------
+    experiment_dir : Union[Path, str]
+        Path to the experiment directory containing the manifest file and checkpoints.
+        Must contain a `run_manifest.yaml` file.
+
+    Attributes
+    ----------
+    experiment_dir : Path
+        Path to the experiment directory
+    manifest : RunManifest
+        The experiment manifest containing metadata and configuration
+    experiment_name : Optional[str]
+        Name of the experiment from the manifest
+    wandb_run_id : Optional[str]
+        WandB run ID from the manifest
+    wandb_run_url : Optional[str]
+        WandB run URL from the manifest
+    wandb_project : Optional[str]
+        WandB project name from the manifest
+    wandb_entity : Optional[str]
+        WandB entity (username/team) from the manifest
+    experiment_config : ExperimentConfig
+        The experiment configuration from the manifest
+    checkpoint_dir : Path
+        Directory containing model checkpoints
+    best_checkpoint_path : Optional[Path]
+        Path to the best checkpoint (highest validation AUC)
+    best_checkpoint_val_auc : Optional[float]
+        Validation AUC of the best checkpoint
+
+    Public Methods
+    --------------
+    get_experiment_dict()
+        Get the experiment dictionary with model, data module, trainer, etc.
+    get_store()
+        Get the NapistuDataStore for this experiment's data
+    get_summary_string()
+        Generate a descriptive summary string from experiment metadata
+    get_run_summary()
+        Get summary metrics from WandB for this experiment
+    load_model_from_checkpoint(checkpoint_name=None)
+        Load a trained model from a checkpoint file
+    load_napistu_data(napistu_data_name=None)
+        Load the NapistuData object used for this experiment
+    publish_to_huggingface(repo_id, checkpoint_path=None, commit_message=None, overwrite=False, token=None)
+        Publish this experiment's model to HuggingFace Hub
+
+    Private Methods
+    ---------------
+    _resolve_checkpoint_path(checkpoint_name=None)
+        Resolve a checkpoint name or path to an actual checkpoint file path
+
+    Examples
+    --------
+    >>> # Load an experiment
+    >>> manager = EvaluationManager("experiments/my_run")
+    >>>
+    >>> # Load the model from best checkpoint
+    >>> model = manager.load_model_from_checkpoint()
+    >>>
+    >>> # Load from specific checkpoint
+    >>> model = manager.load_model_from_checkpoint("last")
+    >>> model = manager.load_model_from_checkpoint("best-epoch=50-val_auc=0.85.ckpt")
+    >>>
+    >>> # Get experiment summary
+    >>> summary = manager.get_summary_string()
+    >>> print(summary)  # "model: sage-octopus-baseline (sage-dot_product_h128_l3) | WandB: abc123"
+    >>>
+    >>> # Publish to HuggingFace
+    >>> url = manager.publish_to_huggingface("username/model-name")
+    """
 
     def __init__(self, experiment_dir: Union[Path, str]):
+        """
+        Initialize EvaluationManager from an experiment directory.
+
+        Parameters
+        ----------
+        experiment_dir : Union[Path, str]
+            Path to experiment directory containing manifest and checkpoints.
+            Must contain a `run_manifest.yaml` file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If experiment directory or manifest file doesn't exist
+        ValueError
+            If manifest file is invalid or cannot be parsed
+        """
 
         if isinstance(experiment_dir, str):
             experiment_dir = Path(experiment_dir).expanduser()
@@ -86,6 +181,28 @@ class EvaluationManager:
 
     @require_lightning
     def get_experiment_dict(self) -> dict:
+        """
+        Get the experiment dictionary with all experiment components.
+
+        The experiment dictionary contains the model, data module, trainer,
+        run manifest, and WandB logger. This is lazily loaded and cached.
+
+        Returns
+        -------
+        dict
+            Experiment dictionary containing:
+            - data_module : Union[FullGraphDataModule, EdgeBatchDataModule]
+            - model : pl.LightningModule (e.g., EdgePredictionLightning)
+            - trainer : NapistuTrainer
+            - run_manifest : RunManifest
+            - wandb_logger : Optional[WandbLogger]
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>> experiment_dict = manager.get_experiment_dict()
+        >>> model = experiment_dict[EXPERIMENT_DICT.MODEL]
+        """
         from napistu_torch.lightning.workflows import (
             resume_experiment,  # import here to avoid circular import
         )
@@ -96,6 +213,24 @@ class EvaluationManager:
         return self.experiment_dict
 
     def get_store(self) -> NapistuDataStore:
+        """
+        Get the NapistuDataStore for this experiment's data.
+
+        The data store is lazily loaded and cached. It provides access to
+        NapistuData objects, vertex tensors, and pandas DataFrames stored
+        for this experiment.
+
+        Returns
+        -------
+        NapistuDataStore
+            The data store instance for this experiment
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>> store = manager.get_store()
+        >>> napistu_data = store.load_napistu_data("edge_prediction")
+        """
 
         if self.napistu_data_store is None:
             self.napistu_data_store = NapistuDataStore(
@@ -136,6 +271,31 @@ class EvaluationManager:
         return " | ".join(parts)
 
     def get_run_summary(self) -> dict:
+        """
+        Get summary metrics from WandB for this experiment.
+
+        Retrieves the summary metrics (final values) from the WandB run
+        associated with this experiment.
+
+        Returns
+        -------
+        dict
+            Dictionary containing summary metrics from WandB (e.g., final
+            validation AUC, training loss, etc.)
+
+        Raises
+        ------
+        ValueError
+            If WandB run ID is not available
+        RuntimeError
+            If WandB API access fails
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>> summary = manager.get_run_summary()
+        >>> print(summary["val_auc"])  # Final validation AUC
+        """
         from wandb import Api  # optional dependency
 
         api = Api()
@@ -149,20 +309,55 @@ class EvaluationManager:
 
     @require_lightning
     def load_model_from_checkpoint(
-        self, checkpoint_path: Optional[Path] = None
+        self, checkpoint_name: Optional[Union[Path, str]] = None
     ) -> LightningModule:
+        """
+        Load a trained model from a checkpoint file.
+
+        The checkpoint name can be:
+        - None: Uses the best checkpoint (highest validation AUC)
+        - A string matching a checkpoint filename in checkpoint_dir (e.g., "last.ckpt", "best-epoch=50-val_auc=0.85.ckpt")
+        - The string "last": Resolves to "last.ckpt" in checkpoint_dir
+        - A Path object or string path to a checkpoint file
+
+        Parameters
+        ----------
+        checkpoint_name : Optional[Union[Path, str]], default=None
+            Checkpoint name or path. If None, uses best checkpoint.
+            If a string, first checks if it matches a file in checkpoint_dir,
+            otherwise treats it as a file path.
+
+        Returns
+        -------
+        LightningModule
+            The loaded model in evaluation mode
+
+        Raises
+        ------
+        ValueError
+            If no checkpoint is found and none is provided
+        FileNotFoundError
+            If the specified checkpoint file doesn't exist
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>>
+        >>> # Load from best checkpoint
+        >>> model = manager.load_model_from_checkpoint()
+        >>>
+        >>> # Load from last checkpoint
+        >>> model = manager.load_model_from_checkpoint("last")
+        >>>
+        >>> # Load from specific checkpoint by name
+        >>> model = manager.load_model_from_checkpoint("best-epoch=50-val_auc=0.85.ckpt")
+        >>>
+        >>> # Load from absolute path
+        >>> model = manager.load_model_from_checkpoint("/path/to/checkpoint.ckpt")
+        """
         import_lightning()
 
-        if checkpoint_path is None:
-            checkpoint_path = self.best_checkpoint_path
-            if checkpoint_path is None:
-                raise ValueError(
-                    "No checkpoint path provided and no best checkpoint found"
-                )
-        if not checkpoint_path.is_file():
-            raise FileNotFoundError(
-                f"Checkpoint file not found at path: {checkpoint_path}"
-            )
+        checkpoint_path = self._resolve_checkpoint_path(checkpoint_name)
 
         experiment_dict = self.get_experiment_dict()
 
@@ -174,6 +369,31 @@ class EvaluationManager:
         return model
 
     def load_napistu_data(self, napistu_data_name: Optional[str] = None) -> NapistuData:
+        """
+        Load the NapistuData object used for this experiment.
+
+        Loads the NapistuData object from the experiment's data store.
+        If no name is provided, uses the name from the experiment configuration.
+
+        Parameters
+        ----------
+        napistu_data_name : Optional[str], default=None
+            Name of the NapistuData object to load. If None, uses the name
+            from the experiment configuration.
+
+        Returns
+        -------
+        NapistuData
+            The loaded NapistuData object
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>> # Load using name from config
+        >>> data = manager.load_napistu_data()
+        >>> # Load specific artifact
+        >>> data = manager.load_napistu_data("edge_prediction")
+        """
         if napistu_data_name is None:
             napistu_data_name = self.experiment_config.data.napistu_data_name
         napistu_data_store = self.get_store()
@@ -244,6 +464,74 @@ class EvaluationManager:
             commit_message=commit_message,
             overwrite=overwrite,
         )
+
+    # private methods
+
+    def _resolve_checkpoint_path(
+        self, checkpoint_name: Optional[Union[Path, str]] = None
+    ) -> Path:
+        """
+        Resolve a checkpoint name or path to an actual checkpoint file path.
+
+        Handles various input formats:
+        - None: Uses the best checkpoint (highest validation AUC)
+        - String matching a checkpoint filename in checkpoint_dir (e.g., "last.ckpt", "best-epoch=50-val_auc=0.85.ckpt")
+        - The string "last": Resolves to "last.ckpt" in checkpoint_dir
+        - A Path object or string path to a checkpoint file
+
+        Parameters
+        ----------
+        checkpoint_name : Optional[Union[Path, str]], default=None
+            Checkpoint name or path. If None, uses best checkpoint.
+            If a string, first checks if it matches a file in checkpoint_dir,
+            otherwise treats it as a file path.
+
+        Returns
+        -------
+        Path
+            Resolved path to the checkpoint file
+
+        Raises
+        ------
+        ValueError
+            If no checkpoint is found and none is provided
+        FileNotFoundError
+            If the specified checkpoint file doesn't exist
+        """
+        if checkpoint_name is None:
+            checkpoint_path = self.best_checkpoint_path
+            if checkpoint_path is None:
+                raise ValueError(
+                    "No checkpoint name provided and no best checkpoint found"
+                )
+            return checkpoint_path
+
+        if isinstance(checkpoint_name, str):
+            # First, check if the string matches a file in checkpoint_dir
+            potential_path = self.checkpoint_dir / checkpoint_name
+            if potential_path.is_file():
+                return potential_path
+            elif checkpoint_name == "last":
+                # Special case: resolve "last" to last.ckpt
+                checkpoint_path = self.checkpoint_dir / "last.ckpt"
+                if not checkpoint_path.is_file():
+                    raise FileNotFoundError(
+                        f"Last checkpoint not found at: {checkpoint_path}"
+                    )
+                return checkpoint_path
+            else:
+                # Treat as a path string
+                checkpoint_path = Path(checkpoint_name)
+        else:
+            # Already a Path object
+            checkpoint_path = checkpoint_name
+
+        if not checkpoint_path.is_file():
+            raise FileNotFoundError(
+                f"Checkpoint file not found treating it as a named artifact in self.checkpoint_dir or as a path: {checkpoint_path}"
+            )
+
+        return checkpoint_path
 
 
 # public functions

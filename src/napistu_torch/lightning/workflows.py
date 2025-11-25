@@ -436,6 +436,7 @@ def prepare_experiment(
 
 def resume_experiment(
     evaluation_manager: EvaluationManager,
+    mode: str = TRAINER_MODES.EVAL,
     logger: logging.Logger = logger,
 ) -> Dict[str, Any]:
     """
@@ -445,6 +446,8 @@ def resume_experiment(
     ----------
     evaluation_manager: EvaluationManager
         The evaluation manager
+    mode: str, default=TRAINER_MODES.EVAL
+        Trainer mode: TRAINER_MODES.TRAIN for training, TRAINER_MODES.EVAL for evaluation
     logger: logging.Logger, optional
         Logger instance to use
 
@@ -481,10 +484,8 @@ def resume_experiment(
     model = _create_model(experiment_config, data_module, edge_strata)
 
     # 4. trainer
-    logger.info("Creating NapistuTrainer from config...")
-    trainer = NapistuTrainer(
-        experiment_config, mode=TRAINER_MODES.EVAL, wandb_logger=wandb_logger
-    )
+    logger.info(f"Creating NapistuTrainer from config (mode={mode})...")
+    trainer = NapistuTrainer(experiment_config, mode=mode, wandb_logger=wandb_logger)
 
     experiment_dict = {
         EXPERIMENT_DICT.DATA_MODULE: data_module,

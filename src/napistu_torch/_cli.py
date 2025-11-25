@@ -128,7 +128,6 @@ def log_deferred_messages(
     checkpoint_dir: Path,
     log_dir: Path,
     wandb_dir: Path,
-    resume: Optional[Path] = None,
 ) -> None:
     """
     Log deferred configuration messages and run information.
@@ -165,10 +164,6 @@ def log_deferred_messages(
     logger.info(f"  Checkpoints: {checkpoint_dir}")
     logger.info(f"  Logs: {log_dir}")
     logger.info(f"  WandB: {wandb_dir}")
-
-    if resume:
-        logger.info(f"  Resume from: {resume}")
-
     logger.info("=" * 80)
 
 
