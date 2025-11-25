@@ -16,11 +16,13 @@ from napistu_torch.constants import (
     MODEL_CONFIG_DEFAULTS,
     NAPISTU_DATA_TRIM_ARGS,
     OPTIMIZERS,
+    PRETRAINING_DEFS,
     TASK_CONFIG,
     TASK_CONFIG_DEFAULTS,
     TRAINING_CONFIG,
     TRAINING_CONFIG_DEFAULTS,
     VALID_OPTIMIZERS,
+    VALID_PRETRAINED_COMPONENT_SOURCES,
     VALID_SCHEDULERS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
@@ -50,6 +52,20 @@ class ModelConfig(BaseModel):
     hidden_channels: int = Field(default=128, gt=0)
     num_layers: int = Field(default=3, ge=1, le=10)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
+
+    # Pretrained encoder settings
+    encoder_source: Optional[str] = Field(
+        default=None,
+        description="Source for pretrained encoder: 'huggingface' or 'local'",
+    )
+    encoder_path: Optional[str] = Field(
+        default=None, description="Path to pretrained encoder (HF repo or local path)"
+    )
+    encoder_revision: Optional[str] = Field(
+        default=None, description="Git revision for HF models (branch, tag, or commit)"
+    )
+
+    # Head-specific fields (optional, with defaults)
     head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
 
     # Model-specific fields (optional, with defaults)
@@ -71,6 +87,17 @@ class ModelConfig(BaseModel):
     rotate_margin: Optional[float] = Field(default=9.0, gt=0.0)  # For RotatE head
     transe_margin: Optional[float] = Field(default=1.0, gt=0.0)  # For TransE head
 
+    # Pretrained head settings
+    head_source: Optional[str] = Field(
+        default=None, description="Source for pretrained head: 'huggingface' or 'local'"
+    )
+    head_path: Optional[str] = Field(
+        default=None, description="Path to pretrained head (HF repo or local path)"
+    )
+    head_revision: Optional[str] = Field(
+        default=None, description="Git revision for HF models (branch, tag, or commit)"
+    )
+
     # Edge encoder fields (optional, with defaults)
     use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
         MODEL_CONFIG.USE_EDGE_ENCODER
@@ -82,18 +109,58 @@ class ModelConfig(BaseModel):
 
     @field_validator(MODEL_DEFS.ENCODER)
     @classmethod
-    def validate_encoder(cls, v):
-        if v not in VALID_ENCODERS:
+    def validate_encoder(cls, v, info):
+        # First check if it's a valid encoder type
+        if v not in VALID_ENCODERS and v != PRETRAINING_DEFS.PRETRAINED:
             raise ValueError(
-                f"Invalid encoder type: {v}. Valid types are: {VALID_ENCODERS}"
+                f"Invalid encoder type: {v}. Valid types are: {VALID_ENCODERS + [PRETRAINING_DEFS.PRETRAINED]}"
             )
+
+        # If pretrained, validate required fields are present
+        if v == PRETRAINING_DEFS.PRETRAINED:
+            if info.data.get(MODEL_CONFIG.ENCODER_SOURCE) is None:
+                raise ValueError(
+                    f"encoder_source must be specified when encoder='{PRETRAINING_DEFS.PRETRAINED}'"
+                )
+            if info.data.get(MODEL_CONFIG.ENCODER_PATH) is None:
+                raise ValueError(
+                    f"encoder_path must be specified when encoder='{PRETRAINING_DEFS.PRETRAINED}'"
+                )
+            # Validate source type
+            encoder_source = info.data.get(MODEL_CONFIG.ENCODER_SOURCE)
+            if encoder_source not in VALID_PRETRAINED_COMPONENT_SOURCES:
+                raise ValueError(
+                    f"Invalid encoder_source: {encoder_source}. Valid: {VALID_PRETRAINED_COMPONENT_SOURCES}"
+                )
+
         return v
 
     @field_validator(MODEL_DEFS.HEAD)
     @classmethod
-    def validate_head(cls, v):
-        if v not in VALID_HEADS:
-            raise ValueError(f"Invalid head type: {v}. Valid types are: {VALID_HEADS}")
+    def validate_head(cls, v, info):
+        # First check if it's a valid head type
+        if v not in VALID_HEADS and v != PRETRAINING_DEFS.PRETRAINED:
+            raise ValueError(
+                f"Invalid head type: {v}. Valid types are: {VALID_HEADS + [PRETRAINING_DEFS.PRETRAINED]}"
+            )
+
+        # If pretrained, validate required fields are present
+        if v == PRETRAINING_DEFS.PRETRAINED:
+            if info.data.get(MODEL_CONFIG.HEAD_SOURCE) is None:
+                raise ValueError(
+                    f"head_source must be specified when head='{PRETRAINING_DEFS.PRETRAINED}'"
+                )
+            if info.data.get(MODEL_CONFIG.HEAD_PATH) is None:
+                raise ValueError(
+                    f"head_path must be specified when head='{PRETRAINING_DEFS.PRETRAINED}'"
+                )
+            # Validate source type
+            head_source = info.data.get(MODEL_CONFIG.HEAD_SOURCE)
+            if head_source not in VALID_PRETRAINED_COMPONENT_SOURCES:
+                raise ValueError(
+                    f"Invalid head_source: {head_source}. Valid: {VALID_PRETRAINED_COMPONENT_SOURCES}"
+                )
+
         return v
 
     @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)

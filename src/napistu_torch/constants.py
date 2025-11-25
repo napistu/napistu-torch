@@ -146,9 +146,11 @@ MODEL_CONFIG = SimpleNamespace(
     ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
     HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
     USE_EDGE_ENCODER="use_edge_encoder",
+    # encoders
     HIDDEN_CHANNELS=MODEL_DEFS.HIDDEN_CHANNELS,
     NUM_LAYERS=MODEL_DEFS.NUM_LAYERS,
     DROPOUT=ENCODER_SPECIFIC_ARGS.DROPOUT,
+    # heads
     GAT_HEADS=ENCODER_SPECIFIC_ARGS.GAT_HEADS,
     GAT_CONCAT=ENCODER_SPECIFIC_ARGS.GAT_CONCAT,
     GRAPH_CONV_AGGREGATOR=ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR,
@@ -156,6 +158,13 @@ MODEL_CONFIG = SimpleNamespace(
     EDGE_IN_CHANNELS=EDGE_ENCODER_ARGS.EDGE_IN_CHANNELS,
     EDGE_ENCODER_DIM=EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM,
     EDGE_ENCODER_DROPOUT=EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT,
+    # loading
+    ENCODER_SOURCE="encoder_source",
+    ENCODER_PATH="encoder_path",
+    ENCODER_REVISION="encoder_revision",
+    HEAD_SOURCE="head_source",
+    HEAD_PATH="head_path",
+    HEAD_REVISION="head_revision",
 )
 
 MODEL_CONFIG_DEFAULTS = {
@@ -163,6 +172,17 @@ MODEL_CONFIG_DEFAULTS = {
     MODEL_CONFIG.HEAD: HEADS.DOT_PRODUCT,
     MODEL_CONFIG.USE_EDGE_ENCODER: False,
 }
+
+PRETRAINING_DEFS = SimpleNamespace(
+    PRETRAINED="pretrained",
+)
+PRETRAINED_COMPONENT_SOURCES = SimpleNamespace(
+    HUGGINGFACE="huggingface",
+    LOCAL="local",
+)
+VALID_PRETRAINED_COMPONENT_SOURCES = list(
+    PRETRAINED_COMPONENT_SOURCES.__dict__.values()
+)
 
 TASK_CONFIG = SimpleNamespace(
     TASK="task",

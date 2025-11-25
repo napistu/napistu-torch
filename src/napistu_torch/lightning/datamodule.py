@@ -179,7 +179,6 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
     @property
     def num_edge_features(self) -> int:
         """Get the number of edge features from the data."""
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
         if isinstance(self.napistu_data, dict):
             return self.napistu_data[TRAINING.TRAIN].num_edge_features
         elif isinstance(self.napistu_data, NapistuData):
@@ -193,7 +192,6 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
     @property
     def num_node_features(self) -> int:
         """Get the number of node features from the data."""
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
         if isinstance(self.napistu_data, dict):
             return self.napistu_data[TRAINING.TRAIN].num_node_features
         elif isinstance(self.napistu_data, NapistuData):
@@ -210,7 +208,6 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
 
         Shared setup logic for all subclasses.
         """
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
         if hasattr(self, "data") and self.data is not None:
             return
         if hasattr(self, "train_data") and self.train_data is not None:

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Dict, Optional
+
+import torch
 
 try:
-    from huggingface_hub import HfApi, create_repo
+    from huggingface_hub import HfApi, create_repo, hf_hub_download
     from huggingface_hub.utils import RepositoryNotFoundError
 except ImportError as e:
     raise ImportError(
@@ -17,6 +19,7 @@ except ImportError as e:
     ) from e
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
+from napistu_torch.ml.constants import DEVICE
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class HuggingFaceClient:
             HuggingFace API token. If None, uses token from `huggingface-cli login`.
         """
         self.api = HfApi(token=token)
+        self._token = token
         self._validate_authentication()
 
     def _check_repo_exists(self, repo_id: str) -> bool:
@@ -101,8 +105,206 @@ class HuggingFaceClient:
             )
 
 
+class HuggingFaceLoader(HuggingFaceClient):
+    """
+    Load model components from HuggingFace Hub.
+
+    This class handles downloading and reconstructing Napistu-Torch model
+    components (encoders, heads) from published HuggingFace repositories.
+
+    Parameters
+    ----------
+    repo_id : str
+        HuggingFace repository in format "username/repo-name"
+    revision : str, optional
+        Git revision (branch, tag, or commit hash). Defaults to "main"
+    cache_dir : Path, optional
+        Local cache directory for downloaded files. If None, uses HuggingFace's
+        default cache (~/.cache/huggingface/hub/)
+    token : str, optional
+        HuggingFace access token for private repositories
+
+    Public Methods
+    --------------
+    load_encoder()
+        Load complete encoder from HuggingFace Hub
+    load_head()
+        Load head from HuggingFace Hub
+
+    Private Methods
+    ---------------
+    _download_checkpoint()
+        Download model checkpoint from HuggingFace Hub
+    _download_config()
+        Download config.json from HuggingFace Hub
+    _get_checkpoint()
+        Download and load checkpoint, with caching
+    _get_config()
+        Download and parse config, with caching
+
+    Examples
+    --------
+    >>> from napistu_torch.ml.hugging_face import HuggingFaceLoader
+    >>>
+    >>> # Load complete encoder
+    >>> loader = HuggingFaceLoader("shackett/napistu-sage-baseline-v1")
+    >>> encoder = loader.load_encoder()
+    >>>
+    >>> # Load from specific revision
+    >>> loader = HuggingFaceLoader("shackett/model-v1", revision="v1.0")
+    >>> head = loader.load_head()
+    >>>
+    >>> # Load both components
+    >>> encoder = loader.load_encoder()
+    >>> head = loader.load_head()
+    """
+
+    def __init__(
+        self,
+        repo_id: str,
+        revision: Optional[str] = None,
+        cache_dir: Optional[Path] = None,
+        token: Optional[str] = None,
+    ):
+        super().__init__(token=token)
+        self.repo_id = repo_id
+        self.revision = revision or "main"
+        self.cache_dir = cache_dir
+
+        # Validate repo_id format
+        self._validate_repo_id(repo_id)
+
+        # Check if repo exists
+        if not self._check_repo_exists(repo_id):
+            raise ValueError(
+                f"Repository '{repo_id}' not found on HuggingFace Hub. "
+                f"Please check the repository name and ensure you have access."
+            )
+
+        # Cache for downloaded files
+        self._checkpoint_path: Optional[Path] = None
+        self._config_path: Optional[Path] = None
+        self._checkpoint: Optional[Dict] = None
+        self._config: Optional[ExperimentConfig] = None
+
+    def _download_checkpoint(self) -> Path:
+        """
+        Download model checkpoint from HuggingFace Hub.
+
+        Returns
+        -------
+        Path
+            Local path to downloaded checkpoint file
+        """
+        if self._checkpoint_path is None:
+            logger.info(
+                f"Downloading checkpoint from {self.repo_id} (revision: {self.revision})..."
+            )
+
+            self._checkpoint_path = Path(
+                hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename="model.ckpt",
+                    revision=self.revision,
+                    cache_dir=self.cache_dir,
+                    repo_type="model",
+                    token=self._token,
+                )
+            )
+
+            logger.info(f"Checkpoint cached at: {self._checkpoint_path}")
+
+        return self._checkpoint_path
+
+    def _download_config(self) -> Path:
+        """
+        Download config.json from HuggingFace Hub.
+
+        Returns
+        -------
+        Path
+            Local path to downloaded config file
+        """
+        if self._config_path is None:
+            logger.info(
+                f"Downloading config from {self.repo_id} (revision: {self.revision})..."
+            )
+
+            self._config_path = Path(
+                hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename="config.json",
+                    revision=self.revision,
+                    cache_dir=self.cache_dir,
+                    repo_type="model",
+                    token=self._token,
+                )
+            )
+
+            logger.info(f"Config cached at: {self._config_path}")
+
+        return self._config_path
+
+    def _get_checkpoint(self) -> Dict:
+        """
+        Download and load checkpoint, with caching.
+
+        Returns
+        -------
+        Dict
+            PyTorch checkpoint dictionary
+        """
+        if self._checkpoint is None:
+            checkpoint_path = self._download_checkpoint()
+            self._checkpoint = torch.load(
+                checkpoint_path,
+                weights_only=False,
+                map_location=DEVICE.CPU,
+            )
+            logger.debug(f"Loaded checkpoint from {checkpoint_path}")
+
+        return self._checkpoint
+
+    def _get_config(self) -> ExperimentConfig:
+        """
+        Download and parse config, with caching.
+
+        Returns
+        -------
+        ExperimentConfig
+            Parsed experiment configuration
+        """
+        if self._config is None:
+            config_path = self._download_config()
+            self._config = ExperimentConfig.from_json(config_path)
+            logger.debug(f"Loaded config from {config_path}")
+
+        return self._config
+
+
 class HuggingFacePublisher(HuggingFaceClient):
-    """Handles publishing models to HuggingFace Hub."""
+    """
+    Handles publishing models to HuggingFace Hub
+
+    Parameters
+    ----------
+    token : Optional[str]
+        HuggingFace API token. If None, uses token from `huggingface-cli login`.
+
+    Public Methods
+    --------------
+    publish_model(repo_id, checkpoint_path, manifest, commit_message=None, overwrite=False)
+        Upload model checkpoint and metadata to HuggingFace Hub
+
+    Private Methods
+    ---------------
+    _upload_checkpoint(repo_id, checkpoint_path, commit_message)
+        Upload model checkpoint file
+    _upload_config(repo_id, config, commit_message)
+        Upload model configuration as JSON
+    _upload_model_card(repo_id, manifest, commit_message)
+        Generate and upload model card (README.md)
+    """
 
     # public methods
 
