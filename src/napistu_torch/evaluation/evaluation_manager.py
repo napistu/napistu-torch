@@ -32,7 +32,7 @@ class EvaluationManager:
     def __init__(self, experiment_dir: Union[Path, str]):
 
         if isinstance(experiment_dir, str):
-            experiment_dir = Path(experiment_dir)
+            experiment_dir = Path(experiment_dir).expanduser()
         elif not isinstance(experiment_dir, Path):
             raise TypeError(
                 f"Experiment directory must be a Path or string, got {type(experiment_dir)}"
@@ -104,8 +104,39 @@ class EvaluationManager:
 
         return self.napistu_data_store
 
+    def get_summary_string(self) -> str:
+        """
+        Generate a descriptive summary string from experiment metadata.
+
+        Examples:
+        - "model: sage-octopus-baseline (WandB: abc123)"
+        - "model: transe-256-hidden"
+
+        Returns
+        -------
+        str
+            Formatted commit message string
+        """
+        parts = []
+
+        # Experiment name
+        if self.manifest.experiment_name:
+            parts.append(f"model: {self.manifest.experiment_name}")
+        else:
+            parts.append("Napistu-Torch model")
+
+        # Model architecture info
+        arch_info = self.experiment_config.model.get_architecture_string()
+        parts.append(f"({arch_info})")
+
+        # WandB run ID
+        if self.manifest.wandb_run_id:
+            parts.append(f"WandB: {self.manifest.wandb_run_id}")
+
+        return " | ".join(parts)
+
     def get_run_summary(self) -> dict:
-        from wandb import Api
+        from wandb import Api  # optional dependency
 
         api = Api()
 
@@ -147,6 +178,72 @@ class EvaluationManager:
             napistu_data_name = self.experiment_config.data.napistu_data_name
         napistu_data_store = self.get_store()
         return napistu_data_store.load_napistu_data(napistu_data_name)
+
+    def publish_to_huggingface(
+        self,
+        repo_id: str,
+        checkpoint_path: Optional[Path] = None,
+        commit_message: Optional[str] = None,
+        overwrite: bool = False,
+        token: Optional[str] = None,
+    ) -> str:
+        """
+        Publish this experiment's model to HuggingFace Hub.
+
+        Creates a private repository if it doesn't exist. Repositories can be
+        made public manually on huggingface.co after curation.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID in format "username/repo-name"
+        checkpoint_path : Optional[Path]
+            Checkpoint to publish. If None, uses best checkpoint.
+        commit_message : Optional[str]
+            Custom commit message (default: auto-generated)
+        overwrite : bool
+            Explicitly confirm overwriting existing model (default: False)
+        token : Optional[str]
+            HuggingFace API token (default: uses `huggingface-cli login` token)
+
+        Returns
+        -------
+        str
+            URL to the published model on HuggingFace Hub
+
+        Examples
+        --------
+        >>> manager = EvaluationManager("experiments/my_run")
+        >>> # First upload
+        >>> url = manager.publish_to_huggingface("shackett/napistu-sage-octopus")
+        >>> # Update same repo
+        >>> url = manager.publish_to_huggingface("shackett/napistu-sage-octopus", overwrite=True)
+        """
+        from napistu_torch.ml.hugging_face import HuggingFacePublisher
+
+        # Use best checkpoint if not specified
+        if checkpoint_path is None:
+            checkpoint_path = self.best_checkpoint_path
+            if checkpoint_path is None:
+                raise ValueError(
+                    "No checkpoint path provided and no best checkpoint found. "
+                    "Specify checkpoint_path explicitly."
+                )
+
+        if commit_message is None:
+            commit_message = self.get_summary_string()
+
+        # Initialize publisher
+        publisher = HuggingFacePublisher(token=token)
+
+        # Publish
+        return publisher.publish_model(
+            repo_id=repo_id,
+            checkpoint_path=checkpoint_path,
+            manifest=self.manifest,
+            commit_message=commit_message,
+            overwrite=overwrite,
+        )
 
 
 # public functions

@@ -6,6 +6,7 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from napistu_torch.constants import (
+    ANONYMIZATION_PLACEHOLDER_DEFAULT,
     DATA_CONFIG,
     DATA_CONFIG_DEFAULTS,
     EXPERIMENT_CONFIG,
@@ -102,6 +103,34 @@ class ModelConfig(BaseModel):
         if v & (v - 1) != 0:
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
+
+    def get_architecture_string(self) -> str:
+        """
+        Generate a string representation of the model architecture.
+
+        Returns the encoder, head, hidden channels, and number of layers in the format
+        "encoder-head_h{hidden_channels}_l{num_layers}".
+
+        Returns
+        -------
+        str
+            Architecture string like "sage-dot_product_h128_l3" or "graph_conv-mlp_h64_l2"
+
+        Examples
+        --------
+        >>> config = ModelConfig(encoder="sage", head="dot_product", hidden_channels=128, num_layers=3)
+        >>> config.get_architecture_string()
+        'sage-dot_product_h128_l3'
+
+        >>> config = ModelConfig(encoder="graph_conv", head="mlp", hidden_channels=64, num_layers=2)
+        >>> config.get_architecture_string()
+        'graph_conv-mlp_h64_l2'
+        """
+        arch_str = self.encoder
+        if self.head:
+            arch_str += f"-{self.head}"
+        arch_str += f"_h{self.hidden_channels}_l{self.num_layers}"
+        return arch_str
 
     model_config = ConfigDict(extra="forbid")  # Catch typos
 
@@ -353,7 +382,86 @@ class ExperimentConfig(BaseModel):
 
     def get_experiment_name(self) -> str:
         """Generate a descriptive experiment name based on model and task configs"""
-        return f"{self.model.encoder}_h{self.model.hidden_channels}_l{self.model.num_layers}_{self.task.task}"
+        arch_str = self.model.get_architecture_string()
+        return f"{arch_str}_{self.task.task}"
+
+    def anonymize(
+        self,
+        inplace: bool = False,
+        placeholder: str = ANONYMIZATION_PLACEHOLDER_DEFAULT,
+    ) -> "ExperimentConfig":
+        """
+        Create an anonymized copy of the config with all Path-like values masked.
+
+        Replaces all Path objects and absolute path strings with a placeholder string.
+        Useful for sharing configs without exposing local file paths.
+
+        Parameters
+        ----------
+        inplace : bool, default=False
+            If True, modifies the config in place. If False, returns a new config.
+        placeholder : str, default="[REDACTED]"
+            String to use as placeholder for masked paths.
+
+        Returns
+        -------
+        ExperimentConfig
+            Anonymized config (new instance if inplace=False, self if inplace=True)
+
+        Examples
+        --------
+        >>> config = ExperimentConfig(
+        ...     output_dir=Path("/Users/me/experiments/run1"),
+        ...     data=DataConfig(
+        ...         sbml_dfs_path=Path("/Users/me/data/sbml.pkl"),
+        ...         napistu_graph_path=Path("/Users/me/data/graph.pkl")
+        ...     )
+        ... )
+        >>> anonymized = config.anonymize()
+        >>> str(anonymized.output_dir)
+        '[REDACTED]'
+        >>> str(anonymized.data.sbml_dfs_path)
+        '[REDACTED]'
+        """
+        # Convert to dict for processing (mode="json" converts Paths to strings)
+        data = self.model_dump(mode="json")
+
+        def mask_paths(obj):
+            """Recursively mask Path objects and absolute path strings."""
+            if isinstance(obj, dict):
+                return {k: mask_paths(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [mask_paths(item) for item in obj]
+            elif isinstance(obj, str):
+                # Check if string looks like an absolute path
+                # Paths typically start with / (Unix) or C:\ (Windows) or ~
+                if obj.startswith(("/", "~")) or (len(obj) > 1 and obj[1] == ":"):
+                    try:
+                        # Try to create a Path to verify it's a valid absolute path
+                        path = Path(obj)
+                        if path.is_absolute() or obj.startswith("~"):
+                            return placeholder
+                    except (ValueError, OSError):
+                        # Not a valid path, keep as-is
+                        pass
+                return obj
+            else:
+                return obj
+
+        # Mask all paths
+        anonymized_data = mask_paths(data)
+
+        # Create new config from anonymized data
+        # The placeholder strings will be converted to Path objects by Pydantic validation
+        anonymized_config = self.model_validate(anonymized_data)
+
+        if inplace:
+            # Update self with anonymized values
+            for field_name in self.__class__.model_fields:
+                setattr(self, field_name, getattr(anonymized_config, field_name))
+            return self
+        else:
+            return anonymized_config
 
 
 class RunManifest(BaseModel):
