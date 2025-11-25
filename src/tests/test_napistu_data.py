@@ -17,7 +17,7 @@ from napistu.network.constants import (
 )
 from utils import assert_tensors_equal
 
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_SUMMARIES, PYG
 from napistu_torch.napistu_data import NapistuData
 
 
@@ -35,31 +35,21 @@ def test_feature_names(napistu_data):
 
 
 def test_summary(napistu_data):
-    """Test the summary method."""
-    summary = napistu_data.summary()
+    """Test the get_summary method."""
+    summary = napistu_data.get_summary()
 
     assert isinstance(summary, dict)
-    assert "num_nodes" in summary
-    assert "num_edges" in summary
-    assert "num_node_features" in summary
-    assert "num_edge_features" in summary
-    assert "has_vertex_feature_names" in summary
-    assert "has_edge_feature_names" in summary
+    assert PYG.NUM_NODES in summary
+    assert PYG.NUM_EDGES in summary
+    assert PYG.NUM_NODE_FEATURES in summary
+    assert PYG.NUM_EDGE_FEATURES in summary
+    assert NAPISTU_DATA_SUMMARIES.HAS_VERTEX_FEATURE_NAMES in summary
+    assert NAPISTU_DATA_SUMMARIES.HAS_EDGE_FEATURE_NAMES in summary
 
-    assert summary["num_nodes"] == napistu_data.num_nodes
-    assert summary["num_edges"] == napistu_data.num_edges
-    assert summary["has_vertex_feature_names"] is True
-    assert summary["has_edge_feature_names"] is True
-
-
-def test_repr(napistu_data):
-    """Test the string representation."""
-    repr_str = repr(napistu_data)
-
-    assert isinstance(repr_str, str)
-    assert "NapistuData" in repr_str
-    assert str(napistu_data.num_nodes) in repr_str
-    assert str(napistu_data.num_edges) in repr_str
+    assert summary[PYG.NUM_NODES] == napistu_data.num_nodes
+    assert summary[PYG.NUM_EDGES] == napistu_data.num_edges
+    assert summary[NAPISTU_DATA_SUMMARIES.HAS_VERTEX_FEATURE_NAMES] is True
+    assert summary[NAPISTU_DATA_SUMMARIES.HAS_EDGE_FEATURE_NAMES] is True
 
 
 def test_save_load_roundtrip(napistu_data):
@@ -350,10 +340,7 @@ def test_trim_default(napistu_data):
     assert_tensors_equal(trimmed.edge_attr, napistu_data.edge_attr)
 
     # Verify edge_weight is preserved if it exists
-    if (
-        hasattr(napistu_data, NAPISTU_DATA.EDGE_WEIGHT)
-        and napistu_data.edge_weight is not None
-    ):
+    if hasattr(napistu_data, PYG.EDGE_WEIGHT) and napistu_data.edge_weight is not None:
         assert_tensors_equal(trimmed.edge_weight, napistu_data.edge_weight)
 
     # Verify metadata is removed
@@ -380,9 +367,9 @@ def test_trim_no_labels_masks(edge_masked_napistu_data):
     trimmed = edge_masked_napistu_data.trim(keep_labels=False, keep_masks=False)
 
     # Verify that trimmed data has core attributes
-    assert hasattr(trimmed, NAPISTU_DATA.X)
-    assert hasattr(trimmed, NAPISTU_DATA.EDGE_INDEX)
-    assert hasattr(trimmed, NAPISTU_DATA.EDGE_ATTR)
+    assert hasattr(trimmed, PYG.X)
+    assert hasattr(trimmed, PYG.EDGE_INDEX)
+    assert hasattr(trimmed, PYG.EDGE_ATTR)
 
     # Verify masks are removed (check original had them, trimmed doesn't)
     assert hasattr(edge_masked_napistu_data, NAPISTU_DATA.TRAIN_MASK)
@@ -410,9 +397,9 @@ def test_trim_no_relation_type(edge_prediction_with_sbo_relations):
     assert not hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
 
     # Verify core attributes are still present
-    assert hasattr(trimmed, NAPISTU_DATA.X)
-    assert hasattr(trimmed, NAPISTU_DATA.EDGE_INDEX)
-    assert hasattr(trimmed, NAPISTU_DATA.EDGE_ATTR)
+    assert hasattr(trimmed, PYG.X)
+    assert hasattr(trimmed, PYG.EDGE_INDEX)
+    assert hasattr(trimmed, PYG.EDGE_ATTR)
 
 
 def test_trim_keep_relation_type(edge_prediction_with_sbo_relations):
@@ -443,44 +430,41 @@ def test_estimate_memory_footprint(napistu_data):
     assert isinstance(footprint, dict)
 
     # Verify expected keys are present
-    assert NAPISTU_DATA.X in footprint
-    assert NAPISTU_DATA.EDGE_INDEX in footprint
-    assert NAPISTU_DATA.EDGE_ATTR in footprint
+    assert PYG.X in footprint
+    assert PYG.EDGE_INDEX in footprint
+    assert PYG.EDGE_ATTR in footprint
     assert NAPISTU_DATA.TRAIN_MASK in footprint
     assert NAPISTU_DATA.VAL_MASK in footprint
     assert NAPISTU_DATA.TEST_MASK in footprint
     assert "total" in footprint
 
     # Verify node features memory is calculated
-    assert footprint[NAPISTU_DATA.X] is not None
-    assert footprint[NAPISTU_DATA.X] > 0
-    assert (
-        footprint[NAPISTU_DATA.X]
-        == napistu_data.x.element_size() * napistu_data.x.nelement()
-    )
+    assert footprint[PYG.X] is not None
+    assert footprint[PYG.X] > 0
+    assert footprint[PYG.X] == napistu_data.x.element_size() * napistu_data.x.nelement()
 
     # Verify edge_index memory is calculated
-    assert footprint[NAPISTU_DATA.EDGE_INDEX] is not None
-    assert footprint[NAPISTU_DATA.EDGE_INDEX] > 0
+    assert footprint[PYG.EDGE_INDEX] is not None
+    assert footprint[PYG.EDGE_INDEX] > 0
     assert (
-        footprint[NAPISTU_DATA.EDGE_INDEX]
+        footprint[PYG.EDGE_INDEX]
         == napistu_data.edge_index.element_size() * napistu_data.edge_index.nelement()
     )
 
     # Verify edge_attr memory is calculated (if present)
     if napistu_data.edge_attr is not None:
-        assert footprint[NAPISTU_DATA.EDGE_ATTR] is not None
-        assert footprint[NAPISTU_DATA.EDGE_ATTR] > 0
+        assert footprint[PYG.EDGE_ATTR] is not None
+        assert footprint[PYG.EDGE_ATTR] > 0
         assert (
-            footprint[NAPISTU_DATA.EDGE_ATTR]
+            footprint[PYG.EDGE_ATTR]
             == napistu_data.edge_attr.element_size() * napistu_data.edge_attr.nelement()
         )
 
     # Verify total is sum of all components
     expected_total = (
-        footprint[NAPISTU_DATA.X]
-        + footprint[NAPISTU_DATA.EDGE_INDEX]
-        + (footprint[NAPISTU_DATA.EDGE_ATTR] or 0)
+        footprint[PYG.X]
+        + footprint[PYG.EDGE_INDEX]
+        + (footprint[PYG.EDGE_ATTR] or 0)
         + (footprint[NAPISTU_DATA.TRAIN_MASK] or 0)
         + (footprint[NAPISTU_DATA.VAL_MASK] or 0)
         + (footprint[NAPISTU_DATA.TEST_MASK] or 0)

@@ -5,7 +5,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import NAPISTU_DATA, PYG
 from napistu_torch.labels.create import _prepare_discrete_labels
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.load.constants import (
@@ -184,7 +184,7 @@ class EdgePredictionTask(BaseTask):
 
             if self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER:
                 # Learnable edge encoder - pass edge attributes for supervision edges
-                edge_attr = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+                edge_attr = getattr(data, PYG.EDGE_ATTR, None)
                 if edge_attr is not None:
                     edge_data = edge_attr[train_indices]
                 else:

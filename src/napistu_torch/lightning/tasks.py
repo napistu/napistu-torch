@@ -12,7 +12,7 @@ from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import PYG
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 from napistu_torch.napistu_data import NapistuData
@@ -144,7 +144,7 @@ class EdgePredictionLightning(BaseLightningTask):
                 self.task.encoder.edge_weighting_type
                 == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
             ):
-                edge_data = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+                edge_data = getattr(data, PYG.EDGE_ATTR, None)
             elif (
                 self.task.encoder.edge_weighting_type
                 == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS
@@ -191,7 +191,7 @@ class EdgePredictionLightning(BaseLightningTask):
 
         self.eval()
         data = data.to(self.device)
-        edge_attr = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+        edge_attr = getattr(data, PYG.EDGE_ATTR, None)
         if edge_attr is None:
             raise ValueError(
                 "NapistuData.edge_attr is required to compute learned edge weights."

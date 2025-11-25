@@ -25,18 +25,26 @@ ARTIFACT_TYPES = SimpleNamespace(
 
 VALID_ARTIFACT_TYPES = list(ARTIFACT_TYPES.__dict__.values())
 
-NAPISTU_DATA = SimpleNamespace(
-    EDGE_ATTR="edge_attr",
-    EDGE_FEATURE_NAMES="edge_feature_names",
-    EDGE_FEATURE_NAME_ALIASES="edge_feature_name_aliases",
+PYG = SimpleNamespace(
+    X="x",
+    Y="y",
     EDGE_INDEX="edge_index",
     EDGE_WEIGHT="edge_weight",
+    EDGE_ATTR="edge_attr",
+    # properites
+    NUM_NODES="num_nodes",
+    NUM_EDGES="num_edges",
+    NUM_NODE_FEATURES="num_node_features",
+    NUM_EDGE_FEATURES="num_edge_features",
+)
+
+NAPISTU_DATA = SimpleNamespace(
+    EDGE_FEATURE_NAMES="edge_feature_names",
+    EDGE_FEATURE_NAME_ALIASES="edge_feature_name_aliases",
     NG_EDGE_NAMES="ng_edge_names",
     NG_VERTEX_NAMES="ng_vertex_names",
     VERTEX_FEATURE_NAMES="vertex_feature_names",
     VERTEX_FEATURE_NAME_ALIASES="vertex_feature_name_aliases",
-    X="x",
-    Y="y",
     NAME="name",
     SPLITTING_STRATEGY="splitting_strategy",
     LABELS="labels",
@@ -55,6 +63,21 @@ NAPISTU_DATA_TRIM_ARGS = SimpleNamespace(
     KEEP_LABELS="keep_labels",
     KEEP_MASKS="keep_masks",
     KEEP_RELATION_TYPE="keep_relation_type",
+)
+
+NAPISTU_DATA_SUMMARIES = SimpleNamespace(
+    HAS_VERTEX_FEATURE_NAMES="has_vertex_feature_names",
+    HAS_EDGE_FEATURE_NAMES="has_edge_feature_names",
+    HAS_EDGE_WEIGHTS="has_edge_weights",
+    HAS_NG_VERTEX_NAMES="has_ng_vertex_names",
+    HAS_NG_EDGE_NAMES="has_ng_edge_names",
+    HAS_SPLITTING_STRATEGY="has_splitting_strategy",
+    HAS_LABELING_MANAGER="has_labeling_manager",
+    HAS_RELATION_MANAGER="has_relation_manager",
+    NUM_UNIQUE_RELATIONS="num_unique_relations",
+    NUM_TRAIN_EDGES="num_train_edges",
+    NUM_VAL_EDGES="num_val_edges",
+    NUM_TEST_EDGES="num_test_edges",
 )
 
 # VertexTensor
