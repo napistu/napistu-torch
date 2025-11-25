@@ -167,7 +167,7 @@ def publish(
     "--checkpoint",
     type=str,
     default="last",
-    help="Checkpoint name or path. Can be 'last' (default), a checkpoint filename (e.g., 'best-epoch=50-val_auc=0.85.ckpt'), or a full path.",
+    help="Checkpoint name or path. Can be 'last' (default), 'best' (highest validation AUC), a checkpoint filename (e.g., 'best-epoch=50-val_auc=0.85.ckpt'), or a full path.",
 )
 @verbosity_option
 def resume(out_dir: Path, checkpoint: str, verbosity: str):
@@ -206,6 +206,8 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
         evaluation_manager = EvaluationManager(out_dir)
 
         # Determine checkpoint to use
+        if checkpoint == "best":
+            checkpoint = None  # default behavior is to use the best checkpoint
         try:
             checkpoint_path = evaluation_manager._resolve_checkpoint_path(checkpoint)
         except ValueError as e:
@@ -223,8 +225,10 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
             evaluation_manager, mode=TRAINER_MODES.TRAIN, logger=logger
         )
 
-        # Continue training
-        fit_model(experiment_dict, resume_from=checkpoint_path, logger=logger)
+        # Continue training (preserve best checkpoint for early stopping)
+        fit_model(
+            experiment_dict, resume_from=checkpoint_path, keep_best=True, logger=logger
+        )
 
         logger.info("Training resumed and completed successfully! 🎉")
 
@@ -410,7 +414,7 @@ def train(
         experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
         logger.info(f"Saved run manifest to {manifest_path}")
 
-        fit_model(experiment_dict, resume_from=None, logger=logger)
+        fit_model(experiment_dict, resume_from=None, keep_best=True, logger=logger)
 
         logger.info("Training completed successfully! 🎉")
 

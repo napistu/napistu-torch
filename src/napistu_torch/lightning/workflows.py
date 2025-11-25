@@ -19,7 +19,10 @@ from napistu_torch.constants import (
     WANDB_CONFIG,
 )
 from napistu_torch.evaluation.constants import EVALUATION_MANAGER
-from napistu_torch.evaluation.evaluation_manager import EvaluationManager
+from napistu_torch.evaluation.evaluation_manager import (
+    EvaluationManager,
+    find_best_checkpoint,
+)
 from napistu_torch.lightning.constants import (
     EXPERIMENT_DICT,
     TRAINER_MODES,
@@ -126,8 +129,9 @@ class ExperimentDict(BaseModel):
 def fit_model(
     experiment_dict: Dict[str, Any],
     resume_from: Optional[Path] = None,
-    max_corruption_restarts: int = 10,
-    logger: Optional = logger,
+    max_corruption_restarts: int = 30,
+    keep_best: bool = False,
+    logger: Optional[logging.Logger] = logger,
 ) -> NapistuTrainer:
     """
     Train a model using the provided experiment dictionary.
@@ -142,9 +146,12 @@ def fit_model(
         - trainer : NapistuTrainer
         - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
     resume_from : Path, optional
-        Path to a checkpoint to resume from
+        Path to a checkpoint to resume from (if None, starts from scratch)
     max_corruption_restarts : int, default=10
         Maximum number of times to restart after corruption detection
+    keep_best : bool, default=False
+        Whether to retain the best checkpoint (highest validation AUC). This is helpful if training was interupted and we want to
+        resume from 'last' while preserving the best checkpoint for early stopping.
     logger : logging.Logger, optional
         Logger instance to use
 
@@ -170,7 +177,7 @@ def fit_model(
     )
 
     _cleanup_stale_checkpoints(
-        checkpoint_dir, keep_checkpoint=resume_from, logger=logger
+        checkpoint_dir, keep_checkpoint=resume_from, keep_best=keep_best, logger=logger
     )
 
     restart_count = 0
@@ -530,6 +537,7 @@ def test(
 def _cleanup_stale_checkpoints(
     checkpoint_dir: Path,
     keep_checkpoint: Optional[Path] = None,
+    keep_best: bool = False,
     logger: logging.Logger = logger,
 ) -> None:
     """
@@ -543,6 +551,9 @@ def _cleanup_stale_checkpoints(
         Directory containing checkpoints
     keep_checkpoint : Path, optional
         Specific checkpoint to preserve (e.g., if explicitly resuming from it)
+    keep_best : bool, default=False
+        Whether to retain the best checkpoint (highest validation AUC). This is helpful if keep_checkpoint is 'last' and we
+        also want to retain the best checkpoint for early stopping.
     logger : logging.Logger
         Logger instance
     """
@@ -551,17 +562,35 @@ def _cleanup_stale_checkpoints(
         return
 
     checkpoint_files = list(checkpoint_dir.glob("*.ckpt"))
-
     if not checkpoint_files:
         logger.info("No existing checkpoints to clean up")
         return
 
     # Determine which checkpoint to keep (if any)
-    keep_path = keep_checkpoint.resolve() if keep_checkpoint else None
+    current_checkpoint_paths = []
+    if keep_checkpoint:
+        current_checkpoint_paths.append(keep_checkpoint.resolve())
+
+    if keep_best:
+        best_checkpoint_result = find_best_checkpoint(checkpoint_dir)
+        if best_checkpoint_result is not None:
+            best_checkpoint, _ = best_checkpoint_result
+            best_checkpoint_resolved = best_checkpoint.resolve()
+            if best_checkpoint_resolved not in current_checkpoint_paths:
+                current_checkpoint_paths.append(best_checkpoint_resolved)
+                logger.info(f"Preserving best checkpoint: {best_checkpoint.name}")
+            else:
+                logger.debug(
+                    f"Best checkpoint already preserved: {best_checkpoint.name}"
+                )
+        else:
+            logger.warning(
+                f"No best checkpoint found in {checkpoint_dir}; ignoring `keep_best` = True"
+            )
 
     removed_count = 0
     for ckpt_file in checkpoint_files:
-        if keep_path and ckpt_file.resolve() == keep_path:
+        if ckpt_file.resolve() in current_checkpoint_paths:
             logger.info(f"Preserving checkpoint for resume: {ckpt_file.name}")
             continue
 
