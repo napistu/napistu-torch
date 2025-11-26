@@ -8,9 +8,12 @@ import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import Callback
 
+from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.lightning.constants import NAPISTU_DATA_MODULE
 from napistu_torch.load.checkpoints import CheckpointHyperparameters
+from napistu_torch.load.constants import CHECKPOINT_HYPERPARAMETERS
 from napistu_torch.ml.constants import TRAINING
-from napistu_torch.utils.environment_info import EnvironmentInfo
+from napistu_torch.models.constants import MODEL_DEFS
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +145,8 @@ class ModelMetadataCallback(Callback):
         hparams_dict = CheckpointHyperparameters.from_task_and_data(
             task=pl_module.task,
             napistu_data=napistu_data,
-            training_config=pl_module.hparams.get("config"),
-            environment=EnvironmentInfo.from_current_env(),
+            training_config=pl_module.hparams.get(CHECKPOINT_HYPERPARAMETERS.CONFIG),
+            capture_environment=True,
         )
 
         # Update pl_module.hparams
@@ -153,9 +156,9 @@ class ModelMetadataCallback(Callback):
 
         logger.info(
             f"Saved metadata: "
-            f"encoder_type={hparams_dict['model'].get('encoder', {}).get('encoder_type')}, "
-            f"head_type={hparams_dict['model'].get('head', {}).get('head_type')}, "
-            f"data_name={hparams_dict['data'].get('name')}"
+            f"encoder_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.ENCODER, {}).get(MODEL_DEFS.ENCODER_TYPE)}, "
+            f"head_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.HEAD, {}).get(MODEL_DEFS.HEAD_TYPE)}, "
+            f"data_name={hparams_dict[CHECKPOINT_HYPERPARAMETERS.DATA].get(NAPISTU_DATA.NAME)}"
         )
 
     def _get_training_data(self, datamodule):
@@ -172,7 +175,7 @@ class ModelMetadataCallback(Callback):
         NapistuData or None
             Training data if found, None otherwise
         """
-        if hasattr(datamodule, "napistu_data"):
+        if hasattr(datamodule, NAPISTU_DATA_MODULE.NAPISTU_DATA):
             napistu_data = datamodule.napistu_data
             # Inductive: dict with train/val/test
             if isinstance(napistu_data, dict):
@@ -181,9 +184,9 @@ class ModelMetadataCallback(Callback):
             return napistu_data
 
         # Fallback after setup()
-        if hasattr(datamodule, "train_data"):
+        if hasattr(datamodule, NAPISTU_DATA_MODULE.TRAIN_DATA):
             return datamodule.train_data
-        if hasattr(datamodule, "data"):
+        if hasattr(datamodule, NAPISTU_DATA_MODULE.DATA):
             return datamodule.data
 
         return None

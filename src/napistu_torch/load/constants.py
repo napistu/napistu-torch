@@ -162,3 +162,20 @@ IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES = {
 }
 
 IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES = {}
+
+# checkpoints
+
+CHECKPOINT_STRUCTURE = SimpleNamespace(
+    STATE_DICT="state_dict",
+    HYPER_PARAMETERS="hyper_parameters",
+    EPOCH="epoch",
+    GLOBAL_STEP="global_step",
+    PYTORCH_LIGHTNING_VERSION="pytorch_lightning_version",
+)
+
+CHECKPOINT_HYPERPARAMETERS = SimpleNamespace(
+    CONFIG="config",
+    MODEL="model",
+    DATA="data",
+    ENVIRONMENT="environment",
+)

@@ -1,10 +1,11 @@
 """Tests for EnvironmentInfo utility."""
 
+from napistu_torch.utils.constants import KEY_PACKAGES
 from napistu_torch.utils.environment_info import EnvironmentInfo
 
 
 def test_from_current_env_to_summary_dict():
-    """Test that from_current_env -> to_summary_dict runs successfully."""
+    """Test that from_current_env -> get_summary runs successfully."""
     # Create EnvironmentInfo from current environment
     env_info = EnvironmentInfo.from_current_env()
 
@@ -16,12 +17,12 @@ def test_from_current_env_to_summary_dict():
     assert env_info.platform_release is not None
 
     # Convert to summary dictionary
-    summary_dict = env_info.to_summary_dict()
+    summary_dict = env_info.get_summary()
 
     # Verify summary_dict is a dictionary
     assert isinstance(summary_dict, dict)
 
-    # Verify required fields are present
+    # Verify required fields are present (get_summary uses simplified keys)
     assert "python" in summary_dict
     assert "platform" in summary_dict
 
@@ -37,26 +38,34 @@ def test_from_current_env_to_summary_dict():
     assert env_info.platform_system in platform_value
     assert env_info.platform_release in platform_value
 
-    # Verify optional packages are included if present
+    # Verify packages are included if they have versions (get_summary only includes non-None)
     if env_info.napistu_version:
-        assert "napistu" in summary_dict
-        assert summary_dict["napistu"] == env_info.napistu_version
+        assert KEY_PACKAGES.NAPISTU in summary_dict
+        assert summary_dict[KEY_PACKAGES.NAPISTU] == env_info.napistu_version
 
     if env_info.napistu_torch_version:
-        assert "napistu-torch" in summary_dict
-        assert summary_dict["napistu-torch"] == env_info.napistu_torch_version
+        assert KEY_PACKAGES.NAPISTU_TORCH in summary_dict
+        assert (
+            summary_dict[KEY_PACKAGES.NAPISTU_TORCH] == env_info.napistu_torch_version
+        )
 
     if env_info.torch_version:
-        assert "torch" in summary_dict
-        assert summary_dict["torch"] == env_info.torch_version
+        assert KEY_PACKAGES.TORCH in summary_dict
+        assert summary_dict[KEY_PACKAGES.TORCH] == env_info.torch_version
 
     if env_info.torch_geometric_version:
-        assert "torch_geometric" in summary_dict
-        assert summary_dict["torch_geometric"] == env_info.torch_geometric_version
+        assert KEY_PACKAGES.TORCH_GEOMETRIC in summary_dict
+        assert (
+            summary_dict[KEY_PACKAGES.TORCH_GEOMETRIC]
+            == env_info.torch_geometric_version
+        )
 
     if env_info.pytorch_lightning_version:
-        assert "pytorch_lightning" in summary_dict
-        assert summary_dict["pytorch_lightning"] == env_info.pytorch_lightning_version
+        assert KEY_PACKAGES.PYTORCH_LIGHTNING in summary_dict
+        assert (
+            summary_dict[KEY_PACKAGES.PYTORCH_LIGHTNING]
+            == env_info.pytorch_lightning_version
+        )
 
 
 def test_from_current_env_with_extra_packages():
@@ -79,7 +88,7 @@ def test_from_current_env_with_extra_packages():
     assert "nonexistent_package" not in env_info.extra_packages
 
     # Convert to summary dict
-    summary_dict = env_info.to_summary_dict()
+    summary_dict = env_info.get_summary()
 
     # Extra packages should appear in summary dict
     for package, version in env_info.extra_packages.items():

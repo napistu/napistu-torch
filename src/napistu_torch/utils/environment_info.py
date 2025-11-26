@@ -116,7 +116,7 @@ class EnvironmentInfo(BaseModel):
             extra_packages=extra_package_versions,
         )
 
-    def to_summary_dict(self) -> Dict[str, str]:
+    def get_summary(self) -> Dict[str, str]:
         """
         Convert to a flat dictionary for display.
 

@@ -11,6 +11,10 @@ from typing import Any, Dict, Optional, Union
 import torch
 from pydantic import BaseModel, Field, field_validator
 
+from napistu_torch.load.constants import (
+    CHECKPOINT_HYPERPARAMETERS,
+    CHECKPOINT_STRUCTURE,
+)
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.utils.environment_info import EnvironmentInfo
@@ -165,11 +169,102 @@ class CheckpointHyperparameters(BaseModel):
     config: Any = Field(..., description="Training configuration (ExperimentConfig)")
     model: ModelMetadata = Field(..., description="Model architecture metadata")
     data: DataMetadata = Field(..., description="Training data metadata")
-    environment: EnvironmentInfo = Field(..., description="Environment information")
+    environment: Optional[EnvironmentInfo] = Field(
+        None, description="Python environment information for reproducibility"
+    )
 
     model_config = {
         "extra": "allow"
     }  # Allow additional hparams like wandb config, etc.
+
+    @classmethod
+    def from_task_and_data(
+        cls,
+        task: Any,
+        napistu_data: NapistuData,
+        training_config: Optional[Any] = None,
+        capture_environment: bool = True,
+        extra_packages: Optional[list[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Create hyperparameters dict from task and data, with validation.
+
+        This is used by ModelMetadataCallback to build the hyperparameters
+        dict that will be saved to the checkpoint. The dict is validated
+        against the CheckpointHyperparameters schema before returning.
+
+        Parameters
+        ----------
+        task : Any
+            Task object with get_summary() method that returns model metadata
+        napistu_data : NapistuData
+            NapistuData object to extract data metadata from
+        training_config : Optional[Any], optional
+            Training configuration object (usually set by Lightning's
+            save_hyperparameters()), by default None
+        capture_environment : bool, optional
+            Whether to capture Python environment info, by default True
+        extra_packages : Optional[list[str]], optional
+            Additional package names to capture versions for, by default None
+
+        Returns
+        -------
+        Dict[str, Any]
+            Validated hyperparameters dictionary ready to be saved to checkpoint
+
+        Raises
+        ------
+        ValidationError
+            If the constructed hyperparameters don't match the expected schema
+        AttributeError
+            If task doesn't have get_summary() method
+
+        Examples
+        --------
+        >>> # In ModelMetadataCallback
+        >>> hparams_dict = CheckpointHyperparameters.from_task_and_data(
+        ...     task=pl_module.task,
+        ...     napistu_data=napistu_data,
+        ...     training_config=pl_module.hparams.get('config'),
+        ...     extra_packages=['wandb', 'numpy']
+        ... )
+        >>> pl_module.hparams.update(hparams_dict)
+        """
+        # Get model metadata from task
+        if not hasattr(task, "get_summary"):
+            raise AttributeError(
+                f"Task object must have get_summary() method, got {type(task)}"
+            )
+
+        model_metadata = task.get_summary()
+        data_metadata = napistu_data.get_summary(simplify=True)
+
+        # Build hyperparameters dict
+        hparams = {
+            CHECKPOINT_HYPERPARAMETERS.MODEL: model_metadata,
+            CHECKPOINT_HYPERPARAMETERS.DATA: data_metadata,
+        }
+
+        # Add environment info
+        if capture_environment:
+            env_info = EnvironmentInfo.from_current_env(extra_packages=extra_packages)
+            hparams[CHECKPOINT_HYPERPARAMETERS.ENVIRONMENT] = env_info.model_dump()
+
+        # Add config if provided (will be added by Lightning's save_hyperparameters)
+        if training_config is not None:
+            hparams[CHECKPOINT_HYPERPARAMETERS.CONFIG] = training_config
+
+        # Validate the structure
+        if training_config is not None:
+            # Full validation
+            cls.model_validate(hparams)
+        else:
+            # Partial validation - just check model and data
+            # config will be added later by Lightning
+            ModelMetadata.model_validate(model_metadata)
+            DataMetadata.model_validate(data_metadata)
+
+        return hparams
 
 
 class CheckpointStructure(BaseModel):
@@ -191,7 +286,7 @@ class CheckpointStructure(BaseModel):
 
     model_config = {"extra": "allow"}  # Allow other Lightning fields
 
-    @field_validator("state_dict")
+    @field_validator(CHECKPOINT_STRUCTURE.STATE_DICT)
     @classmethod
     def validate_state_dict_not_empty(cls, v):
         """Ensure state_dict is not empty."""
@@ -245,7 +340,7 @@ class Checkpoint:
 
         # Store original dict for state_dict access
         self.checkpoint = checkpoint_dict
-        self.state_dict = checkpoint_dict["state_dict"]
+        self.state_dict = checkpoint_dict[CHECKPOINT_STRUCTURE.STATE_DICT]
 
         # Expose validated metadata as properties
         self.hyper_parameters = self.validated_checkpoint.hyper_parameters
@@ -376,14 +471,9 @@ class Checkpoint:
         checkpoint_summary = self.get_data_summary()
 
         # Get current data summary (simplified, matching checkpoint format)
-        current_summary = _get_simplified_data_summary(napistu_data)
+        current_summary = napistu_data.get_summary(simplify=True)
 
-        if strict:
-            # Strict mode: all fields must match
-            _validate_strict_match(checkpoint_summary, current_summary)
-        else:
-            # Non-strict: only validate critical dimensions
-            _validate_critical_dimensions(checkpoint_summary, current_summary)
+        _validate_same_data(checkpoint_summary, current_summary)
 
     def __repr__(self) -> str:
         """String representation of checkpoint."""
@@ -394,57 +484,14 @@ class Checkpoint:
         )
 
 
-# Helper functions (can be used by ModelMetadataCallback too)
+# private functions
 
 
-def _get_simplified_data_summary(napistu_data: NapistuData) -> Dict[str, Any]:
-    """
-    Get simplified summary matching checkpoint format.
-
-    This mirrors the summary saved during training (from ModelMetadataCallback).
-
-    Parameters
-    ----------
-    napistu_data : NapistuData
-        NapistuData object to summarize
-
-    Returns
-    -------
-    Dict[str, Any]
-        Simplified summary with only essential fields
-    """
-    # Use the NapistuData.get_summary(simplify=True) method
-    if hasattr(napistu_data, "get_summary"):
-        summary = napistu_data.get_summary(simplify=True)
-    else:
-        # Fallback for older NapistuData without get_summary
-        full_summary = napistu_data.summary()
-        essential_keys = [
-            "name",
-            "num_nodes",
-            "num_edges",
-            "num_node_features",
-            "num_edge_features",
-            "splitting_strategy",
-            "num_unique_relations",
-            "num_train_edges",
-            "num_val_edges",
-            "num_test_edges",
-        ]
-        summary = {
-            k: v
-            for k, v in full_summary.items()
-            if k in essential_keys and v is not None
-        }
-
-    return summary
-
-
-def _validate_strict_match(
+def _validate_same_data(
     checkpoint_summary: Dict[str, Any], current_summary: Dict[str, Any]
 ) -> None:
     """
-    Validate exact match between checkpoint and current data.
+    Validate that the data summary from the checkpoint and the current NapistuData are the same.
 
     Parameters
     ----------
@@ -486,74 +533,4 @@ def _validate_strict_match(
     if mismatches:
         raise ValueError("Data summary values don't match:\n" + "\n".join(mismatches))
 
-    logger.info("✓ Data validation passed (strict mode)")
-
-
-def _validate_critical_dimensions(
-    checkpoint_summary: Dict[str, Any], current_summary: Dict[str, Any]
-) -> None:
-    """
-    Validate only critical dimensions required for model compatibility.
-
-    Critical dimensions are those that affect model architecture:
-    - num_node_features (in_channels)
-    - num_edge_features (edge_in_channels)
-    - num_unique_relations (for relation-aware heads)
-
-    Parameters
-    ----------
-    checkpoint_summary : Dict[str, Any]
-        Data summary from checkpoint
-    current_summary : Dict[str, Any]
-        Data summary from current NapistuData
-
-    Raises
-    ------
-    ValueError
-        If critical dimensions don't match
-    """
-    critical_fields = ["num_node_features", "num_edge_features", "num_unique_relations"]
-
-    mismatches = []
-    for field in critical_fields:
-        # Skip if field not present in checkpoint (optional field)
-        if field not in checkpoint_summary:
-            continue
-
-        ckpt_val = checkpoint_summary[field]
-        curr_val = current_summary.get(field)
-
-        if curr_val is None:
-            mismatches.append(
-                f"  {field}: checkpoint={ckpt_val}, current=None (missing)"
-            )
-        elif ckpt_val != curr_val:
-            mismatches.append(f"  {field}: checkpoint={ckpt_val}, current={curr_val}")
-
-    if mismatches:
-        raise ValueError(
-            "Critical dimension mismatch - cannot load pretrained model:\n"
-            + "\n".join(mismatches)
-            + "\n\nThe pretrained model was trained on data with different "
-            "dimensions. You must either:\n"
-            "1. Use data with matching dimensions, or\n"
-            "2. Don't use the pretrained model"
-        )
-
-    # Log warnings for non-critical differences
-    non_critical = ["num_nodes", "num_edges", "num_train_edges"]
-    for field in non_critical:
-        if field not in checkpoint_summary or field not in current_summary:
-            continue
-
-        ckpt_val = checkpoint_summary[field]
-        curr_val = current_summary[field]
-
-        if ckpt_val != curr_val:
-            diff_pct = abs(curr_val - ckpt_val) / ckpt_val * 100
-            logger.warning(
-                f"⚠ {field} differs: checkpoint={ckpt_val:,}, "
-                f"current={curr_val:,} ({diff_pct:.1f}% difference)"
-            )
-
-    logger.info("✓ Critical dimension validation passed")
+    logger.info("✓ Data validation passed")

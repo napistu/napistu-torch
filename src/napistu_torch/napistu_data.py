@@ -1482,4 +1482,6 @@ class NapistuData(Data):
 
     def __repr__(self) -> str:
         """String representation of the NapistuData object."""
-        self.show_summary()
+        summary = self.get_summary()
+        summary_table = format_summary(summary)
+        return summary_table.to_string(index=False)
