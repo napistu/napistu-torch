@@ -12,7 +12,11 @@ from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
-from napistu_torch.constants import PYG
+from napistu_torch.constants import (
+    OPTIMIZERS,
+    PYG,
+    SCHEDULERS,
+)
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 from napistu_torch.napistu_data import NapistuData
@@ -39,7 +43,7 @@ class BaseLightningTask(pl.LightningModule):
         self.task = task
         self.config = config
 
-        # Save hyperparameters (logged to W&B automatically)
+        # Save hyperparameters (logged to W&B automatically) - this saves the config to self.hparams['config']
         self.save_hyperparameters(ignore=["task"])
 
     def configure_optimizers(self):
@@ -48,13 +52,13 @@ class BaseLightningTask(pl.LightningModule):
         params = self.task.parameters()
 
         # Create optimizer
-        if self.config.optimizer == "adam":
+        if self.config.optimizer == OPTIMIZERS.ADAM:
             optimizer = Adam(
                 params,
                 lr=self.config.lr,
                 weight_decay=self.config.weight_decay,
             )
-        elif self.config.optimizer == "adamw":
+        elif self.config.optimizer == OPTIMIZERS.ADAMW:
             optimizer = AdamW(
                 params,
                 lr=self.config.lr,
@@ -67,7 +71,7 @@ class BaseLightningTask(pl.LightningModule):
         if self.config.scheduler is None:
             return optimizer
 
-        elif self.config.scheduler == "plateau":
+        elif self.config.scheduler == SCHEDULERS.PLATEAU:
             scheduler = ReduceLROnPlateau(
                 optimizer,
                 mode="max",
@@ -83,7 +87,7 @@ class BaseLightningTask(pl.LightningModule):
                 },
             }
 
-        elif self.config.scheduler == "cosine":
+        elif self.config.scheduler == SCHEDULERS.COSINE:
             scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=self.trainer.max_epochs,
