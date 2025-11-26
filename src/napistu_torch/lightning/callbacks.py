@@ -2,12 +2,10 @@
 
 import logging
 import time
-from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import numpy as np
 import pytorch_lightning as pl
-import torch
 from pytorch_lightning.callbacks import Callback
 
 from napistu_torch.ml.constants import TRAINING
@@ -153,55 +151,3 @@ class ModelMetadataCallback(Callback):
             return datamodule.data
 
         return None
-
-
-def validate_callback_state(checkpoint_path: Optional[Path]) -> None:
-    """
-    Verify that checkpoint contains callback state for EarlyStopping.
-
-    Lightning automatically restores callback state when ckpt_path is passed to fit().
-    This function verifies the checkpoint has the expected state and logs warnings if not.
-
-    Parameters
-    ----------
-    checkpoint_path : Optional[Path]
-        Path to the checkpoint file to verify
-    """
-    if checkpoint_path is None or not checkpoint_path.exists():
-        return
-
-    try:
-        checkpoint = torch.load(checkpoint_path, weights_only=False, map_location="cpu")
-
-        # Check if checkpoint has callback states
-        if "callbacks" not in checkpoint:
-            logger.warning(
-                f"Checkpoint {checkpoint_path.name} does not contain callback states. "
-                f"EarlyStopping state will not be restored automatically."
-            )
-            return
-
-        # Check for EarlyStopping callback state
-        early_stopping_found = False
-        for callback_key in checkpoint["callbacks"].keys():
-            if "EarlyStopping" in callback_key:
-                early_stopping_found = True
-                callback_state = checkpoint["callbacks"][callback_key]
-                if "best_score" in callback_state:
-                    best_score = callback_state["best_score"]
-                    # best_score might be a tensor
-                    if hasattr(best_score, "item"):
-                        best_score = best_score.item()
-                    logger.info(
-                        f"Checkpoint contains EarlyStopping state: best_score={best_score:.4f}, "
-                        f"wait_count={callback_state.get('wait_count', 0)}"
-                    )
-                break
-
-        if not early_stopping_found:
-            logger.warning(
-                f"Checkpoint {checkpoint_path.name} does not contain EarlyStopping callback state. "
-                f"This may happen if the checkpoint was saved before EarlyStopping was added."
-            )
-    except Exception as e:
-        logger.debug(f"Could not verify checkpoint callback state: {e}")
