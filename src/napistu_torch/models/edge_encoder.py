@@ -50,8 +50,6 @@ class EdgeEncoder(nn.Module):
         Get the configuration dictionary for this edge encoder.
     forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
         Compute edge importance weights from edge features.
-    from_heuristic(cls, edge_dim: int, heuristic_weight_idx: int, hidden_dim: int = 32) -> "EdgeEncoder":
-        Create an EdgeEncoder initialized to use a heuristic weight column.
     get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
         Get the summary dictionary for this edge encoder.
 
@@ -63,12 +61,6 @@ class EdgeEncoder(nn.Module):
     >>> # Use with GNNEncoder
     >>> edge_weights = edge_encoder(edge_attr)  # [num_edges, 10] -> [num_edges]
     >>> z = gnn_encoder(x, edge_index, edge_weight=edge_weights)
-    >>>
-    >>> # Start from heuristic weights
-    >>> edge_encoder = EdgeEncoder.from_heuristic(
-    ...     edge_dim=10,
-    ...     heuristic_weight_idx=3  # Use column 3 as starting point
-    ... )
 
     Notes
     -----
@@ -132,3 +124,23 @@ class EdgeEncoder(nn.Module):
             Values in range [0, 1] where higher = more important
         """
         return self.net(edge_attr).squeeze(-1)
+
+    def get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
+        """
+        Get the summary dictionary for this edge encoder.
+
+        Returns a dict containing all initialization parameters needed
+        to reconstruct this edge encoder instance.
+        """
+
+        if to_model_config_names:
+            summary = {}
+            for k, v in self._init_args.items():
+                if k in EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES:
+                    summary[EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES[k]] = v
+                else:
+                    summary[k] = v
+        else:
+            summary = self.config
+
+        return summary
