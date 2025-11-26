@@ -57,10 +57,10 @@ def test_get_summary_with_edge_encoder(edge_masked_napistu_data):
     # Verify encoder config is present in nested structure
     encoder_summary = summary_dict[MODEL_DEFS.ENCODER]
     assert isinstance(encoder_summary, dict)
-    assert MODEL_DEFS.ENCODER_TYPE in encoder_summary
+    assert MODEL_DEFS.ENCODER in encoder_summary
     assert MODEL_DEFS.HIDDEN_CHANNELS in encoder_summary
     assert MODEL_DEFS.NUM_LAYERS in encoder_summary
-    assert encoder_summary[MODEL_DEFS.ENCODER_TYPE] == ENCODERS.GCN
+    assert encoder_summary[MODEL_DEFS.ENCODER] == ENCODERS.GCN
     assert encoder_summary[MODEL_DEFS.HIDDEN_CHANNELS] == 32
     assert encoder_summary[MODEL_DEFS.NUM_LAYERS] == 2
 

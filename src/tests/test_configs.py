@@ -26,6 +26,7 @@ from napistu_torch.constants import (
     METRICS,
     NAPISTU_DATA_TRIM_ARGS,
     OPTIMIZERS,
+    PRETRAINED_COMPONENT_SOURCES,
     SCHEDULERS,
     TASK_CONFIG,
     TRAINING_CONFIG,
@@ -299,6 +300,69 @@ class TestModelConfig:
         with pytest.raises(ValidationError) as exc_info:
             ModelConfig(invalid_field="value")
         assert "Extra inputs are not permitted" in str(exc_info.value)
+
+    def test_pretrained_model_validation(self):
+        """Test validation for use_pretrained_model settings."""
+        # Test that use_pretrained_model=False (default) doesn't require fields
+        config = ModelConfig(use_pretrained_model=False)
+        assert config.use_pretrained_model is False
+        assert config.pretrained_model_source is None
+        assert config.pretrained_model_path is None
+
+        # Test that use_pretrained_model=True requires source and path
+        with pytest.raises(ValidationError) as exc_info:
+            ModelConfig(use_pretrained_model=True)
+        assert "pretrained_model_source must be specified" in str(exc_info.value)
+
+        with pytest.raises(ValidationError) as exc_info:
+            ModelConfig(
+                use_pretrained_model=True,
+                pretrained_model_source=PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE,
+            )
+        assert "pretrained_model_path must be specified" in str(exc_info.value)
+
+        # Test valid configuration with all required fields
+        config = ModelConfig(
+            use_pretrained_model=True,
+            pretrained_model_source=PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE,
+            pretrained_model_path="org/model-name",
+        )
+        assert config.use_pretrained_model is True
+        assert (
+            config.pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE
+        )
+        assert config.pretrained_model_path == "org/model-name"
+
+        # Test with local source
+        config = ModelConfig(
+            use_pretrained_model=True,
+            pretrained_model_source=PRETRAINED_COMPONENT_SOURCES.LOCAL,
+            pretrained_model_path="/path/to/model",
+        )
+        assert config.pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.LOCAL
+
+        # Test invalid source
+        with pytest.raises(ValidationError) as exc_info:
+            ModelConfig(
+                use_pretrained_model=True,
+                pretrained_model_source="invalid_source",
+                pretrained_model_path="some/path",
+            )
+        assert "Invalid pretrained_model_source" in str(exc_info.value)
+
+        # Test optional fields can be set
+        config = ModelConfig(
+            use_pretrained_model=True,
+            pretrained_model_source=PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE,
+            pretrained_model_path="org/model-name",
+            pretrained_model_revision="main",
+            pretrained_model_load_heads=False,
+            pretrained_model_freeze_encoder_weights=True,
+        )
+        assert config.pretrained_model_revision == "main"
+        assert config.pretrained_model_load_heads is False
+        assert config.pretrained_model_freeze_encoder_weights is True
+        assert config.pretrained_model_freeze_head_weights is False
 
 
 class TestDataConfig:

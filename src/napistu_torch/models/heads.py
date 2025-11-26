@@ -689,7 +689,7 @@ class Decoder(nn.Module):
         summary = {}
 
         # Always include these
-        summary[MODEL_DEFS.HEAD_TYPE] = self._init_args[MODEL_DEFS.HEAD_TYPE]
+        summary[MODEL_DEFS.HEAD] = self._init_args[MODEL_DEFS.HEAD_TYPE]
         summary[MODEL_DEFS.HIDDEN_CHANNELS] = self._init_args[
             MODEL_DEFS.HIDDEN_CHANNELS
         ]

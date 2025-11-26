@@ -11,15 +11,383 @@ from typing import Any, Dict, Optional, Union
 import torch
 from pydantic import BaseModel, Field, field_validator
 
+from napistu_torch.configs import ModelConfig
+from napistu_torch.constants import MODEL_COMPONENTS
 from napistu_torch.load.constants import (
     CHECKPOINT_HYPERPARAMETERS,
     CHECKPOINT_STRUCTURE,
 )
 from napistu_torch.ml.constants import DEVICE
+from napistu_torch.models.constants import MODEL_DEFS
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.utils.environment_info import EnvironmentInfo
+from napistu_torch.constants import MODEL_CONFIG
 
 logger = logging.getLogger(__name__)
+
+
+class Checkpoint:
+    """
+    Manager for PyTorch Lightning checkpoint loading and validation.
+
+    This class handles loading checkpoints, extracting metadata, validating
+    compatibility with current data, and reconstructing model components.
+
+    Parameters
+    ----------
+    checkpoint_dict : Dict[str, Any]
+        PyTorch Lightning checkpoint dictionary (validated via Pydantic)
+
+    Public Methods
+    --------------
+    assert_same_napistu_data(napistu_data: NapistuData) -> None:
+        Validate that current NapistuData is compatible with checkpoint.
+    load(checkpoint_path: Union[str, Path], map_location: str = DEVICE.CPU) -> "Checkpoint":
+        Load and validate a checkpoint from a local file.
+    get_encoder_config() -> Dict[str, Any]:
+        Get encoder configuration as dictionary.
+    get_head_config() -> Dict[str, Any]:
+        Get head configuration as dictionary.
+    get_data_summary() -> Dict[str, Any]:
+        Get data summary as dictionary.
+    update_model_config(model_config: ModelConfig, inplace: bool = True) -> ModelConfig:
+        Update a ModelConfig instance with settings from the checkpoint.
+    
+    Private Methods
+    ---------------
+    _update_model_config_with_encoder(model_config: ModelConfig, inplace: bool = True) -> Optional[ModelConfig]:
+        Update a ModelConfig instance with encoder configuration from checkpoint.
+    _update_model_config_with_head(model_config: ModelConfig, inplace: bool = True) -> Optional[ModelConfig]:
+        Update a ModelConfig instance with head configuration from checkpoint.
+
+    Examples
+    --------
+    >>> # Load from local file (automatically validated)
+    >>> checkpoint = Checkpoint.load("path/to/checkpoint.ckpt")
+    >>>
+    >>> # Validate compatibility with current data
+    >>> checkpoint.assert_same_napistu_data(current_data)
+    >>>
+    >>> # Access validated configurations
+    >>> encoder_config = checkpoint.encoder_metadata
+    >>> head_config = checkpoint.head_metadata
+    >>> data_config = checkpoint.data_metadata
+    """
+
+    def __init__(self, checkpoint_dict: Dict[str, Any]):
+        """
+        Initialize Checkpoint from a checkpoint dictionary.
+
+        Parameters
+        ----------
+        checkpoint_dict : Dict[str, Any]
+            PyTorch Lightning checkpoint dictionary
+
+        Raises
+        ------
+        ValidationError
+            If checkpoint structure is invalid
+        """
+        # Validate checkpoint structure using Pydantic
+        validated = CheckpointStructure.model_validate(checkpoint_dict)
+
+        # Store original dict for state_dict access
+        self.checkpoint = checkpoint_dict
+        self.state_dict = checkpoint_dict[CHECKPOINT_STRUCTURE.STATE_DICT]
+
+        # Expose validated metadata as properties
+        self.hyper_parameters = validated.hyper_parameters
+        self.model_metadata = self.hyper_parameters.model
+        self.data_metadata = self.hyper_parameters.data
+        self.encoder_metadata = self.model_metadata.encoder
+        self.head_metadata = self.model_metadata.head
+        self.edge_encoder_metadata = self.model_metadata.edge_encoder
+
+    def assert_same_napistu_data(self, napistu_data: NapistuData) -> None:
+        """
+        Validate that current NapistuData is compatible with checkpoint.
+
+        Compares the data summary from the checkpoint with a summary
+        generated from the provided NapistuData object.
+
+        Parameters
+        ----------
+        napistu_data : NapistuData
+            Current NapistuData object to validate against checkpoint
+
+        Raises
+        ------
+        ValueError
+            If data summaries don't match
+
+        Examples
+        --------
+        >>> checkpoint = Checkpoint.load("model.ckpt")
+        >>> checkpoint.assert_same_napistu_data(current_data)
+        """
+        # Get checkpoint data summary (already validated by Pydantic)
+        checkpoint_summary = self.get_data_summary()
+
+        # Get current data summary (simplified, matching checkpoint format)
+        current_summary = napistu_data.get_summary(simplify=True)
+
+        _validate_same_data(checkpoint_summary, current_summary)
+
+    def get_encoder_config(self) -> Dict[str, Any]:
+        """
+        Get encoder configuration as dictionary.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Encoder configuration dictionary
+        """
+        return self.encoder_metadata.model_dump()
+
+    def get_head_config(self) -> Dict[str, Any]:
+        """
+        Get head configuration as dictionary.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Head configuration dictionary
+        """
+        return self.head_metadata.model_dump()
+
+    def get_data_summary(self) -> Dict[str, Any]:
+        """
+        Get data summary as dictionary.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Data summary dictionary
+        """
+        return self.data_metadata.model_dump(exclude_none=True)
+
+    @classmethod
+    def load(
+        cls, checkpoint_path: Union[str, Path], map_location: str = DEVICE.CPU
+    ) -> "Checkpoint":
+        """
+        Load and validate a checkpoint from a local file.
+
+        Parameters
+        ----------
+        checkpoint_path : Union[str, Path]
+            Path to the checkpoint file (.ckpt)
+        map_location : str, optional
+            Device to load tensors to, by default 'cpu'
+
+        Returns
+        -------
+        Checkpoint
+            Loaded and validated checkpoint object
+
+        Raises
+        ------
+        FileNotFoundError
+            If checkpoint file doesn't exist
+        RuntimeError
+            If checkpoint loading fails
+        ValidationError
+            If checkpoint structure is invalid
+
+        Examples
+        --------
+        >>> checkpoint = Checkpoint.load("model.ckpt")
+        >>> checkpoint = Checkpoint.load("model.ckpt", map_location="cuda:0")
+        """
+        checkpoint_path = Path(checkpoint_path)
+
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
+
+        try:
+            # Load with weights_only=False for Lightning compatibility
+            checkpoint_dict = torch.load(
+                checkpoint_path, map_location=map_location, weights_only=False
+            )
+
+            # Validation happens in __init__ via Pydantic
+            return cls(checkpoint_dict)
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to load checkpoint from {checkpoint_path}: {e}"
+            ) from e
+
+    def update_model_config(
+        self, model_config: ModelConfig, inplace: bool = True
+    ) -> ModelConfig:
+        """
+        Update a ModelConfig instance with settings from the checkpoint.
+
+        Updates encoder configuration and optionally head configuration from the checkpoint
+        metadata. This is useful when reconstructing a model from a checkpoint or when
+        loading a pretrained model.
+
+        The head is only updated if `pretrained_model_load_heads` is True in the model_config.
+
+        Parameters
+        ----------
+        model_config : ModelConfig
+            ModelConfig instance to update
+        inplace : bool, optional
+            If True, modify the ModelConfig in place. If False, create a copy and return it.
+            Default is True.
+
+        Returns
+        -------
+        ModelConfig
+            The updated ModelConfig instance. If inplace=True, returns the same object (modified in place).
+            If inplace=False, returns a new ModelConfig instance with updated settings.
+
+        Examples
+        --------
+        >>> checkpoint = Checkpoint.load("model.ckpt")
+        >>> model_config = ModelConfig()
+        >>> checkpoint.update_model_config(model_config)
+        >>> # model_config now has encoder and head settings from checkpoint
+        >>>
+        >>> # Create a copy instead
+        >>> updated_config = checkpoint.update_model_config(model_config, inplace=False)
+        """
+        if not inplace:
+            model_config = model_config.model_copy(deep=True)
+
+        # Update the encoder
+        self._update_model_config_with_encoder(
+            model_config, inplace=True
+        )  # inplace is True here because we already made a copy if needed
+
+        # Optionally update the head if pretrained_model_load_heads is True
+        pretrained_model_load_heads = getattr(
+            model_config, MODEL_CONFIG.PRETRAINED_MODEL_LOAD_HEADS
+        )
+        if pretrained_model_load_heads:
+            self._update_model_config_with_head(model_config, inplace=True)
+
+        return None if inplace else model_config
+
+    # private methods
+
+    def _update_model_config_with_encoder(
+        self, model_config: ModelConfig, inplace: bool = True
+    ) -> Optional[ModelConfig]:
+        """
+        Update a ModelConfig instance with encoder configuration from checkpoint.
+
+        Updates encoder-related fields in the ModelConfig based on the checkpoint's
+        encoder metadata. This is useful when reconstructing a model from a checkpoint.
+
+        Parameters
+        ----------
+        model_config : ModelConfig
+            ModelConfig instance to update
+        inplace : bool, optional
+            If True, modify the ModelConfig in place. If False, create a copy and return it.
+            Default is True.
+
+        Returns
+        -------
+        ModelConfig
+            The updated ModelConfig instance. If inplace=True, returns the same object.
+            If inplace=False, returns a new ModelConfig instance.
+
+        Examples
+        --------
+        >>> checkpoint = Checkpoint.load("model.ckpt")
+        >>> model_config = ModelConfig()
+        >>> checkpoint._update_model_config_with_encoder(model_config)
+        >>> # model_config now has encoder settings from checkpoint
+        >>>
+        >>> # Create a copy instead
+        >>> updated_config = checkpoint._update_model_config_with_encoder(model_config, inplace=False)
+        """
+        # Create a copy if not modifying in place
+        if not inplace:
+            model_config = model_config.model_copy(deep=True)
+
+        # Update encoder fields from encoder_metadata
+        encoder_dict = self.encoder_metadata.model_dump(exclude_none=True)
+        encoder_fields = MODEL_COMPONENTS[MODEL_DEFS.ENCODER]
+
+        # Update all encoder fields from MODEL_COMPONENTS
+        for field in encoder_fields:
+            if field in encoder_dict:
+                setattr(model_config, field, encoder_dict[field])
+
+        # Update edge encoder fields if edge encoder exists
+        if self.edge_encoder_metadata is not None:
+            edge_encoder_dict = self.edge_encoder_metadata.model_dump(exclude_none=True)
+            edge_encoder_fields = MODEL_COMPONENTS[MODEL_DEFS.EDGE_ENCODER]
+            model_config.use_edge_encoder = True
+
+            for field in edge_encoder_fields:
+                if field in edge_encoder_dict:
+                    setattr(model_config, field, edge_encoder_dict[field])
+        else:
+            model_config.use_edge_encoder = False
+
+        return None if inplace else model_config
+
+    def _update_model_config_with_head(
+        self, model_config: ModelConfig, inplace: bool = True
+    ) -> Optional[ModelConfig]:
+        """
+        Update a ModelConfig instance with head configuration from checkpoint.
+
+        Updates head-related fields in the ModelConfig based on the checkpoint's
+        head metadata. This is useful when reconstructing a model from a checkpoint.
+
+        Parameters
+        ----------
+        model_config : ModelConfig
+            ModelConfig instance to update
+        inplace : bool, optional
+            If True, modify the ModelConfig in place. If False, create a copy and return it.
+            Default is True.
+
+        Returns
+        -------
+        ModelConfig
+            The updated ModelConfig instance. If inplace=True, returns the same object.
+            If inplace=False, returns a new ModelConfig instance.
+
+        Examples
+        --------
+        >>> checkpoint = Checkpoint.load("model.ckpt")
+        >>> model_config = ModelConfig()
+        >>> checkpoint._update_model_config_with_head(model_config)
+        >>> # model_config now has head settings from checkpoint
+        >>>
+        >>> # Create a copy instead
+        >>> updated_config = checkpoint._update_model_config_with_head(model_config, inplace=False)
+        """
+        # Create a copy if not modifying in place
+        if not inplace:
+            model_config = model_config.model_copy(deep=True)
+
+        # Update head fields from head_metadata
+        head_dict = self.head_metadata.model_dump(exclude_none=True)
+        head_fields = MODEL_COMPONENTS[MODEL_DEFS.HEAD]
+
+        # Update all head fields from MODEL_COMPONENTS
+        for field in head_fields:
+            if field in head_dict:
+                setattr(model_config, field, head_dict[field])
+
+        return None if inplace else model_config
+
+    def __repr__(self) -> str:
+        """String representation of checkpoint."""
+        return (
+            f"Checkpoint(encoder={self.encoder_metadata.encoder}, "
+            f"head={self.head_metadata.head}, "
+            f"data={self.data_metadata.name})"
+        )
 
 
 class DataMetadata(BaseModel):
@@ -55,6 +423,23 @@ class DataMetadata(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class EdgeEncoderMetadata(BaseModel):
+    """
+    Validated metadata about the edge encoder.
+
+    This matches the structure from EdgeEncoder.get_summary() with to_model_config_names=True.
+    """
+
+    edge_in_channels: int = Field(..., ge=1, description="Edge feature dimension")
+    edge_encoder_dim: int = Field(..., ge=1, description="Hidden layer dimension")
+    edge_encoder_dropout: float = Field(
+        ..., ge=0.0, le=1.0, description="Dropout probability"
+    )
+    edge_encoder_init_bias: Optional[float] = Field(
+        None, description="Initial bias for output layer"
+    )
+
+
 class EncoderMetadata(BaseModel):
     """
     Validated metadata about the encoder.
@@ -62,7 +447,7 @@ class EncoderMetadata(BaseModel):
     This matches the structure from MessagePassingEncoder.get_summary().
     """
 
-    encoder_type: str = Field(..., description="Type of encoder (e.g., 'sage', 'gat')")
+    encoder: str = Field(..., description="Type of encoder (e.g., 'sage', 'gat')")
     in_channels: int = Field(..., ge=1, description="Input feature dimension")
     hidden_channels: int = Field(..., ge=1, description="Hidden layer dimension")
     num_layers: int = Field(..., ge=1, description="Number of GNN layers")
@@ -92,23 +477,6 @@ class EncoderMetadata(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class EdgeEncoderMetadata(BaseModel):
-    """
-    Validated metadata about the edge encoder.
-
-    This matches the structure from EdgeEncoder.get_summary() with to_model_config_names=True.
-    """
-
-    edge_in_channels: int = Field(..., ge=1, description="Edge feature dimension")
-    edge_encoder_dim: int = Field(..., ge=1, description="Hidden layer dimension")
-    edge_encoder_dropout: float = Field(
-        ..., ge=0.0, le=1.0, description="Dropout probability"
-    )
-    edge_encoder_init_bias: Optional[float] = Field(
-        None, description="Initial bias for output layer"
-    )
-
-
 class HeadMetadata(BaseModel):
     """
     Validated metadata about the head/decoder.
@@ -116,9 +484,7 @@ class HeadMetadata(BaseModel):
     This matches the structure from Decoder.get_summary().
     """
 
-    head_type: str = Field(
-        ..., description="Type of head (e.g., 'dot_product', 'transe')"
-    )
+    head: str = Field(..., description="Type of head (e.g., 'dot_product', 'transe')")
     hidden_channels: int = Field(..., ge=1, description="Input embedding dimension")
 
     # Optional fields for different head types
@@ -293,195 +659,6 @@ class CheckpointStructure(BaseModel):
         if not v:
             raise ValueError("state_dict cannot be empty")
         return v
-
-
-class Checkpoint:
-    """
-    Manager for PyTorch Lightning checkpoint loading and validation.
-
-    This class handles loading checkpoints, extracting metadata, validating
-    compatibility with current data, and reconstructing model components.
-
-    Parameters
-    ----------
-    checkpoint_dict : Dict[str, Any]
-        PyTorch Lightning checkpoint dictionary (validated via Pydantic)
-
-    Examples
-    --------
-    >>> # Load from local file (automatically validated)
-    >>> checkpoint = Checkpoint.load("path/to/checkpoint.ckpt")
-    >>>
-    >>> # Validate compatibility with current data
-    >>> checkpoint.assert_same_napistu_data(current_data)
-    >>>
-    >>> # Access validated configurations
-    >>> encoder_config = checkpoint.encoder_metadata
-    >>> head_config = checkpoint.head_metadata
-    >>> data_config = checkpoint.data_metadata
-    """
-
-    def __init__(self, checkpoint_dict: Dict[str, Any]):
-        """
-        Initialize Checkpoint from a checkpoint dictionary.
-
-        Parameters
-        ----------
-        checkpoint_dict : Dict[str, Any]
-            PyTorch Lightning checkpoint dictionary
-
-        Raises
-        ------
-        ValidationError
-            If checkpoint structure is invalid
-        """
-        # Validate checkpoint structure using Pydantic
-        self.validated_checkpoint = CheckpointStructure.model_validate(checkpoint_dict)
-
-        # Store original dict for state_dict access
-        self.checkpoint = checkpoint_dict
-        self.state_dict = checkpoint_dict[CHECKPOINT_STRUCTURE.STATE_DICT]
-
-        # Expose validated metadata as properties
-        self.hyper_parameters = self.validated_checkpoint.hyper_parameters
-        self.model_metadata = self.hyper_parameters.model
-        self.data_metadata = self.hyper_parameters.data
-        self.encoder_metadata = self.model_metadata.encoder
-        self.head_metadata = self.model_metadata.head
-        self.edge_encoder_metadata = self.model_metadata.edge_encoder
-
-    @classmethod
-    def load(
-        cls, checkpoint_path: Union[str, Path], map_location: str = DEVICE.CPU
-    ) -> "Checkpoint":
-        """
-        Load and validate a checkpoint from a local file.
-
-        Parameters
-        ----------
-        checkpoint_path : Union[str, Path]
-            Path to the checkpoint file (.ckpt)
-        map_location : str, optional
-            Device to load tensors to, by default 'cpu'
-
-        Returns
-        -------
-        Checkpoint
-            Loaded and validated checkpoint object
-
-        Raises
-        ------
-        FileNotFoundError
-            If checkpoint file doesn't exist
-        RuntimeError
-            If checkpoint loading fails
-        ValidationError
-            If checkpoint structure is invalid
-
-        Examples
-        --------
-        >>> checkpoint = Checkpoint.load("model.ckpt")
-        >>> checkpoint = Checkpoint.load("model.ckpt", map_location="cuda:0")
-        """
-        checkpoint_path = Path(checkpoint_path)
-
-        if not checkpoint_path.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
-
-        try:
-            # Load with weights_only=False for Lightning compatibility
-            checkpoint_dict = torch.load(
-                checkpoint_path, map_location=map_location, weights_only=False
-            )
-
-            # Validation happens in __init__ via Pydantic
-            return cls(checkpoint_dict)
-
-        except Exception as e:
-            raise RuntimeError(
-                f"Failed to load checkpoint from {checkpoint_path}: {e}"
-            ) from e
-
-    def get_encoder_config(self) -> Dict[str, Any]:
-        """
-        Get encoder configuration as dictionary.
-
-        Returns
-        -------
-        Dict[str, Any]
-            Encoder configuration dictionary
-        """
-        return self.encoder_metadata.model_dump()
-
-    def get_head_config(self) -> Dict[str, Any]:
-        """
-        Get head configuration as dictionary.
-
-        Returns
-        -------
-        Dict[str, Any]
-            Head configuration dictionary
-        """
-        return self.head_metadata.model_dump()
-
-    def get_data_summary(self) -> Dict[str, Any]:
-        """
-        Get data summary as dictionary.
-
-        Returns
-        -------
-        Dict[str, Any]
-            Data summary dictionary
-        """
-        return self.data_metadata.model_dump(exclude_none=True)
-
-    def assert_same_napistu_data(
-        self, napistu_data: NapistuData, strict: bool = True
-    ) -> None:
-        """
-        Validate that current NapistuData is compatible with checkpoint.
-
-        Compares the data summary from the checkpoint with a summary
-        generated from the provided NapistuData object.
-
-        Parameters
-        ----------
-        napistu_data : NapistuData
-            Current NapistuData object to validate against checkpoint
-        strict : bool, optional
-            If True, require exact match on all fields. If False, only
-            validate critical dimensions (in_channels, edge_in_channels,
-            num_relations), by default True
-
-        Raises
-        ------
-        ValueError
-            If data summaries don't match (strict=True) or if critical
-            dimensions don't match (strict=False)
-
-        Examples
-        --------
-        >>> checkpoint = Checkpoint.load("model.ckpt")
-        >>> checkpoint.assert_same_napistu_data(current_data)
-        >>>
-        >>> # Less strict - only check critical dimensions
-        >>> checkpoint.assert_same_napistu_data(current_data, strict=False)
-        """
-        # Get checkpoint data summary (already validated by Pydantic)
-        checkpoint_summary = self.get_data_summary()
-
-        # Get current data summary (simplified, matching checkpoint format)
-        current_summary = napistu_data.get_summary(simplify=True)
-
-        _validate_same_data(checkpoint_summary, current_summary)
-
-    def __repr__(self) -> str:
-        """String representation of checkpoint."""
-        return (
-            f"Checkpoint(encoder={self.encoder_metadata.encoder_type}, "
-            f"head={self.head_metadata.head_type}, "
-            f"data={self.data_metadata.name})"
-        )
 
 
 # private functions

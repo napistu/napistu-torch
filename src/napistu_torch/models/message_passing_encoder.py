@@ -429,7 +429,7 @@ class MessagePassingEncoder(nn.Module):
         Returns essential metadata needed to reconstruct the encoder.
         """
         summary = {}
-        summary[MODEL_DEFS.ENCODER_TYPE] = self._init_args[MODEL_DEFS.ENCODER_TYPE]
+        summary[MODEL_DEFS.ENCODER] = self._init_args[MODEL_DEFS.ENCODER_TYPE]
         summary[MODEL_DEFS.IN_CHANNELS] = self._init_args[MODEL_DEFS.IN_CHANNELS]
         summary[MODEL_DEFS.HIDDEN_CHANNELS] = self._init_args[
             MODEL_DEFS.HIDDEN_CHANNELS

@@ -544,7 +544,10 @@ class NapistuData(Data):
         relation_type = getattr(self, NAPISTU_DATA.RELATION_TYPE, None)
         if relation_type is None:
             raise ValueError(
-                "Relation type not found in NapistuData. Attribute 'relation_type' is missing."
+                "Relation type not found in NapistuData. Attribute 'relation_type' is missing. "
+                "This NapistuData object does not contain relation information. "
+                "To use relation-aware heads (RotatE, TransE, DistMult), create NapistuData "
+                "with relation_strata_type parameter or ensure relation_type is set."
             )
 
         # Get unique relation types
