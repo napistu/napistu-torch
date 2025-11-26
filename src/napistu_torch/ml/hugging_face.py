@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Union
 
 import torch
 
@@ -19,6 +19,7 @@ except ImportError as e:
     ) from e
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
+from napistu_torch.load.checkpoints import Checkpoint
 from napistu_torch.ml.constants import DEVICE
 
 logger = logging.getLogger(__name__)
@@ -126,10 +127,8 @@ class HuggingFaceLoader(HuggingFaceClient):
 
     Public Methods
     --------------
-    load_encoder()
-        Load complete encoder from HuggingFace Hub
-    load_head()
-        Load head from HuggingFace Hub
+    load_checkpoint()
+        Load model checkpoint from HuggingFace Hub
 
     Private Methods
     ---------------
@@ -184,17 +183,56 @@ class HuggingFaceLoader(HuggingFaceClient):
         # Cache for downloaded files
         self._checkpoint_path: Optional[Path] = None
         self._config_path: Optional[Path] = None
-        self._checkpoint: Optional[Dict] = None
-        self._config: Optional[ExperimentConfig] = None
 
-    def _download_checkpoint(self) -> Path:
+    def load_checkpoint(
+        self, raw_checkpoint: bool = False
+    ) -> Union[Checkpoint, Dict[str, Any]]:
         """
-        Download model checkpoint from HuggingFace Hub.
+        Load model checkpoint from HuggingFace Hub.
+
+        Parameters
+        ----------
+        raw_checkpoint : bool, optional
+            If True, return the raw checkpoint dictionary instead of a Checkpoint object.
+            Defaults to False.
 
         Returns
         -------
-        Path
-            Local path to downloaded checkpoint file
+        Checkpoint
+            PyTorch checkpoint dictionary
+        """
+
+        if self._checkpoint_path is None:
+            # download/load cache
+            self._download_checkpoint()
+
+        if raw_checkpoint:
+            return torch.load(
+                self._checkpoint_path, weights_only=False, map_location=DEVICE.CPU
+            )
+        else:
+            return Checkpoint.load(self._checkpoint_path)
+
+    def load_config(self) -> ExperimentConfig:
+        """
+        Download and parse config, with caching.
+
+        Returns
+        -------
+        ExperimentConfig
+            Parsed experiment configuration
+        """
+        if self._config_path is None:
+            # download/load cache
+            self._download_config()
+
+        return ExperimentConfig.from_json(self._config_path)
+
+    # private methods
+
+    def _download_checkpoint(self) -> None:
+        """
+        Download model checkpoint from HuggingFace Hub and set the _checkpoint_path attribute.
         """
         if self._checkpoint_path is None:
             logger.info(
@@ -214,16 +252,11 @@ class HuggingFaceLoader(HuggingFaceClient):
 
             logger.info(f"Checkpoint cached at: {self._checkpoint_path}")
 
-        return self._checkpoint_path
+        return None
 
-    def _download_config(self) -> Path:
+    def _download_config(self) -> None:
         """
-        Download config.json from HuggingFace Hub.
-
-        Returns
-        -------
-        Path
-            Local path to downloaded config file
+        Download config.json from HuggingFace Hub and set the _config_path attribute.
         """
         if self._config_path is None:
             logger.info(
@@ -243,43 +276,7 @@ class HuggingFaceLoader(HuggingFaceClient):
 
             logger.info(f"Config cached at: {self._config_path}")
 
-        return self._config_path
-
-    def _get_checkpoint(self) -> Dict:
-        """
-        Download and load checkpoint, with caching.
-
-        Returns
-        -------
-        Dict
-            PyTorch checkpoint dictionary
-        """
-        if self._checkpoint is None:
-            checkpoint_path = self._download_checkpoint()
-            self._checkpoint = torch.load(
-                checkpoint_path,
-                weights_only=False,
-                map_location=DEVICE.CPU,
-            )
-            logger.debug(f"Loaded checkpoint from {checkpoint_path}")
-
-        return self._checkpoint
-
-    def _get_config(self) -> ExperimentConfig:
-        """
-        Download and parse config, with caching.
-
-        Returns
-        -------
-        ExperimentConfig
-            Parsed experiment configuration
-        """
-        if self._config is None:
-            config_path = self._download_config()
-            self._config = ExperimentConfig.from_json(config_path)
-            logger.debug(f"Loaded config from {config_path}")
-
-        return self._config
+        return None
 
 
 class HuggingFacePublisher(HuggingFaceClient):

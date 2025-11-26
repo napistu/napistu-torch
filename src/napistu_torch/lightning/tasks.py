@@ -43,9 +43,6 @@ class BaseLightningTask(pl.LightningModule):
         self.task = task
         self.config = config
 
-        # Save hyperparameters (logged to W&B automatically) - this saves the config to self.hparams['config']
-        self.save_hyperparameters(ignore=["task"])
-
     def configure_optimizers(self):
         """Shared optimizer configuration."""
         # Get all parameters

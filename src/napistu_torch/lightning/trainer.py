@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader
 from napistu_torch.configs import ExperimentConfig
 from napistu_torch.lightning.callbacks import (
     ExperimentTimingCallback,
-    ModelMetadataCallback,
+    SetHyperparametersCallback,
 )
 from napistu_torch.lightning.constants import (
     TRAINER_MODES,
@@ -188,7 +188,7 @@ class NapistuTrainer:
         # Timing callback (always useful)
         callbacks.append(ExperimentTimingCallback())
 
-        callbacks.append(ModelMetadataCallback())
+        callbacks.append(SetHyperparametersCallback())
 
         return callbacks
 

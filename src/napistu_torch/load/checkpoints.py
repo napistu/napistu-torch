@@ -26,7 +26,7 @@ class DataMetadata(BaseModel):
     """
     Validated metadata about the training data.
 
-    This matches the structure saved by ModelMetadataCallback.
+    This matches the structure saved by SetHyperparameters.
     """
 
     name: str = Field(..., description="Name of the NapistuData object")
@@ -189,7 +189,7 @@ class CheckpointHyperparameters(BaseModel):
         """
         Create hyperparameters dict from task and data, with validation.
 
-        This is used by ModelMetadataCallback to build the hyperparameters
+        This is used by SetHyperparameters to build the hyperparameters
         dict that will be saved to the checkpoint. The dict is validated
         against the CheckpointHyperparameters schema before returning.
 
@@ -221,7 +221,7 @@ class CheckpointHyperparameters(BaseModel):
 
         Examples
         --------
-        >>> # In ModelMetadataCallback
+        >>> # In SetHyperparameters
         >>> hparams_dict = CheckpointHyperparameters.from_task_and_data(
         ...     task=pl_module.task,
         ...     napistu_data=napistu_data,

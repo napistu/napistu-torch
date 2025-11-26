@@ -94,13 +94,14 @@ class ExperimentTimingCallback(Callback):
         self.epoch_start = state_dict.get("epoch_start")
 
 
-class ModelMetadataCallback(Callback):
+class SetHyperparametersCallback(Callback):
     """
-    Save model metadata to checkpoint for easier loading.
+    Set hyperparameters in Lightning module for checkpointing and logging.
 
     Extracts metadata from:
     - task.get_summary() → Model architecture (encoder, head, edge_encoder)
     - napistu_data.get_summary(simplify=True) → Data statistics
+    - pl_module.config → Training configuration
 
     The metadata is validated using Pydantic models before saving to ensure
     compatibility with the Checkpoint loading system.
@@ -108,7 +109,7 @@ class ModelMetadataCallback(Callback):
     Raises
     ------
     AttributeError
-        If pl_module doesn't have a task attribute
+        If pl_module doesn't have a task or config attribute
     ValueError
         If datamodule or NapistuData cannot be found
     """
@@ -140,12 +141,18 @@ class ModelMetadataCallback(Callback):
                 "Datamodule must have one of: 'napistu_data', 'train_data', or 'data' attributes."
             )
 
-        # Build and validate hyperparameters dict
-        # Note: 'config' will be added by Lightning's save_hyperparameters()
+        # Get config from pl_module.config attribute (set in BaseLightningTask.__init__)
+        if not hasattr(pl_module, "config"):
+            raise AttributeError(
+                "pl_module must have a 'config' attribute. "
+                "This should be set in BaseLightningTask.__init__()."
+            )
+        training_config = pl_module.config
+
         hparams_dict = CheckpointHyperparameters.from_task_and_data(
             task=pl_module.task,
             napistu_data=napistu_data,
-            training_config=pl_module.hparams.get(CHECKPOINT_HYPERPARAMETERS.CONFIG),
+            training_config=training_config,
             capture_environment=True,
         )
 
