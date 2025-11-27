@@ -191,12 +191,13 @@ MODEL_CONFIG = SimpleNamespace(
     ROTATE_MARGIN=HEAD_SPECIFIC_ARGS.ROTATE_MARGIN,
     TRANSE_MARGIN=HEAD_SPECIFIC_ARGS.TRANSE_MARGIN,
     # loading
-    ENCODER_SOURCE="encoder_source",
-    ENCODER_PATH="encoder_path",
-    ENCODER_REVISION="encoder_revision",
-    HEAD_SOURCE="head_source",
-    HEAD_PATH="head_path",
-    HEAD_REVISION="head_revision",
+    USE_PRETRAINED_MODEL="use_pretrained_model",
+    PRETRAINED_MODEL_SOURCE="pretrained_model_source",
+    PRETRAINED_MODEL_PATH="pretrained_model_path",
+    PRETRAINED_MODEL_REVISION="pretrained_model_revision",
+    PRETRAINED_MODEL_LOAD_HEAD="pretrained_model_load_head",
+    PRETRAINED_MODEL_FREEZE_ENCODER_WEIGHTS="pretrained_model_freeze_encoder_weights",
+    PRETRAINED_MODEL_FREEZE_HEAD_WEIGHTS="pretrained_model_freeze_head_weights",
 )
 
 MODEL_CONFIG_DEFAULTS = {

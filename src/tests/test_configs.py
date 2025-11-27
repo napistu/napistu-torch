@@ -356,11 +356,11 @@ class TestModelConfig:
             pretrained_model_source=PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE,
             pretrained_model_path="org/model-name",
             pretrained_model_revision="main",
-            pretrained_model_load_heads=False,
+            pretrained_model_load_head=False,
             pretrained_model_freeze_encoder_weights=True,
         )
         assert config.pretrained_model_revision == "main"
-        assert config.pretrained_model_load_heads is False
+        assert config.pretrained_model_load_head is False
         assert config.pretrained_model_freeze_encoder_weights is True
         assert config.pretrained_model_freeze_head_weights is False
 

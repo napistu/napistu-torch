@@ -12,7 +12,7 @@ import torch
 from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.configs import ModelConfig
-from napistu_torch.constants import MODEL_COMPONENTS
+from napistu_torch.constants import MODEL_COMPONENTS, MODEL_CONFIG
 from napistu_torch.load.constants import (
     CHECKPOINT_HYPERPARAMETERS,
     CHECKPOINT_STRUCTURE,
@@ -21,7 +21,6 @@ from napistu_torch.ml.constants import DEVICE
 from napistu_torch.models.constants import MODEL_DEFS
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.utils.environment_info import EnvironmentInfo
-from napistu_torch.constants import MODEL_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class Checkpoint:
         Get data summary as dictionary.
     update_model_config(model_config: ModelConfig, inplace: bool = True) -> ModelConfig:
         Update a ModelConfig instance with settings from the checkpoint.
-    
+
     Private Methods
     ---------------
     _update_model_config_with_encoder(model_config: ModelConfig, inplace: bool = True) -> Optional[ModelConfig]:
@@ -228,7 +227,7 @@ class Checkpoint:
         metadata. This is useful when reconstructing a model from a checkpoint or when
         loading a pretrained model.
 
-        The head is only updated if `pretrained_model_load_heads` is True in the model_config.
+        The head is only updated if `pretrained_model_load_head` is True in the model_config.
 
         Parameters
         ----------
@@ -262,11 +261,11 @@ class Checkpoint:
             model_config, inplace=True
         )  # inplace is True here because we already made a copy if needed
 
-        # Optionally update the head if pretrained_model_load_heads is True
-        pretrained_model_load_heads = getattr(
-            model_config, MODEL_CONFIG.PRETRAINED_MODEL_LOAD_HEADS
+        # Optionally update the head if pretrained_model_load_head is True
+        pretrained_model_load_head = getattr(
+            model_config, MODEL_CONFIG.PRETRAINED_MODEL_LOAD_HEAD
         )
-        if pretrained_model_load_heads:
+        if pretrained_model_load_head:
             self._update_model_config_with_head(model_config, inplace=True)
 
         return None if inplace else model_config

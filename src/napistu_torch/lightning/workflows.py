@@ -11,12 +11,14 @@ import pytorch_lightning as pl
 import torch
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from napistu_torch.configs import ExperimentConfig, RunManifest
+from napistu_torch.configs import ExperimentConfig, ModelConfig, RunManifest
 from napistu_torch.constants import (
     EXPERIMENT_CONFIG,
     MODEL_CONFIG,
+    PRETRAINED_COMPONENT_SOURCES,
     TASK_CONFIG,
     TRAINING_CONFIG,
+    VALID_PRETRAINED_COMPONENT_SOURCES,
     WANDB_CONFIG,
 )
 from napistu_torch.evaluation.evaluation_manager import find_best_checkpoint
@@ -28,6 +30,8 @@ from napistu_torch.lightning.edge_batch_datamodule import EdgeBatchDataModule
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.lightning.trainer import NapistuTrainer
+from napistu_torch.load.checkpoints import Checkpoint
+from napistu_torch.ml.hugging_face import HuggingFaceLoader
 from napistu_torch.ml.wandb import (
     get_wandb_run_id_and_url,
     prepare_wandb_config,
@@ -412,7 +416,7 @@ def prepare_experiment(
 
     # 2. Create Data Module
     logger.info("Creating Data Module from config...")
-    data_module = _create_data_module(config)
+    data_module = _create_data_module(config, logger=logger)
 
     # define the strata for negative sampling
     stratify_by = config.task.edge_prediction_neg_sampling_stratify_by
@@ -422,8 +426,25 @@ def prepare_experiment(
         artifacts=data_module.other_artifacts,
     )
 
-    # 3. create model
-    model = _create_model(config, data_module, edge_strata)
+    # 3 create model
+    # 3a. load a pretrained checkpoint if specified
+    if config.model.use_pretrained_model:
+        logger.info("Loading pretrained checkpoint...")
+        pretrained_checkpoint = _load_pretrained_checkpoint(config.model, logger=logger)
+        # validate compatibility of checkpoint with data module (they should be trained on the same dataset or at least have compatible channels)
+        pretrained_checkpoint.assert_same_napistu_data(data_module.napistu_data)
+        # update model config so its attribute reflect the loaded encoder and head
+        pretrained_checkpoint.update_model_config(config.model, inplace=True)
+
+    # 3b. create the model based on the model config (which may have been updated based on the pretrained checkpoint)
+    model = _create_model(config, data_module, edge_strata, logger=logger)
+
+    # 3c. load pretrained weights if specified
+    if config.model.use_pretrained_model:
+        logger.info("Loading pretrained weights...")
+        _load_pretrained_weights(
+            model, pretrained_checkpoint, config.model, logger=logger
+        )
 
     # 4. trainer
     logger.info("Creating NapistuTrainer from config...")
@@ -487,7 +508,7 @@ def resume_experiment(
     wandb_logger = resume_wandb_logger(run_manifest)
 
     # 2. Create Data Module
-    data_module = _create_data_module(experiment_config)
+    data_module = _create_data_module(experiment_config, logger=logger)
 
     stratify_by = experiment_config.task.edge_prediction_neg_sampling_stratify_by
     logger.info("Getting edge strata from artifacts...")
@@ -497,7 +518,7 @@ def resume_experiment(
     )
 
     # 3. create model
-    model = _create_model(experiment_config, data_module, edge_strata)
+    model = _create_model(experiment_config, data_module, edge_strata, logger=logger)
 
     # 4. trainer
     logger.info(f"Creating NapistuTrainer from config (mode={mode})...")
@@ -618,6 +639,7 @@ def _cleanup_stale_checkpoints(
 
 def _create_data_module(
     config: ExperimentConfig,
+    logger: logging.Logger = logger,
 ) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
     """Create the appropriate data module based on the configuration."""
     batches_per_epoch = config.training.batches_per_epoch
@@ -636,8 +658,10 @@ def _create_model(
     config: ExperimentConfig,
     data_module: Union[FullGraphDataModule, EdgeBatchDataModule],
     edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
+    logger: logging.Logger = logger,
 ) -> EdgePredictionLightning:
     """Create the model based on the configuration."""
+
     # a. encoder
     logger.info("Creating MessagePassingEncoder from config...")
     encoder = MessagePassingEncoder.from_config(
@@ -667,6 +691,166 @@ def _create_model(
     )
 
     return model
+
+
+def _load_pretrained_checkpoint(
+    model_config: ModelConfig, logger: logging.Logger = logger
+) -> Checkpoint:
+    """
+    Load a pretrained model's checkpoint from HuggingFace or local file.
+
+    Parameters
+    ----------
+    model_config : ModelConfig
+        Model configuration containing pretrained model settings
+    logger : logging.Logger, optional
+        Logger instance to use
+
+    Returns
+    -------
+    Checkpoint
+        Loaded checkpoint object
+
+    Raises
+    ------
+    ValueError
+        If use_pretrained_model is False or pretrained_model_source is invalid
+    FileNotFoundError
+        If local checkpoint file doesn't exist
+    """
+    if not getattr(model_config, MODEL_CONFIG.USE_PRETRAINED_MODEL):
+        raise ValueError(
+            "use_pretrained_model must be True to load pretrained checkpoint"
+        )
+
+    pretrained_model_source = getattr(
+        model_config, MODEL_CONFIG.PRETRAINED_MODEL_SOURCE
+    )
+    pretrained_model_path = getattr(model_config, MODEL_CONFIG.PRETRAINED_MODEL_PATH)
+    pretrained_model_revision = getattr(
+        model_config, MODEL_CONFIG.PRETRAINED_MODEL_REVISION
+    )
+
+    if pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE:
+        logger.info(
+            f"Loading pretrained checkpoint from HuggingFace: {pretrained_model_path} "
+            f"(revision: {pretrained_model_revision})"
+        )
+        hf_loader = HuggingFaceLoader(
+            repo_id=pretrained_model_path, revision=pretrained_model_revision
+        )
+        checkpoint = hf_loader.load_checkpoint(raw_checkpoint=False)
+    elif pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.LOCAL:
+        logger.info(
+            f"Loading pretrained checkpoint from local file: {pretrained_model_path}"
+        )
+        checkpoint = Checkpoint.load(pretrained_model_path)
+    else:
+        raise ValueError(
+            f"Invalid pretrained model source: {pretrained_model_source}. "
+            f"Valid sources are: {VALID_PRETRAINED_COMPONENT_SOURCES}"
+        )
+
+    return checkpoint
+
+
+def _load_pretrained_weights(
+    model: EdgePredictionLightning,
+    checkpoint: Checkpoint,
+    model_config: ModelConfig,
+    logger: logging.Logger = logger,
+) -> None:
+    """
+    Load pretrained weights from a checkpoint and apply them to the model.
+
+    This function:
+    1. Extracts encoder and optionally head state dicts from the checkpoint
+    2. Loads them into the model with proper prefix handling
+    3. Freezes weights if specified in model_config
+
+    Parameters
+    ----------
+    model : EdgePredictionLightning
+        The Lightning model to load weights into
+    checkpoint : Checkpoint
+        Already loaded checkpoint object containing the pretrained weights
+    model_config : ModelConfig
+        Model configuration containing freezing settings
+    logger : logging.Logger, optional
+        Logger instance to use
+
+    Raises
+    ------
+    ValueError
+        If no encoder or head state dict is found when required
+    RuntimeError
+        If any required encoder or head weights are missing from the checkpoint
+    """
+    logger.info("Applying pretrained weights to model...")
+
+    # Extract state dicts with proper prefix handling
+    # Lightning checkpoints store weights with "task." prefix
+    encoder_state_dict = {}
+    head_state_dict = {}
+
+    for key, value in checkpoint.state_dict.items():
+        if key.startswith("task.encoder."):
+            # Remove "task.encoder." prefix - encoder expects keys without prefix
+            # e.g., "task.encoder.convs.0.lin_rel.weight" -> "convs.0.lin_rel.weight"
+            encoder_key = key.replace("task.encoder.", "")
+            encoder_state_dict[encoder_key] = value
+        elif key.startswith("task.head."):
+            # Remove "task.head." prefix - head expects keys without prefix
+            # e.g., "task.head.bilinear.weight" -> "bilinear.weight"
+            head_key = key.replace("task.head.", "")
+            head_state_dict[head_key] = value
+
+    # Load encoder weights
+    if encoder_state_dict:
+        logger.info(f"Loading {len(encoder_state_dict)} encoder parameters...")
+        missing_keys, unexpected_keys = model.task.encoder.load_state_dict(
+            encoder_state_dict, strict=False
+        )
+        if missing_keys:
+            raise RuntimeError(
+                f"Failed to load pretrained encoder weights. Missing keys: {missing_keys}"
+            )
+        if unexpected_keys:
+            logger.warning(f"Unexpected encoder keys (ignored): {unexpected_keys}")
+
+        # Freeze encoder if requested
+        if model_config.pretrained_model_freeze_encoder_weights:
+            logger.info("Freezing encoder weights")
+            for param in model.task.encoder.parameters():
+                param.requires_grad = False
+    else:
+        raise ValueError("No encoder state dict found in checkpoint")
+
+    # Load head weights if requested
+    if model_config.pretrained_model_load_head:
+        if head_state_dict:
+            logger.info(f"Loading {len(head_state_dict)} head parameters...")
+            missing_keys, unexpected_keys = model.task.head.load_state_dict(
+                head_state_dict, strict=False
+            )
+            if missing_keys:
+                raise RuntimeError(
+                    f"Failed to load pretrained head weights. Missing keys: {missing_keys}"
+                )
+            if unexpected_keys:
+                logger.warning(f"Unexpected head keys (ignored): {unexpected_keys}")
+
+            # Freeze head if requested
+            if model_config.pretrained_model_freeze_head_weights:
+                logger.info("Freezing head weights")
+                for param in model.task.head.parameters():
+                    param.requires_grad = False
+        else:
+            raise ValueError(
+                "No head state dict found in checkpoint but pretrained_model_load_heads is True"
+            )
+
+    logger.info("✓ Pretrained weights loaded successfully")
 
 
 def _log_corruption_to_wandb(

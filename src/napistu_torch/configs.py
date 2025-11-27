@@ -97,7 +97,7 @@ class ModelConfig(BaseModel):
     pretrained_model_revision: Optional[str] = Field(
         default=None, description="Git revision for HF models (branch, tag, or commit)"
     )
-    pretrained_model_load_heads: Optional[bool] = Field(
+    pretrained_model_load_head: Optional[bool] = Field(
         default=True,
         description="Whether to load the heads from the pretrained model (optional) or just the encoder (required)",
     )
