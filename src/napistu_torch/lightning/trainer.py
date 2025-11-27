@@ -25,6 +25,7 @@ from napistu_torch.lightning.constants import (
     TRAINER_MODES,
     VALID_TRAINER_MODES,
 )
+from napistu_torch.ml.constants import METRIC_SUMMARIES
 
 
 class NapistuTrainer:
@@ -168,10 +169,12 @@ class NapistuTrainer:
                 self.config.output_dir
             )
             checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            # Format filename with metric constant
+            filename_template = f"best-{{epoch}}-{{{METRIC_SUMMARIES.VAL_AUC}:.4f}}"
             callbacks.append(
                 ModelCheckpoint(
                     dirpath=checkpoint_dir,
-                    filename="best-{epoch}-{val_auc:.4f}",
+                    filename=filename_template,
                     monitor=self.config.training.checkpoint_metric,
                     mode="max",
                     save_top_k=1,  # save just the best checkpoint

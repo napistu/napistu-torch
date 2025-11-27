@@ -21,6 +21,10 @@ except ImportError as e:
 from napistu_torch.configs import ExperimentConfig, RunManifest
 from napistu_torch.load.checkpoints import Checkpoint
 from napistu_torch.ml.constants import DEVICE
+from napistu_torch.ml.wandb import get_wandb_metrics_table
+from napistu_torch.models.constants import RELATION_AWARE_HEADS
+from napistu_torch.tasks.constants import TASK_DESCRIPTIONS
+from napistu_torch.utils.table_utils import format_metrics_as_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -468,7 +472,7 @@ class HuggingFacePublisher(HuggingFaceClient):
         commit_message : str
             Commit message
         """
-        model_card = generate_model_card(manifest)
+        model_card = generate_model_card(manifest, repo_id)
 
         self.api.upload_file(
             path_or_fileobj=model_card.encode("utf-8"),
@@ -483,102 +487,170 @@ class HuggingFacePublisher(HuggingFaceClient):
 # public functions
 
 
-def generate_model_card(manifest: RunManifest) -> str:
+def generate_model_card(manifest: RunManifest, repo_id: str) -> str:
     """
-    Generate a basic model card in Markdown format.
+    Generate a comprehensive HuggingFace model card from run metadata.
 
-    This creates a minimal card that users can enhance on HuggingFace.
-
-    Parameters
-    ----------
-    manifest : RunManifest
-        Run manifest with metadata
-
-    Returns
-    -------
-    str
-        Model card content in Markdown format
+    ... (docstring remains same)
     """
-    # Extract key config info
+
     config = manifest.experiment_config
     model_config = config.model
+    task_config = config.task
+    experiment_name = manifest.experiment_name or "Napistu-Torch Model"
+
+    # Extract model details
     encoder = model_config.encoder
     head = model_config.head
-    hidden_channels = model_config.hidden_channels
+    task = task_config.task
 
-    # Build model card
+    # Detect relation-aware head
+    is_relation_aware = head in RELATION_AWARE_HEADS
+
+    # Build tags
+    tags = [
+        "graph-neural-networks",
+        "biological-networks",
+        "napistu",
+        "pytorch",
+        encoder,
+        head,
+        task,
+    ]
+    if is_relation_aware:
+        tags.append("relation-aware")
+
+    # Get architecture details from ModelConfig __repr__
+    arch_details = str(model_config)
+
+    # Get task description
+    task_description = TASK_DESCRIPTIONS[task]
+
+    # Get metrics table
+    metrics_table = get_wandb_metrics_table(
+        wandb_entity=manifest.wandb_entity,
+        wandb_project=manifest.wandb_project,
+        wandb_run_id=manifest.wandb_run_id,
+    )
+    metrics_markdown = format_metrics_as_markdown(metrics_table)
+
+    # Build W&B link if available
+    wandb_link = ""
+    if manifest.wandb_run_url:
+        wandb_link = f"- 📊 [W&B Run]({manifest.wandb_run_url})"
+
+    # Build the model card
     card = f"""---
-tags:
-- graph-neural-network
-- biological-networks
-- napistu
-- pytorch
+tags: {tags}
 library_name: napistu-torch
+license: mit
+metrics:
+- auc
+- average_precision
 ---
 
-# {manifest.experiment_name or 'Napistu-Torch Model'}
+# {experiment_name}
 
-This model was trained using [Napistu-Torch](https://github.com/napistu/Napistu-Torch), a framework for training graph neural networks on biological pathway networks.
+This model was trained using [Napistu-Torch](https://www.shackett.org/napistu_torch/), a PyTorch framework for training graph neural networks on biological pathway networks.
 
-## Model Details
+The dataset used for training is the 8-source ["Octopus" human consensus network](https://www.shackett.org/octopus_network/), which integrates pathway data from STRING, OmniPath, Reactome, and others. The network encompasses ~50K genes, metabolites, and complexes connected by ~8M interactions.
 
-- **Encoder**: {encoder}
-- **Head**: {head}
-- **Hidden Channels**: {hidden_channels}
-- **Training Date**: {manifest.created_at}
+## Task
 
-## Training Configuration
+{task_description}
 
-```json
-{{
-  "encoder": "{encoder}",
-  "head": "{head}",
-  "hidden_channels": {hidden_channels},
-  "dropout": {model_config.dropout},
-  "num_layers": {model_config.num_layers}
-}}
-```
+## Model Description
 
-## Weights & Biases
+{arch_details}
 
-Training tracked at: [{manifest.wandb_run_url}]({manifest.wandb_run_url})
+**Training Date**: {manifest.created_at.strftime('%Y-%m-%d')}
+
+For detailed experiment and training settings see this repository's `config.json` file.
+
+## Performance
+
+{metrics_markdown}
+
+## Links
+
+{wandb_link}
+- 💻 [GitHub Repository](https://github.com/napistu/Napistu-Torch)
+- 📖 [Read the Docs](https://napistu-torch.readthedocs.io/en/latest)
+- 📚 [Napistu Wiki](https://github.com/napistu/napistu/wiki)
 
 ## Usage
 
+### 1. Setup Data Store
+
+First, download the Octopus consensus network data to create a local `NapistuDataStore`:
 ```python
-import torch
-from napistu_torch.evaluation import EvaluationManager
+from napistu_torch.load.gcs import gcs_model_to_store
 
-# Download checkpoint
-checkpoint_path = "model.ckpt"
-
-# Load checkpoint
-checkpoint = torch.load(checkpoint_path)
-
-# Use with your NapistuData and model architecture
-# (See Napistu-Torch documentation for details)
+# Download data and create store
+napistu_data_store = gcs_model_to_store(
+    napistu_data_dir="path/to/napistu_data",
+    store_dir="path/to/store",
+    asset_name="human_consensus",
+    # Pin to stable version for reproducibility
+    asset_version="20250923"
+)
 ```
 
-## Model Card Authors
+### 2. Load Pretrained Model from HuggingFace Hub
+```python
+from napistu_torch.ml.hugging_face import HuggingFaceLoader
 
-This model card was auto-generated. Please edit to add:
-- Model description and use case
-- Training data details
-- Performance metrics
-- Limitations and biases
-- Citation information
+# Load checkpoint
+loader = HuggingFaceLoader("{repo_id}")
+checkpoint = loader.load_checkpoint()
+
+# Load config to reproduce experiment
+experiment_config = loader.load_config()
+```
+
+### 3. Use Pretrained Model for Training
+
+You can use this pretrained model as initialization for training via the CLI:
+```bash
+# Create a training config that uses the pretrained model
+cat > my_config.yaml << EOF
+name: my_finetuned_model
+
+model:
+  use_pretrained_model: true
+  pretrained_model_source: huggingface
+  pretrained_model_path: {repo_id}
+  pretrained_model_freeze_encoder_weights: false  # Allow fine-tuning
+
+data:
+  sbml_dfs_path: path/to/sbml_dfs.pkl
+  napistu_graph_path: path/to/graph.pkl
+  napistu_data_name: edge_prediction
+
+training:
+  epochs: 100
+  lr: 0.001
+EOF
+
+# Train with pretrained weights
+napistu-torch train my_config.yaml
+```
 
 ## Citation
 
 If you use this model, please cite:
-
 ```bibtex
 @software{{napistu_torch,
-  title = {{Napistu-Torch}},
-  author = {{Sean R Hackett}},
+  title = {{Napistu-Torch: Graph Neural Networks for Biological Pathway Analysis}},
+  author = {{Hackett, Sean R.}},
   url = {{https://github.com/napistu/Napistu-Torch}},
-  year = {{2025}}
+  year = {{2025}},
+  note = {{Model: {experiment_name}}}
 }}
 ```
+
+## License
+
+MIT License - See [LICENSE](https://github.com/napistu/Napistu-Torch/blob/main/LICENSE) for details.
 """
     return card

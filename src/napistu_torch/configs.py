@@ -28,6 +28,7 @@ from napistu_torch.constants import (
     WANDB_CONFIG_DEFAULTS,
 )
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
+from napistu_torch.ml.constants import METRIC_SUMMARIES
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
@@ -45,7 +46,16 @@ logger = logging.getLogger(__name__)
 
 
 class ModelConfig(BaseModel):
-    """Model architecture configuration"""
+    """
+    Model architecture configuration.
+
+    Public methods
+    --------------
+    get_architecture_string() -> str:
+        Get a string representation of the model architecture.
+    __repr__() -> str:
+        Return a formatted string representation of the model architecture.
+    """
 
     encoder: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER])
     hidden_channels: int = Field(default=128, gt=0)
@@ -156,6 +166,8 @@ class ModelConfig(BaseModel):
             raise ValueError(f"hidden_channels should be power of 2, got {v}")
         return v
 
+    # public methods
+
     def get_architecture_string(self) -> str:
         """
         Generate a string representation of the model architecture.
@@ -183,6 +195,38 @@ class ModelConfig(BaseModel):
             arch_str += f"-{self.head}"
         arch_str += f"_h{self.hidden_channels}_l{self.num_layers}"
         return arch_str
+
+    def __repr__(self) -> str:
+        """
+        Return a formatted string representation of the model architecture.
+
+        Returns
+        -------
+        str
+            Formatted architecture details including encoder, head, hidden channels,
+            layers, dropout, edge encoder, and relation-aware information.
+        """
+        lines = [
+            "ModelConfig(",
+            f"  encoder={self.encoder}",
+            f"  head={self.head}",
+            f"  hidden_channels={self.hidden_channels}",
+            f"  num_layers={self.num_layers}",
+            f"  dropout={self.dropout}",
+        ]
+
+        # Add edge encoder info
+        if self.use_edge_encoder:
+            lines.append(f"  edge_encoder=✓ (dim={self.edge_encoder_dim})")
+        else:
+            lines.append("  edge_encoder=✗")
+
+        # Add relation-aware info if applicable
+        if self.head in RELATION_AWARE_HEADS:
+            lines.append(f"  relation_aware=✓ ({self.head})")
+
+        lines.append(")")
+        return "\n".join(lines)
 
     model_config = ConfigDict(extra="forbid")  # Catch typos
 
@@ -237,7 +281,14 @@ class TaskConfig(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    """Training hyperparameters"""
+    """
+    Training hyperparameters.
+
+    Public methods
+    --------------
+    get_checkpoint_dir(output_dir: Path) -> Path:
+        Get absolute checkpoint directory.
+    """
 
     lr: float = Field(default=0.001, gt=0.0)
     weight_decay: float = Field(default=0.0, ge=0.0)
@@ -255,14 +306,14 @@ class TrainingConfig(BaseModel):
     # Callbacks
     early_stopping: bool = True
     early_stopping_patience: int = 20
-    early_stopping_metric: str = "val_auc"
+    early_stopping_metric: str = METRIC_SUMMARIES.VAL_AUC
 
     checkpoint_subdir: str = Field(
         default=TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_SUBDIR],
         description="Subdirectory for checkpoints within output_dir",
     )
     save_checkpoints: bool = True
-    checkpoint_metric: str = "val_auc"
+    checkpoint_metric: str = METRIC_SUMMARIES.VAL_AUC
 
     def get_checkpoint_dir(self, output_dir: Path) -> Path:
         """Get absolute checkpoint directory"""
@@ -290,7 +341,16 @@ class TrainingConfig(BaseModel):
 
 
 class WandBConfig(BaseModel):
-    """Weights & Biases configuration"""
+    """
+    Weights & Biases configuration
+
+    Public methods
+    --------------
+    get_enhanced_tags(model_config: ModelConfig, task_config: TaskConfig) -> List[str]:
+        Get tags with model and task-specific additions.
+    get_save_dir(output_dir: Path) -> Path:
+        Get absolute wandb save directory.
+    """
 
     project: str = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.PROJECT]
     entity: Optional[str] = WANDB_CONFIG_DEFAULTS[WANDB_CONFIG.ENTITY]
@@ -333,7 +393,26 @@ class WandBConfig(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
-    """Top-level experiment configuration"""
+    """
+    Top-level experiment configuration.
+
+    Public methods
+    --------------
+    anonymize(inplace: bool = False, placeholder: str = ANONYMIZATION_PLACEHOLDER_DEFAULT) -> "ExperimentConfig":
+        Create an anonymized copy of the config with all Path-like values masked.
+    from_json(filepath: Path) -> "ExperimentConfig":
+            Load from JSON file.
+    from_yaml(filepath: Path) -> "ExperimentConfig":
+            Load from YAML file.
+    get_experiment_name() -> str:
+            Generate a descriptive experiment name based on model and task configs.
+    to_dict() -> dict:
+            Export to plain dictionary.
+    to_json(filepath: Path) -> None:
+            Save to JSON file.
+    to_yaml(filepath: Path) -> None:
+            Save to YAML file.
+    """
 
     # Experiment metadata
     name: Optional[str] = EXPERIMENT_CONFIG_DEFAULTS[EXPERIMENT_CONFIG.NAME]
@@ -357,85 +436,7 @@ class ExperimentConfig(BaseModel):
     limit_train_batches: float = 1.0
     limit_val_batches: float = 1.0
 
-    model_config = ConfigDict(extra="forbid")  # Catch config typos!
-
-    # Convenience methods
-    def to_dict(self):
-        """Export to plain dict"""
-        return self.model_dump()
-
-    def to_json(self, filepath: Path):
-        """Save to JSON"""
-        filepath.write_text(self.model_dump_json(indent=2))
-
-    @classmethod
-    def from_json(cls, filepath: Path):
-        """Load from JSON"""
-        return cls.model_validate_json(filepath.read_text())
-
-    def to_yaml(self, filepath: Path):
-        """Save to YAML"""
-        import yaml
-
-        # Convert Path objects to strings for YAML serialization
-        data = self.model_dump()
-
-        def convert_paths(obj):
-            if isinstance(obj, dict):
-                return {k: convert_paths(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_paths(item) for item in obj]
-            elif isinstance(obj, Path):
-                return str(obj)
-            else:
-                return obj
-
-        data = convert_paths(data)
-        with open(filepath, "w") as f:
-            yaml.dump(data, f)
-
-    @classmethod
-    def from_yaml(cls, filepath: Path):
-        """Load from YAML"""
-        import yaml
-
-        with open(filepath) as f:
-            data = yaml.safe_load(f)
-
-        # Get config file's directory for resolving relative paths
-        config_dir = filepath.parent.resolve()
-
-        # Convert string paths back to Path objects and resolve relative paths to absolute
-        def convert_strings_to_paths(obj, key=None):
-            if isinstance(obj, dict):
-                return {k: convert_strings_to_paths(v, k) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [convert_strings_to_paths(item) for item in obj]
-            elif isinstance(obj, str) and key in [
-                DATA_CONFIG.STORE_DIR,
-                DATA_CONFIG.SBML_DFS_PATH,
-                DATA_CONFIG.NAPISTU_GRAPH_PATH,
-                EXPERIMENT_CONFIG.OUTPUT_DIR,
-            ]:
-                path = Path(obj)
-                # Resolve relative paths to absolute paths relative to config file directory
-                # These paths should always be resolved to absolute paths
-                if not path.is_absolute():
-                    return (config_dir / path).resolve()
-                else:
-                    return path.resolve()
-            else:
-                return obj
-
-        # Apply path conversion
-        data = convert_strings_to_paths(data)
-
-        return cls(**data)
-
-    def get_experiment_name(self) -> str:
-        """Generate a descriptive experiment name based on model and task configs"""
-        arch_str = self.model.get_architecture_string()
-        return f"{arch_str}_{self.task.task}"
+    # public methods
 
     def anonymize(
         self,
@@ -515,9 +516,101 @@ class ExperimentConfig(BaseModel):
         else:
             return anonymized_config
 
+    @classmethod
+    def from_json(cls, filepath: Path):
+        """Load from JSON"""
+        return cls.model_validate_json(filepath.read_text())
+
+    @classmethod
+    def from_yaml(cls, filepath: Path):
+        """Load from YAML"""
+        import yaml
+
+        with open(filepath) as f:
+            data = yaml.safe_load(f)
+
+        # Get config file's directory for resolving relative paths
+        config_dir = filepath.parent.resolve()
+
+        # Convert string paths back to Path objects and resolve relative paths to absolute
+        def convert_strings_to_paths(obj, key=None):
+            if isinstance(obj, dict):
+                return {k: convert_strings_to_paths(v, k) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_strings_to_paths(item) for item in obj]
+            elif isinstance(obj, str) and key in [
+                DATA_CONFIG.STORE_DIR,
+                DATA_CONFIG.SBML_DFS_PATH,
+                DATA_CONFIG.NAPISTU_GRAPH_PATH,
+                EXPERIMENT_CONFIG.OUTPUT_DIR,
+            ]:
+                path = Path(obj)
+                # Resolve relative paths to absolute paths relative to config file directory
+                # These paths should always be resolved to absolute paths
+                if not path.is_absolute():
+                    return (config_dir / path).resolve()
+                else:
+                    return path.resolve()
+            else:
+                return obj
+
+        # Apply path conversion
+        data = convert_strings_to_paths(data)
+
+        return cls(**data)
+
+    def get_experiment_name(self) -> str:
+        """Generate a descriptive experiment name based on model and task configs"""
+        arch_str = self.model.get_architecture_string()
+        return f"{arch_str}_{self.task.task}"
+
+    def to_dict(self):
+        """Export to plain dict"""
+        return self.model_dump()
+
+    def to_json(self, filepath: Path):
+        """Save to JSON"""
+        filepath.write_text(self.model_dump_json(indent=2))
+
+    def to_yaml(self, filepath: Path):
+        """Save to YAML"""
+        import yaml
+
+        # Convert Path objects to strings for YAML serialization
+        data = self.model_dump()
+
+        def convert_paths(obj):
+            if isinstance(obj, dict):
+                return {k: convert_paths(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_paths(item) for item in obj]
+            elif isinstance(obj, Path):
+                return str(obj)
+            else:
+                return obj
+
+        data = convert_paths(data)
+        with open(filepath, "w") as f:
+            yaml.dump(data, f)
+
+    model_config = ConfigDict(extra="forbid")  # Catch config typos!
+
 
 class RunManifest(BaseModel):
-    """Manifest file containing all information about a training run."""
+    """
+    Manifest file containing all information about a training run.
+
+    This is a wrapper around the ExperimentConfig that includes WandB information and a timestamp.
+
+    Public methods
+    --------------
+    from_yaml(filepath: Path) -> "RunManifest":
+        Load manifest from YAML file.
+    get_run_summary() -> dict:
+        Get summary metrics from WandB for this experiment.
+    to_yaml(filepath: Path) -> None:
+        Save manifest to YAML file.
+    """
 
     # Timestamps
     created_at: datetime = Field(
@@ -546,27 +639,6 @@ class RunManifest(BaseModel):
         description="Complete experiment configuration"
     )
 
-    def to_yaml(self, filepath: Path) -> None:
-        """
-        Save manifest to YAML file.
-
-        Parameters
-        ----------
-        filepath : Path
-            Path where the YAML file will be written
-        """
-        import yaml
-
-        filepath.parent.mkdir(parents=True, exist_ok=True)
-
-        # Pydantic automatically serializes nested models
-        # Use mode="json" to convert Path objects to strings
-        data = self.model_dump(mode="json")
-
-        # Write to YAML file
-        with open(filepath, "w") as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
-
     @classmethod
     def from_yaml(cls, filepath: Path) -> "RunManifest":
         """
@@ -589,6 +661,68 @@ class RunManifest(BaseModel):
 
         # Pydantic automatically converts the dict to ExperimentConfig when creating the model
         return cls(**data)
+
+    def get_run_summary(self) -> dict:
+        """
+        Get summary metrics from WandB for this experiment.
+
+        Retrieves the summary metrics (final values) from the WandB run
+        associated with this experiment.
+
+        Returns
+        -------
+        dict
+            Dictionary containing summary metrics from WandB (e.g., final
+            validation AUC, training loss, etc.)
+
+        Raises
+        ------
+        ValueError
+            If WandB run ID is not available
+        RuntimeError
+            If WandB API access fails
+
+        Examples
+        --------
+        >>> manifest = RunManifest.from_yaml("run_manifest.yaml")
+        >>> summary = manifest.get_run_summary()
+        >>> print(summary["val_auc"])  # Final validation AUC
+        """
+        from napistu_torch.ml.wandb import _get_wandb_run_object
+
+        if not self.wandb_run_id:
+            raise ValueError("WandB run ID is not available in manifest")
+
+        run = _get_wandb_run_object(
+            wandb_entity=self.wandb_entity,
+            wandb_project=self.wandb_project,
+            wandb_run_id=self.wandb_run_id,
+        )
+
+        # Extract summary metrics
+        summary = run.summary._json_dict
+        return summary
+
+    def to_yaml(self, filepath: Path) -> None:
+        """
+        Save manifest to YAML file.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path where the YAML file will be written
+        """
+        import yaml
+
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+
+        # Pydantic automatically serializes nested models
+        # Use mode="json" to convert Path objects to strings
+        data = self.model_dump(mode="json")
+
+        # Write to YAML file
+        with open(filepath, "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
 
 
 # Public functions for working with configs

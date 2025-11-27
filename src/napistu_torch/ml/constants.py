@@ -24,3 +24,33 @@ DEVICE = SimpleNamespace(
 )
 
 VALID_DEVICES = list(DEVICE.__dict__.values())
+
+# metrics
+
+METRIC_SUMMARIES = SimpleNamespace(
+    VAL_AUC="val_auc",
+    TEST_AUC="test_auc",
+    VAL_AP="val_ap",
+    TEST_AP="test_ap",
+    TRAIN_LOSS="train_loss",
+    BEST_EPOCH="epoch",
+)
+
+# Lookup table for nice display names
+METRIC_DISPLAY_NAMES = {
+    METRIC_SUMMARIES.VAL_AUC: "Validation AUC",
+    METRIC_SUMMARIES.TEST_AUC: "Test AUC",
+    METRIC_SUMMARIES.VAL_AP: "Validation AP",
+    METRIC_SUMMARIES.TEST_AP: "Test AP",
+    METRIC_SUMMARIES.TRAIN_LOSS: "Training Loss",
+    METRIC_SUMMARIES.BEST_EPOCH: "Best Epoch",
+}
+
+# Default metrics to include in model cards
+DEFAULT_MODEL_CARD_METRICS = [
+    METRIC_SUMMARIES.VAL_AUC,
+    METRIC_SUMMARIES.TEST_AUC,
+    METRIC_SUMMARIES.VAL_AP,
+    METRIC_SUMMARIES.TEST_AP,
+    METRIC_SUMMARIES.BEST_EPOCH,
+]

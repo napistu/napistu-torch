@@ -19,6 +19,7 @@ from napistu_torch.constants import (
     RUN_MANIFEST_DEFAULTS,
 )
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
+from napistu_torch.ml.constants import METRIC_SUMMARIES
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.napistu_data_store import NapistuDataStore
 from napistu_torch.utils.optional import import_lightning, require_lightning
@@ -296,16 +297,7 @@ class EvaluationManager:
         >>> summary = manager.get_run_summary()
         >>> print(summary["val_auc"])  # Final validation AUC
         """
-        from wandb import Api  # optional dependency
-
-        api = Api()
-
-        run_path = f"{self.wandb_entity}/{self.wandb_project}/{self.wandb_run_id}"
-        run = api.run(run_path)
-
-        # Extract summary metrics
-        summary = run.summary._json_dict
-        return summary
+        return self.manifest.get_run_summary()
 
     @require_lightning
     def load_model_from_checkpoint(
@@ -596,7 +588,9 @@ def _parse_checkpoint_filename(filename: str | Path) -> Tuple[int, float] | None
     else:
         filename_str = str(filename)
 
-    match = re.search(r"epoch=(\d+)-val_auc=(0\.[\d]+)", filename_str)
+    match = re.search(
+        rf"epoch=(\d+)-{METRIC_SUMMARIES.VAL_AUC}=(0\.[\d]+)", filename_str
+    )
 
     if not match:
         return None
