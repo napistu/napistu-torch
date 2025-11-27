@@ -1,7 +1,10 @@
 import logging
 from typing import Optional, Tuple
 
+import pandas as pd
 from lightning.pytorch.loggers import WandbLogger
+from wandb import Api
+from wandb.sdk.wandb_run import Run
 
 from napistu_torch.configs import (
     ExperimentConfig,
@@ -15,6 +18,10 @@ from napistu_torch.constants import (
     TASK_CONFIG,
     TRAINING_CONFIG,
     WANDB_CONFIG,
+)
+from napistu_torch.ml.constants import (
+    DEFAULT_MODEL_CARD_METRICS,
+    METRIC_DISPLAY_NAMES,
 )
 
 logger = logging.getLogger(__name__)
@@ -211,6 +218,84 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
     return wandb_logger
 
 
+def get_wandb_metrics_table(
+    run_path: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_project: Optional[str] = None,
+    wandb_run_id: Optional[str] = None,
+    metrics: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    """
+    Get performance metrics from a WandB run as a DataFrame.
+
+    Parameters
+    ----------
+    run_path : Optional[str]
+        The path to the WandB run (format: "entity/project/run_id")
+    wandb_entity : Optional[str]
+        The entity of the WandB run
+    wandb_project : Optional[str]
+        The project of the WandB run
+    wandb_run_id : Optional[str]
+        The ID of the WandB run
+    metrics : Optional[list[str]]
+        List of metric keys to extract. If None, uses DEFAULT_MODEL_CARD_METRICS.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns ['metric', 'value'] containing the metrics
+
+    Raises
+    ------
+    ValueError
+        If neither run_path nor (wandb_entity, wandb_project, wandb_run_id) are provided
+
+    Examples
+    --------
+    >>> # Get default metrics
+    >>> df = get_run_metrics_dataframe(run_path="entity/project/abc123")
+    >>> print(df)
+              metric    value
+    0  Validation AUC  0.8923
+    1       Test AUC  0.8856
+    ...
+
+    >>> # Get specific metrics
+    >>> from napistu_torch.ml.constants import METRIC_SUMMARIES
+    >>> df = get_run_metrics_dataframe(
+    ...     run_path="entity/project/abc123",
+    ...     metrics=[METRIC_SUMMARIES.VAL_AUC, METRIC_SUMMARIES.TRAIN_LOSS]
+    ... )
+    """
+    # Use default metrics if none specified
+    if metrics is None:
+        metrics = DEFAULT_MODEL_CARD_METRICS
+
+    # Get WandB run object
+    run = _get_wandb_run_object(
+        run_path=run_path,
+        wandb_entity=wandb_entity,
+        wandb_project=wandb_project,
+        wandb_run_id=wandb_run_id,
+    )
+
+    # Extract metrics from summary
+    summary = run.summary._json_dict
+
+    # Build DataFrame
+    rows = []
+    for metric_key in metrics:
+        value = summary.get(metric_key)
+        display_name = METRIC_DISPLAY_NAMES.get(metric_key, metric_key)
+        rows.append({"metric": display_name, "value": value})
+
+    return pd.DataFrame(rows)
+
+
+# private functions
+
+
 def _define_minimal_experiment_summaries(cfg: ExperimentConfig) -> dict:
     """
     Extract only the key hyperparameters for W&B logging.
@@ -262,3 +347,42 @@ def _define_minimal_experiment_summaries(cfg: ExperimentConfig) -> dict:
             data_config, DATA_CONFIG.NAPISTU_DATA_NAME
         ),
     }
+
+
+def _get_wandb_run_object(
+    run_path: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_project: Optional[str] = None,
+    wandb_run_id: Optional[str] = None,
+) -> Run:
+    """
+    Get the WandB run object.
+
+    Either run_path or wandb_entity, wandb_project, and wandb_run_id must be provided.
+
+    Parameters
+    ----------
+    run_path : Optional[str]
+        The path to the WandB run
+    wandb_entity : Optional[str]
+        The entity of the WandB run
+    wandb_project : Optional[str]
+        The project of the WandB run
+    wandb_run_id : Optional[str]
+        The ID of the WandB run
+
+    Returns
+    -------
+    Run
+        The WandB run object
+    """
+
+    if run_path is None:
+        if wandb_entity is None or wandb_project is None or wandb_run_id is None:
+            raise ValueError(
+                "wandb_entity, wandb_project, and wandb_run_id are required if run_path is not provided"
+            )
+        run_path = f"{wandb_entity}/{wandb_project}/{wandb_run_id}"
+
+    api = Api()
+    return api.run(run_path)

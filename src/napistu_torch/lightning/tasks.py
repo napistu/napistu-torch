@@ -17,7 +17,7 @@ from napistu_torch.constants import (
     PYG,
     SCHEDULERS,
 )
-from napistu_torch.ml.constants import TRAINING
+from napistu_torch.ml.constants import METRIC_SUMMARIES, TRAINING
 from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.tasks.edge_prediction import EdgePredictionTask
@@ -243,7 +243,13 @@ class EdgePredictionLightning(BaseLightningTask):
         loss = self.task.compute_loss(prepared_batch)
 
         # Log
-        self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log(
+            METRIC_SUMMARIES.TRAIN_LOSS,
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+        )
 
         return loss
 
@@ -357,7 +363,13 @@ class NodeClassificationLightning(BaseLightningTask):
         """Training step - batch should be a NapistuData object."""
         _validate_is_napistu_data(batch, "training_step")
         loss = self.task.training_step(batch)
-        self.log("train_loss", loss, prog_bar=True, on_step=False, on_epoch=True)
+        self.log(
+            METRIC_SUMMARIES.TRAIN_LOSS,
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+        )
         return loss
 
     def validation_step(self, batch, batch_idx):

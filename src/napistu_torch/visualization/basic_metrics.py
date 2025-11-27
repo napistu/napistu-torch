@@ -5,14 +5,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 
+from napistu_torch.ml.constants import METRIC_SUMMARIES
+
 
 def plot_model_comparison(
     summaries: Dict[str, Dict[str, Any]],
     display_names: List[str],
     figsize: Tuple[int, int] = (16, 6),
-    train_loss_attribute: str = "train_loss",
-    test_auc_attribute: str = "test_auc",
-    val_auc_attribute: str = "val_auc",
+    train_loss_attribute: str = METRIC_SUMMARIES.TRAIN_LOSS,
+    test_auc_attribute: str = METRIC_SUMMARIES.TEST_AUC,
+    val_auc_attribute: str = METRIC_SUMMARIES.VAL_AUC,
 ) -> Tuple[plt.Figure, Tuple[plt.Axes, plt.Axes]]:
     """Create comparison plots for model training loss and test/val AUC.
 
