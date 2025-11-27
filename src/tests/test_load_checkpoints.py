@@ -11,6 +11,7 @@ from napistu_torch.load.checkpoints import (
     EncoderMetadata,
     HeadMetadata,
     ModelMetadata,
+    _validate_same_data,
 )
 from napistu_torch.load.constants import (
     CHECKPOINT_HYPERPARAMETERS,
@@ -332,15 +333,34 @@ class TestCheckpoint:
         # Should not raise an error when data matches
         checkpoint.assert_same_napistu_data(napistu_data)
 
-    def test_assert_same_napistu_data_fails_on_mismatch(
-        self, napistu_data, species_type_prediction_napistu_data
-    ):
-        """Test assert_same_napistu_data fails when data doesn't match."""
-        checkpoint_dict = create_minimal_checkpoint_dict(napistu_data)
-        checkpoint = Checkpoint(checkpoint_dict)
 
-        # Use a different NapistuData fixture with labels (has train/val/test splits)
-        # This will cause extra fields in the current data summary
-        # Should raise ValueError when data doesn't match
-        with pytest.raises(ValueError, match="Data summary"):
-            checkpoint.assert_same_napistu_data(species_type_prediction_napistu_data)
+def test_validate_same_data_fails_on_mismatch(
+    napistu_data, species_type_prediction_napistu_data
+):
+    """Test _validate_same_data fails when data summaries don't match."""
+    # Get summaries with simplify=True
+    checkpoint_summary = napistu_data.get_summary(simplify=True)
+    current_summary = species_type_prediction_napistu_data.get_summary(simplify=True)
+
+    # Use a different NapistuData fixture with labels (has train/val/test splits)
+    # This will cause extra fields in the current data summary
+    # Should raise ValueError when data doesn't match
+    with pytest.raises(ValueError, match="Data summary"):
+        _validate_same_data(checkpoint_summary, current_summary)
+
+
+def test_validate_same_data_edge_vs_relation_prediction(
+    edge_masked_napistu_data, edge_prediction_with_sbo_relations
+):
+    """Test _validate_same_data fails when comparing edge and relation prediction fixtures."""
+    # Get summaries with simplify=True
+    checkpoint_summary = edge_masked_napistu_data.get_summary(simplify=True)
+    current_summary = edge_prediction_with_sbo_relations.get_summary(simplify=True)
+
+    # Should raise ValueError because the summaries differ
+    # (edge_masked has no relations, edge_prediction_with_sbo_relations has relations)
+    with pytest.raises(ValueError, match="Data summary"):
+        _validate_same_data(checkpoint_summary, current_summary, allow_missing_keys=[])
+
+    # With default allow_missing_keys, this should pass since NUM_RELATIONS is allowed
+    _validate_same_data(checkpoint_summary, current_summary)

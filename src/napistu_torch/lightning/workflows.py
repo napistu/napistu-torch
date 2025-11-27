@@ -828,7 +828,15 @@ def _load_pretrained_weights(
 
     # Load head weights if requested
     if model_config.pretrained_model_load_head:
-        if head_state_dict:
+        # Check if head has any parameters (some heads like DotProductHead have none)
+        head_has_params = len(list(model.task.head.parameters())) > 0
+
+        if not head_has_params:
+            logger.info(
+                "Head has no trainable parameters (e.g., DotProductHead). "
+                "Skipping head weight loading."
+            )
+        elif head_state_dict:
             logger.info(f"Loading {len(head_state_dict)} head parameters...")
             missing_keys, unexpected_keys = model.task.head.load_state_dict(
                 head_state_dict, strict=False
@@ -846,8 +854,10 @@ def _load_pretrained_weights(
                 for param in model.task.head.parameters():
                     param.requires_grad = False
         else:
+            # Head has parameters but no state dict found in checkpoint
             raise ValueError(
-                "No head state dict found in checkpoint but pretrained_model_load_heads is True"
+                "No head state dict found in checkpoint but pretrained_model_load_head is True. "
+                "The head has trainable parameters that need to be loaded."
             )
 
     logger.info("✓ Pretrained weights loaded successfully")

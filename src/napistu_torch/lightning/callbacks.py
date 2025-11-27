@@ -163,8 +163,8 @@ class SetHyperparametersCallback(Callback):
 
         logger.info(
             f"Saved metadata: "
-            f"encoder_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.ENCODER, {}).get(MODEL_DEFS.ENCODER_TYPE)}, "
-            f"head_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.HEAD, {}).get(MODEL_DEFS.HEAD_TYPE)}, "
+            f"encoder_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.ENCODER, {}).get(MODEL_DEFS.ENCODER)}, "
+            f"head_type={hparams_dict[CHECKPOINT_HYPERPARAMETERS.MODEL].get(MODEL_DEFS.HEAD, {}).get(MODEL_DEFS.HEAD)}, "
             f"data_name={hparams_dict[CHECKPOINT_HYPERPARAMETERS.DATA].get(NAPISTU_DATA.NAME)}"
         )
 

@@ -76,6 +76,7 @@ NAPISTU_DATA_SUMMARIES = SimpleNamespace(
     HAS_LABELING_MANAGER="has_labeling_manager",
     HAS_RELATION_MANAGER="has_relation_manager",
     NUM_UNIQUE_RELATIONS="num_unique_relations",
+    NUM_UNIQUE_CLASSES="num_unique_classes",
     NUM_TRAIN_EDGES="num_train_edges",
     NUM_VAL_EDGES="num_val_edges",
     NUM_TEST_EDGES="num_test_edges",

@@ -6,13 +6,18 @@ This module provides utilities for loading and validating pretrained Napistu-Tor
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import torch
 from pydantic import BaseModel, Field, field_validator
 
 from napistu_torch.configs import ModelConfig
-from napistu_torch.constants import MODEL_COMPONENTS, MODEL_CONFIG
+from napistu_torch.constants import (
+    MODEL_COMPONENTS,
+    MODEL_CONFIG,
+    NAPISTU_DATA_SUMMARIES,
+    PYG,
+)
 from napistu_torch.load.constants import (
     CHECKPOINT_HYPERPARAMETERS,
     CHECKPOINT_STRUCTURE,
@@ -664,7 +669,13 @@ class CheckpointStructure(BaseModel):
 
 
 def _validate_same_data(
-    checkpoint_summary: Dict[str, Any], current_summary: Dict[str, Any]
+    checkpoint_summary: Dict[str, Any],
+    current_summary: Dict[str, Any],
+    allow_missing_keys: List[str] = [
+        PYG.NUM_EDGE_FEATURES,
+        NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS,
+        NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_CLASSES,
+    ],
 ) -> None:
     """
     Validate that the data summary from the checkpoint and the current NapistuData are the same.
@@ -675,6 +686,10 @@ def _validate_same_data(
         Data summary from checkpoint
     current_summary : Dict[str, Any]
         Data summary from current NapistuData
+    allow_missing_keys : List[str], optional
+        Keys that are allowed to be missing in either the current or checkpoint summary.
+        If included in the current and checkpoint summary, values are still expected to match.
+        By default: [MODEL_DEFS.NUM_RELATIONS, MODEL_DEFS.EDGE_IN_CHANNELS, MODEL_DEFS.NUM_CLASSES]
 
     Raises
     ------
@@ -684,22 +699,30 @@ def _validate_same_data(
     # Check for missing keys
     checkpoint_keys = set(checkpoint_summary.keys())
     current_keys = set(current_summary.keys())
+    allow_missing_keys_set = set(allow_missing_keys)
 
-    if checkpoint_keys != current_keys:
-        missing_in_current = checkpoint_keys - current_keys
-        extra_in_current = current_keys - checkpoint_keys
+    key_union = checkpoint_keys | current_keys
+    key_intersection = checkpoint_keys & current_keys
+    key_difference = key_union - key_intersection
+    key_difference_without_allow_missing = key_difference - allow_missing_keys_set
+
+    if key_difference_without_allow_missing:
+        missing_in_checkpoint = key_difference_without_allow_missing & checkpoint_keys
+        missing_in_current = key_difference_without_allow_missing & current_keys
 
         msg_parts = ["Data summary mismatch:"]
+        if missing_in_checkpoint:
+            msg_parts.append(
+                f"  Missing in checkpoint data: {sorted(missing_in_checkpoint)}"
+            )
         if missing_in_current:
             msg_parts.append(f"  Missing in current data: {sorted(missing_in_current)}")
-        if extra_in_current:
-            msg_parts.append(f"  Extra in current data: {sorted(extra_in_current)}")
 
         raise ValueError("\n".join(msg_parts))
 
-    # Check for value mismatches
+    # Check for value mismatches among defined keys
     mismatches = []
-    for key in checkpoint_keys:
+    for key in key_intersection:
         ckpt_val = checkpoint_summary[key]
         curr_val = current_summary[key]
 
