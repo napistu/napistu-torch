@@ -203,29 +203,32 @@ class ModelConfig(BaseModel):
         Returns
         -------
         str
-            Formatted architecture details including encoder, head, hidden channels,
-            layers, dropout, edge encoder, and relation-aware information.
+            Formatted architecture details as a nested bulleted list with encoder and head
+            as top-level categories, including their properties nested underneath.
         """
+
+        if self.use_edge_encoder:
+            edge_encoder_info = f"  - Edge Encoder: ✓ (dim={self.edge_encoder_dim})"
+        else:
+            edge_encoder_info = "  - Edge Encoder: ✗"
+
+        if self.head in RELATION_AWARE_HEADS:
+            relation_aware_info = "  - Relation-Aware: ✓"
+        else:
+            relation_aware_info = "  - Relation-Aware: ✗"
+
         lines = [
-            "ModelConfig(",
-            f"  encoder={self.encoder}",
-            f"  head={self.head}",
-            f"  hidden_channels={self.hidden_channels}",
-            f"  num_layers={self.num_layers}",
-            f"  dropout={self.dropout}",
+            "- **Encoder**",
+            f"  - Type: `{self.encoder}`",
+            f"  - Hidden Channels: `{self.hidden_channels}`",
+            f"  - Number of Layers: `{self.num_layers}`",
+            f"  - Dropout: `{self.dropout}`",
+            edge_encoder_info,
+            "- **Head**",
+            f"  - Type: `{self.head}`",
+            relation_aware_info,
         ]
 
-        # Add edge encoder info
-        if self.use_edge_encoder:
-            lines.append(f"  edge_encoder=✓ (dim={self.edge_encoder_dim})")
-        else:
-            lines.append("  edge_encoder=✗")
-
-        # Add relation-aware info if applicable
-        if self.head in RELATION_AWARE_HEADS:
-            lines.append(f"  relation_aware=✓ ({self.head})")
-
-        lines.append(")")
         return "\n".join(lines)
 
     model_config = ConfigDict(extra="forbid")  # Catch typos

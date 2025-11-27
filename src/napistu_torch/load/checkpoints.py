@@ -106,6 +106,7 @@ class Checkpoint:
         self.encoder_metadata = self.model_metadata.encoder
         self.head_metadata = self.model_metadata.head
         self.edge_encoder_metadata = self.model_metadata.edge_encoder
+        self.environment_info = self.hyper_parameters.environment
 
     def assert_same_napistu_data(self, napistu_data: NapistuData) -> None:
         """
@@ -137,6 +138,17 @@ class Checkpoint:
 
         _validate_same_data(checkpoint_summary, current_summary)
 
+    def get_edge_encoder_config(self) -> Dict[str, Any]:
+        """
+        Get edge encoder configuration as dictionary.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Edge encoder configuration dictionary
+        """
+        return self.edge_encoder_metadata.model_dump()
+
     def get_encoder_config(self) -> Dict[str, Any]:
         """
         Get encoder configuration as dictionary.
@@ -147,6 +159,17 @@ class Checkpoint:
             Encoder configuration dictionary
         """
         return self.encoder_metadata.model_dump()
+
+    def get_environment_info(self) -> Dict[str, Any]:
+        """
+        Get environment information as dictionary.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Environment information dictionary
+        """
+        return self.environment_info.model_dump()
 
     def get_head_config(self) -> Dict[str, Any]:
         """

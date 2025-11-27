@@ -23,6 +23,7 @@ from napistu_torch.ml.constants import (
     DEFAULT_MODEL_CARD_METRICS,
     METRIC_DISPLAY_NAMES,
 )
+from napistu_torch.utils.constants import METRIC_VALUE_TABLE
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,7 @@ def get_wandb_metrics_table(
     wandb_project: Optional[str] = None,
     wandb_run_id: Optional[str] = None,
     metrics: Optional[list[str]] = None,
+    filter_missing_metrics: bool = True,
 ) -> pd.DataFrame:
     """
     Get performance metrics from a WandB run as a DataFrame.
@@ -240,11 +242,14 @@ def get_wandb_metrics_table(
         The ID of the WandB run
     metrics : Optional[list[str]]
         List of metric keys to extract. If None, uses DEFAULT_MODEL_CARD_METRICS.
+    filter_missing_metrics: bool = True,
+        Whether to filter out metrics that are missing (None or 0 values) from the run summary.
 
     Returns
     -------
     pd.DataFrame
         DataFrame with columns ['metric', 'value'] containing the metrics
+        Rows are filtered based on filter_missing_metrics parameter.
 
     Raises
     ------
@@ -288,9 +293,17 @@ def get_wandb_metrics_table(
     for metric_key in metrics:
         value = summary.get(metric_key)
         display_name = METRIC_DISPLAY_NAMES.get(metric_key, metric_key)
-        rows.append({"metric": display_name, "value": value})
+        rows.append(
+            {METRIC_VALUE_TABLE.METRIC: display_name, METRIC_VALUE_TABLE.VALUE: value}
+        )
 
-    return pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
+    if filter_missing_metrics:
+        df = df[
+            df[METRIC_VALUE_TABLE.VALUE].notna() & (df[METRIC_VALUE_TABLE.VALUE] != 0)
+        ]
+
+    return df
 
 
 # private functions
