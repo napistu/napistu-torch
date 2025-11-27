@@ -12,7 +12,11 @@ from torch.optim import Adam, AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import (
+    OPTIMIZERS,
+    PYG,
+    SCHEDULERS,
+)
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.models.constants import EDGE_WEIGHTING_TYPE, ENCODER_DEFS
 from napistu_torch.napistu_data import NapistuData
@@ -39,22 +43,19 @@ class BaseLightningTask(pl.LightningModule):
         self.task = task
         self.config = config
 
-        # Save hyperparameters (logged to W&B automatically)
-        self.save_hyperparameters(ignore=["task"])
-
     def configure_optimizers(self):
         """Shared optimizer configuration."""
         # Get all parameters
         params = self.task.parameters()
 
         # Create optimizer
-        if self.config.optimizer == "adam":
+        if self.config.optimizer == OPTIMIZERS.ADAM:
             optimizer = Adam(
                 params,
                 lr=self.config.lr,
                 weight_decay=self.config.weight_decay,
             )
-        elif self.config.optimizer == "adamw":
+        elif self.config.optimizer == OPTIMIZERS.ADAMW:
             optimizer = AdamW(
                 params,
                 lr=self.config.lr,
@@ -67,7 +68,7 @@ class BaseLightningTask(pl.LightningModule):
         if self.config.scheduler is None:
             return optimizer
 
-        elif self.config.scheduler == "plateau":
+        elif self.config.scheduler == SCHEDULERS.PLATEAU:
             scheduler = ReduceLROnPlateau(
                 optimizer,
                 mode="max",
@@ -83,7 +84,7 @@ class BaseLightningTask(pl.LightningModule):
                 },
             }
 
-        elif self.config.scheduler == "cosine":
+        elif self.config.scheduler == SCHEDULERS.COSINE:
             scheduler = CosineAnnealingLR(
                 optimizer,
                 T_max=self.trainer.max_epochs,
@@ -144,7 +145,7 @@ class EdgePredictionLightning(BaseLightningTask):
                 self.task.encoder.edge_weighting_type
                 == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER
             ):
-                edge_data = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+                edge_data = getattr(data, PYG.EDGE_ATTR, None)
             elif (
                 self.task.encoder.edge_weighting_type
                 == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS
@@ -191,7 +192,7 @@ class EdgePredictionLightning(BaseLightningTask):
 
         self.eval()
         data = data.to(self.device)
-        edge_attr = getattr(data, NAPISTU_DATA.EDGE_ATTR, None)
+        edge_attr = getattr(data, PYG.EDGE_ATTR, None)
         if edge_attr is None:
             raise ValueError(
                 "NapistuData.edge_attr is required to compute learned edge weights."
@@ -220,6 +221,16 @@ class EdgePredictionLightning(BaseLightningTask):
         """
         # Detect batch type and extract data
         data, edge_indices = self._unpack_batch(batch)
+
+        # Ensure data is on the correct device
+        # In full-batch mode, Lightning moves the NapistuData batch automatically, so data is already on device
+        # In mini-batch mode, datamodule.data is stored data (not a batch), so it may still be on CPU
+        # Calling .to() is idempotent, so safe to call in both cases
+        data = data.to(self.device)
+        if edge_indices is not None:
+            # edge_indices is part of the batch, so Lightning moves it automatically
+            # but ensure it's on the same device as data (defensive)
+            edge_indices = edge_indices.to(self.device)
 
         # Prepare batch for the task
         prepared_batch = self.task.prepare_batch(
@@ -315,6 +326,8 @@ class EdgePredictionLightning(BaseLightningTask):
             logger.debug(f"Mini-batch mode: {len(batch)} edge indices")
 
             # Get full data from datamodule
+            # Note: Lightning moves batches to device automatically, but datamodule.data
+            # is stored data (not a batch) that may still be on CPU
             data = self.trainer.datamodule.data
 
             return data, batch

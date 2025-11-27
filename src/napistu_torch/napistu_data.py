@@ -19,11 +19,14 @@ from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
 )
 from napistu.network.ng_core import NapistuGraph
+from napistu.utils import show
 from torch_geometric.data import Data
 
 from napistu_torch.constants import (
     NAPISTU_DATA,
     NAPISTU_DATA_DEFAULT_NAME,
+    NAPISTU_DATA_SUMMARIES,
+    PYG,
 )
 from napistu_torch.labels.apply import decode_labels
 from napistu_torch.labels.labeling_manager import LabelingManager
@@ -41,6 +44,7 @@ from napistu_torch.load.encoding import (
 )
 from napistu_torch.load.encoding_manager import EncodingManager
 from napistu_torch.ml.constants import DEVICE
+from napistu_torch.utils.nd_utils import format_summary
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +108,8 @@ class NapistuData(Data):
         Get edge weights as a 1D tensor
     get_feature_by_name(feature_name)
         Get a feature by name from the NapistuData object
+    get_summary()
+        Get a summary of the NapistuData object
     get_vertex_feature_names()
         Get the names of vertex features
     get_vertex_names()
@@ -114,8 +120,8 @@ class NapistuData(Data):
         Save the NapistuData object to disk
     show_memory_footprint()
         Display memory footprint of the NapistuData object
-    summary()
-        Get a summary of the NapistuData object
+    show_summary()
+        Display a summary of the NapistuData object
     trim(keep_edge_attr=True, keep_labels=True, keep_masks=True, inplace=False)
         Trim the NapistuData object to keep only the specified attributes
     unencode_features(napistu_graph, attribute_type, attribute, encoding_manager=None)
@@ -188,10 +194,10 @@ class NapistuData(Data):
 
         # Build parameters dict, only including non-None values
         params = {
-            NAPISTU_DATA.X: x,
-            NAPISTU_DATA.EDGE_INDEX: edge_index,
-            NAPISTU_DATA.EDGE_ATTR: edge_attr,
-            NAPISTU_DATA.EDGE_WEIGHT: edge_weight,
+            PYG.X: x,
+            PYG.EDGE_INDEX: edge_index,
+            PYG.EDGE_ATTR: edge_attr,
+            PYG.EDGE_WEIGHT: edge_weight,
             NAPISTU_DATA.NAME: name,
         }
 
@@ -199,7 +205,7 @@ class NapistuData(Data):
         if y is not None:
             if not isinstance(y, torch.Tensor):
                 raise ValueError("if provided, y (node labels) must be a torch.Tensor")
-            params[NAPISTU_DATA.Y] = y
+            params[PYG.Y] = y
 
         if vertex_feature_names is not None:
             if not isinstance(vertex_feature_names, list):
@@ -331,9 +337,9 @@ class NapistuData(Data):
         >>> print(f"Node features: {footprint['node_features'] / 1e9:.2f} GB")
         """
         memory_dict: Dict[str, Optional[int]] = {
-            NAPISTU_DATA.X: None,
-            NAPISTU_DATA.EDGE_INDEX: None,
-            NAPISTU_DATA.EDGE_ATTR: None,
+            PYG.X: None,
+            PYG.EDGE_INDEX: None,
+            PYG.EDGE_ATTR: None,
             NAPISTU_DATA.TRAIN_MASK: None,
             NAPISTU_DATA.VAL_MASK: None,
             NAPISTU_DATA.TEST_MASK: None,
@@ -343,23 +349,23 @@ class NapistuData(Data):
         total_bytes = 0
 
         # Node features
-        if hasattr(self, NAPISTU_DATA.X) and self.x is not None:
+        if hasattr(self, PYG.X) and self.x is not None:
             node_bytes = self.x.element_size() * self.x.nelement()
-            memory_dict[NAPISTU_DATA.X] = node_bytes
+            memory_dict[PYG.X] = node_bytes
             total_bytes += node_bytes
 
         # Edge index
-        if hasattr(self, NAPISTU_DATA.EDGE_INDEX) and self.edge_index is not None:
+        if hasattr(self, PYG.EDGE_INDEX) and self.edge_index is not None:
             edge_index_bytes = (
                 self.edge_index.element_size() * self.edge_index.nelement()
             )
-            memory_dict[NAPISTU_DATA.EDGE_INDEX] = edge_index_bytes
+            memory_dict[PYG.EDGE_INDEX] = edge_index_bytes
             total_bytes += edge_index_bytes
 
         # Edge attributes
-        if hasattr(self, NAPISTU_DATA.EDGE_ATTR) and self.edge_attr is not None:
+        if hasattr(self, PYG.EDGE_ATTR) and self.edge_attr is not None:
             edge_attr_bytes = self.edge_attr.element_size() * self.edge_attr.nelement()
-            memory_dict[NAPISTU_DATA.EDGE_ATTR] = edge_attr_bytes
+            memory_dict[PYG.EDGE_ATTR] = edge_attr_bytes
             total_bytes += edge_attr_bytes
 
         # Masks
@@ -432,11 +438,11 @@ class NapistuData(Data):
         ...     print(f"Edge weights shape: {weights.shape}")
         ...     print(f"Mean weight: {weights.mean():.3f}")
         """
-        result = getattr(self, NAPISTU_DATA.EDGE_WEIGHT, None)
+        result = getattr(self, PYG.EDGE_WEIGHT, None)
         if result is None:
             logger.warning(
                 "Edge weights not found in NapistuData. "
-                f"Attribute '{NAPISTU_DATA.EDGE_WEIGHT}' is missing."
+                f"Attribute '{PYG.EDGE_WEIGHT}' is missing."
             )
         return result
 
@@ -538,7 +544,10 @@ class NapistuData(Data):
         relation_type = getattr(self, NAPISTU_DATA.RELATION_TYPE, None)
         if relation_type is None:
             raise ValueError(
-                "Relation type not found in NapistuData. Attribute 'relation_type' is missing."
+                "Relation type not found in NapistuData. Attribute 'relation_type' is missing. "
+                "This NapistuData object does not contain relation information. "
+                "To use relation-aware heads (RotatE, TransE, DistMult), create NapistuData "
+                "with relation_strata_type parameter or ensure relation_type is set."
             )
 
         # Get unique relation types
@@ -556,6 +565,112 @@ class NapistuData(Data):
             )
 
         return num_relations
+
+    def get_summary(self, simplify: bool = False) -> Dict[str, Any]:
+        """
+        Get a summary of the NapistuData object.
+
+        Parameters
+        ----------
+        simplify : bool, default=False
+            If True, return a simplified summary with only essential information.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Dictionary containing summary information about the data object
+        """
+
+        # core attributes
+        summary_dict = {
+            NAPISTU_DATA.NAME: self.name,
+            PYG.NUM_NODES: self.num_nodes,
+            PYG.NUM_EDGES: self.num_edges,
+            PYG.NUM_NODE_FEATURES: self.num_node_features,
+            PYG.NUM_EDGE_FEATURES: self.num_edge_features,
+        }
+
+        if (
+            hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY)
+            and getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY) is not None
+        ):
+            summary_dict[NAPISTU_DATA.SPLITTING_STRATEGY] = getattr(
+                self, NAPISTU_DATA.SPLITTING_STRATEGY
+            )
+        if (
+            hasattr(self, NAPISTU_DATA.RELATION_TYPE)
+            and getattr(self, NAPISTU_DATA.RELATION_TYPE) is not None
+        ):
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS] = int(
+                getattr(self, NAPISTU_DATA.RELATION_TYPE).unique().numel()
+            )
+        if (
+            hasattr(self, NAPISTU_DATA.TRAIN_MASK)
+            and getattr(self, NAPISTU_DATA.TRAIN_MASK) is not None
+        ):
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TRAIN_EDGES] = int(
+                getattr(self, NAPISTU_DATA.TRAIN_MASK).sum()
+            )
+        if (
+            hasattr(self, NAPISTU_DATA.VAL_MASK)
+            and getattr(self, NAPISTU_DATA.VAL_MASK) is not None
+        ):
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_VAL_EDGES] = int(
+                getattr(self, NAPISTU_DATA.VAL_MASK).sum()
+            )
+        if (
+            hasattr(self, NAPISTU_DATA.TEST_MASK)
+            and getattr(self, NAPISTU_DATA.TEST_MASK) is not None
+        ):
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TEST_EDGES] = int(
+                getattr(self, NAPISTU_DATA.TEST_MASK).sum()
+            )
+
+        if simplify:
+            return summary_dict
+
+        # Feature names (optional but useful)
+        vertex_feature_names = self.get_vertex_feature_names()
+        if vertex_feature_names is not None:
+            summary_dict[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
+
+        edge_feature_names = self.get_edge_feature_names()
+        if edge_feature_names is not None:
+            summary_dict[NAPISTU_DATA.EDGE_FEATURE_NAMES] = edge_feature_names
+
+        # Boolean flags for backward compatibility
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_VERTEX_FEATURE_NAMES] = (
+            vertex_feature_names is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_FEATURE_NAMES] = (
+            edge_feature_names is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_WEIGHTS] = (
+            hasattr(self, PYG.EDGE_WEIGHT)
+            and getattr(self, PYG.EDGE_WEIGHT) is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_VERTEX_NAMES] = (
+            hasattr(self, NAPISTU_DATA.NG_VERTEX_NAMES)
+            and getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES) is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_EDGE_NAMES] = (
+            hasattr(self, NAPISTU_DATA.NG_EDGE_NAMES)
+            and getattr(self, NAPISTU_DATA.NG_EDGE_NAMES) is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_SPLITTING_STRATEGY] = (
+            hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY)
+            and getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY) is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_LABELING_MANAGER] = (
+            hasattr(self, NAPISTU_DATA.LABELING_MANAGER)
+            and getattr(self, NAPISTU_DATA.LABELING_MANAGER) is not None
+        )
+        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_RELATION_MANAGER] = (
+            hasattr(self, NAPISTU_DATA.RELATION_MANAGER)
+            and getattr(self, NAPISTU_DATA.RELATION_MANAGER) is not None
+        )
+
+        return summary_dict
 
     def get_vertex_feature_names(self) -> Optional[List[str]]:
         """
@@ -702,18 +817,16 @@ class NapistuData(Data):
         memory_dict = self.estimate_memory_footprint()
 
         # Node features
-        if memory_dict[NAPISTU_DATA.X] is not None:
-            print(f"Node features: {memory_dict[NAPISTU_DATA.X] / 1e9:.2f} GB")
+        if memory_dict[PYG.X] is not None:
+            print(f"Node features: {memory_dict[PYG.X] / 1e9:.2f} GB")
 
         # Edge index
-        if memory_dict[NAPISTU_DATA.EDGE_INDEX] is not None:
-            print(f"Edge index: {memory_dict[NAPISTU_DATA.EDGE_INDEX] / 1e9:.2f} GB")
+        if memory_dict[PYG.EDGE_INDEX] is not None:
+            print(f"Edge index: {memory_dict[PYG.EDGE_INDEX] / 1e9:.2f} GB")
 
         # Edge attributes
-        if memory_dict[NAPISTU_DATA.EDGE_ATTR] is not None:
-            print(
-                f"Edge attributes: {memory_dict[NAPISTU_DATA.EDGE_ATTR] / 1e9:.2f} GB"
-            )
+        if memory_dict[PYG.EDGE_ATTR] is not None:
+            print(f"Edge attributes: {memory_dict[PYG.EDGE_ATTR] / 1e9:.2f} GB")
 
         # Masks
         for mask_name in [
@@ -726,33 +839,13 @@ class NapistuData(Data):
 
         print(f"\nTotal data: {memory_dict['total'] / 1e9:.2f} GB")
 
-    def summary(self) -> Dict[str, Any]:
+    def show_summary(self) -> None:
         """
-        Get a summary of the NapistuData object.
-
-        Returns
-        -------
-        Dict[str, Any]
-            Dictionary containing summary information about the data object
+        Display a summary of the NapistuData object.
         """
-        summary_dict = {
-            NAPISTU_DATA.NAME: self.name,
-            "num_nodes": self.num_nodes,
-            "num_edges": self.num_edges,
-            "num_node_features": self.num_node_features,
-            "num_edge_features": self.num_edge_features,
-            "has_vertex_feature_names": hasattr(
-                self, NAPISTU_DATA.VERTEX_FEATURE_NAMES
-            ),
-            "has_edge_feature_names": hasattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES),
-            "has_edge_weights": hasattr(self, NAPISTU_DATA.EDGE_WEIGHT),
-            "has_ng_vertex_names": hasattr(self, NAPISTU_DATA.NG_VERTEX_NAMES),
-            "has_ng_edge_names": hasattr(self, NAPISTU_DATA.NG_EDGE_NAMES),
-            "has_splitting_strategy": hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY),
-            "has_labeling_manager": hasattr(self, NAPISTU_DATA.LABELING_MANAGER),
-        }
-
-        return summary_dict
+        summary = self.get_summary()
+        summary_table = format_summary(summary)
+        show(summary_table)
 
     def trim(
         self,
@@ -829,23 +922,23 @@ class NapistuData(Data):
         """
 
         new_attrs = {
-            NAPISTU_DATA.X: self.x,
-            NAPISTU_DATA.EDGE_INDEX: self.edge_index,
+            PYG.X: self.x,
+            PYG.EDGE_INDEX: self.edge_index,
             # edge_attr is always included to satisfy NapistuData.__init__ requirements
             # If keep_edge_attr=False, use empty tensor (saves memory while keeping API compatibility)
-            NAPISTU_DATA.EDGE_ATTR: (
+            PYG.EDGE_ATTR: (
                 self.edge_attr if keep_edge_attr else torch.empty((self.num_edges, 0))
             ),
             NAPISTU_DATA.NAME: NAPISTU_DATA_DEFAULT_NAME + "_trimmed",
         }
 
         # Add edge_weight if present
-        if hasattr(self, NAPISTU_DATA.EDGE_WEIGHT) and self.edge_weight is not None:
-            new_attrs[NAPISTU_DATA.EDGE_WEIGHT] = self.edge_weight
+        if hasattr(self, PYG.EDGE_WEIGHT) and self.edge_weight is not None:
+            new_attrs[PYG.EDGE_WEIGHT] = self.edge_weight
 
         # Add labels if requested
-        if keep_labels and hasattr(self, NAPISTU_DATA.Y) and self.y is not None:
-            new_attrs[NAPISTU_DATA.Y] = self.y
+        if keep_labels and hasattr(self, PYG.Y) and self.y is not None:
+            new_attrs[PYG.Y] = self.y
 
         # Add masks if requested
         if keep_masks:
@@ -1303,13 +1396,13 @@ class NapistuData(Data):
         """
 
         # Check if NapistuData has encoded labels
-        if not hasattr(self, NAPISTU_DATA.Y) or getattr(self, NAPISTU_DATA.Y) is None:
+        if not hasattr(self, PYG.Y) or getattr(self, PYG.Y) is None:
             raise ValueError(
                 "NapistuData object does not have encoded labels (y attribute)"
             )
 
         # Get the encoded labels and vertex names from NapistuData
-        encoded_labels = getattr(self, NAPISTU_DATA.Y)
+        encoded_labels = getattr(self, PYG.Y)
         vertex_names = getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES, None)
 
         if vertex_names is None:
@@ -1392,10 +1485,6 @@ class NapistuData(Data):
 
     def __repr__(self) -> str:
         """String representation of the NapistuData object."""
-        summary = self.summary()
-        return (
-            f"NapistuData(num_nodes={summary['num_nodes']}, "
-            f"num_edges={summary['num_edges']}, "
-            f"num_node_features={summary['num_node_features']}, "
-            f"num_edge_features={summary['num_edge_features']})"
-        )
+        summary = self.get_summary()
+        summary_table = format_summary(summary)
+        return summary_table.to_string(index=False)

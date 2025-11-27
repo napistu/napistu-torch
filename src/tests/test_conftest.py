@@ -3,7 +3,7 @@
 import torch
 from torch_geometric.data import Data
 
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import NAPISTU_DATA, PYG
 from napistu_torch.labels.constants import LABEL_TYPE
 from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import SPLITTING_STRATEGIES
@@ -59,7 +59,7 @@ def test_species_type_prediction_napistu_data_fixture(
     assert species_type_prediction_napistu_data.num_node_features > 0
     assert species_type_prediction_napistu_data.num_edge_features > 0
     # Supervised data should have labels
-    assert hasattr(species_type_prediction_napistu_data, NAPISTU_DATA.Y)
+    assert hasattr(species_type_prediction_napistu_data, PYG.Y)
     assert species_type_prediction_napistu_data.y is not None
     assert (
         species_type_prediction_napistu_data.y.shape[0]
@@ -92,8 +92,7 @@ def test_unlabeled_napistu_data_fixture(unlabeled_napistu_data):
     assert unlabeled_napistu_data.num_edge_features > 0
     # Unlabeled data should not have labels
     assert (
-        not hasattr(unlabeled_napistu_data, NAPISTU_DATA.Y)
-        or unlabeled_napistu_data.y is None
+        not hasattr(unlabeled_napistu_data, PYG.Y) or unlabeled_napistu_data.y is None
     )
     # Check if labeling_manager exists, and if so, it should be None
     if hasattr(unlabeled_napistu_data, NAPISTU_DATA.LABELING_MANAGER):

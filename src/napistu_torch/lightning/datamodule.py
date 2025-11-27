@@ -22,6 +22,7 @@ from napistu_torch.constants import (
     DATA_CONFIG,
     NAPISTU_DATA_TRIM_ARGS,
 )
+from napistu_torch.lightning.constants import NAPISTU_DATA_MODULE
 from napistu_torch.load.artifacts import DEFAULT_ARTIFACT_REGISTRY, ArtifactDefinition
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.napistu_data import NapistuData
@@ -179,7 +180,6 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
     @property
     def num_edge_features(self) -> int:
         """Get the number of edge features from the data."""
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
         if isinstance(self.napistu_data, dict):
             return self.napistu_data[TRAINING.TRAIN].num_edge_features
         elif isinstance(self.napistu_data, NapistuData):
@@ -193,7 +193,6 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
     @property
     def num_node_features(self) -> int:
         """Get the number of node features from the data."""
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
         if isinstance(self.napistu_data, dict):
             return self.napistu_data[TRAINING.TRAIN].num_node_features
         elif isinstance(self.napistu_data, NapistuData):
@@ -210,10 +209,15 @@ class NapistuDataModule(pl.LightningDataModule, ABC):
 
         Shared setup logic for all subclasses.
         """
-        # ... KEEP YOUR EXISTING IMPLEMENTATION ...
-        if hasattr(self, "data") and self.data is not None:
+        if (
+            hasattr(self, NAPISTU_DATA_MODULE.DATA)
+            and getattr(self, NAPISTU_DATA_MODULE.DATA) is not None
+        ):
             return
-        if hasattr(self, "train_data") and self.train_data is not None:
+        if (
+            hasattr(self, NAPISTU_DATA_MODULE.TRAIN_DATA)
+            and getattr(self, NAPISTU_DATA_MODULE.TRAIN_DATA) is not None
+        ):
             return
 
         if isinstance(self.napistu_data, dict):

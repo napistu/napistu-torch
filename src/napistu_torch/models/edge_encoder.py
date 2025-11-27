@@ -4,8 +4,16 @@ Edge encoder for Napistu-Torch.
 This module provides a simple MLP-based edge encoder for learning edge importance weights.
 """
 
+from typing import Any, Dict
+
 import torch
 import torch.nn as nn
+
+from napistu_torch.models.constants import (
+    EDGE_ENCODER_ARGS,
+    EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES,
+    MODEL_DEFS,
+)
 
 
 class EdgeEncoder(nn.Module):
@@ -36,6 +44,15 @@ class EdgeEncoder(nn.Module):
         - 1.4 → sigmoid(1.4) ≈ 0.8 (optimistic, most edges good)
         - -1.4 → sigmoid(-1.4) ≈ 0.2 (pessimistic, most edges bad)
 
+    Public Methods
+    --------------
+    config(self) -> Dict[str, Any]:
+        Get the configuration dictionary for this edge encoder.
+    forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
+        Compute edge importance weights from edge features.
+    get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
+        Get the summary dictionary for this edge encoder.
+
     Examples
     --------
     >>> # Create edge encoder
@@ -44,12 +61,6 @@ class EdgeEncoder(nn.Module):
     >>> # Use with GNNEncoder
     >>> edge_weights = edge_encoder(edge_attr)  # [num_edges, 10] -> [num_edges]
     >>> z = gnn_encoder(x, edge_index, edge_weight=edge_weights)
-    >>>
-    >>> # Start from heuristic weights
-    >>> edge_encoder = EdgeEncoder.from_heuristic(
-    ...     edge_dim=10,
-    ...     heuristic_weight_idx=3  # Use column 3 as starting point
-    ... )
 
     Notes
     -----
@@ -68,6 +79,14 @@ class EdgeEncoder(nn.Module):
     ):
         super().__init__()
 
+        # Store all initialization parameters FIRST
+        self._init_args = {
+            MODEL_DEFS.EDGE_IN_CHANNELS: edge_dim,
+            EDGE_ENCODER_ARGS.HIDDEN_DIM: hidden_dim,
+            EDGE_ENCODER_ARGS.DROPOUT: dropout,
+            EDGE_ENCODER_ARGS.INIT_BIAS: init_bias,
+        }
+
         self.edge_dim = edge_dim
         self.hidden_dim = hidden_dim
 
@@ -83,6 +102,11 @@ class EdgeEncoder(nn.Module):
         # Initialize output layer bias
         with torch.no_grad():
             self.net[-2].bias.fill_(init_bias)
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """Get the configuration dictionary for this edge encoder."""
+        return self._init_args.copy()
 
     def forward(self, edge_attr: torch.Tensor) -> torch.Tensor:
         """
@@ -101,58 +125,22 @@ class EdgeEncoder(nn.Module):
         """
         return self.net(edge_attr).squeeze(-1)
 
-    @classmethod
-    def from_heuristic(
-        cls,
-        edge_dim: int,
-        heuristic_weight_idx: int,
-        hidden_dim: int = 32,
-    ) -> "EdgeEncoder":
+    def get_summary(self, to_model_config_names: bool = False) -> Dict[str, Any]:
         """
-        Create an EdgeEncoder initialized to use a heuristic weight column.
+        Get the summary dictionary for this edge encoder.
 
-        Useful for warm-starting from existing edge weights. The model starts
-        by using your heuristic, then learns to improve it during training.
-
-        Parameters
-        ----------
-        edge_dim : int
-            Dimensionality of edge features
-        heuristic_weight_idx : int
-            Index of the column in edge_attr containing heuristic weights
-            These weights should be in range [0, 1]
-        hidden_dim : int, default=32
-            Hidden layer size
-
-        Returns
-        -------
-        EdgeEncoder
-            Initialized to approximate heuristic[:, heuristic_weight_idx]
-
-        Examples
-        --------
-        >>> # edge_attr[:, 3] contains your heuristic edge weights
-        >>> edge_encoder = EdgeEncoder.from_heuristic(
-        ...     edge_dim=10,
-        ...     heuristic_weight_idx=3
-        ... )
-        >>> # Initially: edge_encoder(edge_attr) ≈ edge_attr[:, 3]
-        >>> # After training: edge_encoder(edge_attr) = learned improvements
+        Returns a dict containing all initialization parameters needed
+        to reconstruct this edge encoder instance.
         """
-        encoder = cls(edge_dim=edge_dim, hidden_dim=hidden_dim, init_bias=0.0)
 
-        # Initialize first layer to extract the heuristic column
-        with torch.no_grad():
-            # Zero out all input weights except the heuristic column
-            encoder.net[0].weight.zero_()
-            encoder.net[0].weight[:, heuristic_weight_idx] = 1.0
-            encoder.net[0].bias.zero_()
+        if to_model_config_names:
+            summary = {}
+            for k, v in self._init_args.items():
+                if k in EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES:
+                    summary[EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES[k]] = v
+                else:
+                    summary[k] = v
+        else:
+            summary = self.config
 
-            # Initialize output layer to pass through (identity via sigmoid)
-            # For sigmoid to be nearly identity around [0, 1], use:
-            # y ≈ x when sigmoid(a*x + b) ≈ x
-            # This is approximate, but good enough for initialization
-            encoder.net[-2].weight.fill_(1.0)
-            encoder.net[-2].bias.zero_()
-
-        return encoder
+        return summary

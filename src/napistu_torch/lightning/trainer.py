@@ -5,13 +5,10 @@ Provides a NapistuTrainer class that wraps PyTorch Lightning Trainer
 with Napistu-specific configurations and conveniences.
 """
 
-import time
 from typing import List, Optional, Union
 
-import numpy as np
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import (
-    Callback,
     EarlyStopping,
     LearningRateMonitor,
     ModelCheckpoint,
@@ -20,48 +17,14 @@ from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 
 from napistu_torch.configs import ExperimentConfig
+from napistu_torch.lightning.callbacks import (
+    ExperimentTimingCallback,
+    SetHyperparametersCallback,
+)
 from napistu_torch.lightning.constants import (
     TRAINER_MODES,
     VALID_TRAINER_MODES,
 )
-
-
-class ExperimentTimingCallback(Callback):
-    """Track detailed timing for architecture comparison."""
-
-    def on_train_start(self, trainer, pl_module):
-        self.start_time = time.time()
-        self.epoch_times = []
-
-    def on_train_epoch_start(self, trainer, pl_module):
-        self.epoch_start = time.time()
-
-    def on_train_epoch_end(self, trainer, pl_module):
-        epoch_duration = time.time() - self.epoch_start
-        self.epoch_times.append(epoch_duration)
-
-        # Log per-epoch timing (only if logger exists)
-        if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
-            trainer.logger.experiment.log(
-                {
-                    "epoch_duration_seconds": epoch_duration,
-                    "avg_epoch_duration": sum(self.epoch_times) / len(self.epoch_times),
-                }
-            )
-
-    def on_train_end(self, trainer, pl_module):
-        total_time = time.time() - self.start_time
-
-        # Log summary statistics (only if logger exists)
-        if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
-            trainer.logger.experiment.log(
-                {
-                    "total_train_time_minutes": total_time / 60,
-                    "total_epochs_completed": len(self.epoch_times),
-                    "time_per_epoch_avg": sum(self.epoch_times) / len(self.epoch_times),
-                    "time_per_epoch_std": np.std(self.epoch_times),
-                }
-            )
 
 
 class NapistuTrainer:
@@ -194,6 +157,7 @@ class NapistuTrainer:
                     monitor=self.config.training.early_stopping_metric,
                     patience=self.config.training.early_stopping_patience,
                     mode="max",  # Assuming metric like AUC (higher is better)
+                    check_on_train_epoch_end=False,  # Only check after validation
                     verbose=True,
                 )
             )
@@ -223,6 +187,8 @@ class NapistuTrainer:
 
         # Timing callback (always useful)
         callbacks.append(ExperimentTimingCallback())
+
+        callbacks.append(SetHyperparametersCallback())
 
         return callbacks
 

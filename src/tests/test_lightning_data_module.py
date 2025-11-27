@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from napistu_torch.configs import ExperimentConfig, ModelConfig, TaskConfig
-from napistu_torch.constants import NAPISTU_DATA
+from napistu_torch.constants import PYG
 from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.ml.constants import (
     SPLIT_TO_MASK,
@@ -86,7 +86,7 @@ def test_datamodule_trimming_from_store(
     """Test that loading napistu_data from store applies attribute trimming based on config."""
     # Verify original data in store has expected attributes
     assert hasattr(
-        edge_masked_napistu_data, NAPISTU_DATA.EDGE_ATTR
+        edge_masked_napistu_data, PYG.EDGE_ATTR
     ), "Original data should have edge_attr"
     assert hasattr(
         edge_masked_napistu_data, SPLIT_TO_MASK[TRAINING.TRAIN]

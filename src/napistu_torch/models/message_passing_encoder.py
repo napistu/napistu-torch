@@ -6,7 +6,7 @@ Edge weights are stored in edge attributes for supervision, not encoding.
 """
 
 import logging
-from typing import Optional, Union
+from typing import Any, Dict, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -73,6 +73,24 @@ class MessagePassingEncoder(nn.Module):
     graph_conv_aggregator : str, optional
         Aggregation method for GraphConv, by default 'add'
 
+    Public Methods
+    --------------
+    config(self) -> Dict[str, Any]:
+        Get the configuration dictionary for this encoder.
+    encode(x: torch.Tensor, edge_index: torch.Tensor, edge_data: Optional[torch.Tensor] = None) -> torch.Tensor:
+        Alias for forward method for consistency with other models.
+    from_config(config: ModelConfig, in_channels: int, edge_in_channels: Optional[int] = None) -> "MessagePassingEncoder":
+        Create a MessagePassingEncoder from a ModelConfig instance.
+    forward(x: torch.Tensor, edge_index: torch.Tensor, edge_data: Optional[torch.Tensor] = None) -> torch.Tensor:
+        Forward pass through the encoder.
+    get_summary(self) -> Dict[str, Any]:
+        Get encoder metadata summary for checkpointing.
+
+    Private Methods
+    ---------------
+    _parse_edge_weighting(weight_edges_by: Optional[Union[torch.Tensor, nn.Module]], supports_edge_weight: bool, encoder_type: str) -> tuple[str, Optional[Union[torch.Tensor, nn.Module]]]:
+        Parse weight_edges_by parameter into type indicator and value.
+
     Notes
     -----
     This encoder does NOT use edge weights for message passing. If you need
@@ -111,9 +129,23 @@ class MessagePassingEncoder(nn.Module):
         sage_aggregator: str = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR,
     ):
         super().__init__()
+
+        # Store all initialization parameters FIRST
+        self._init_args = {
+            MODEL_DEFS.ENCODER_TYPE: encoder_type,
+            MODEL_DEFS.IN_CHANNELS: in_channels,
+            MODEL_DEFS.HIDDEN_CHANNELS: hidden_channels,
+            MODEL_DEFS.NUM_LAYERS: num_layers,
+            MODEL_DEFS.DROPOUT: dropout,
+            ENCODER_SPECIFIC_ARGS.GAT_HEADS: gat_heads,
+            ENCODER_SPECIFIC_ARGS.GAT_CONCAT: gat_concat,
+            ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR: graph_conv_aggregator,
+            ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR: sage_aggregator,
+        }
+
+        self.encoder_type = encoder_type
         self.num_layers = num_layers
         self.dropout = dropout
-        self.encoder_type = encoder_type
 
         # Map encoder types to classes
         if encoder_type not in VALID_ENCODERS:
@@ -183,6 +215,47 @@ class MessagePassingEncoder(nn.Module):
                     self.convs.append(
                         encoder(hidden_channels, hidden_channels, **encoder_kwargs)
                     )
+
+    @property
+    def config(self) -> Dict[str, Any]:
+        """
+        Get the configuration dictionary for this encoder.
+
+        Returns a dict containing all initialization parameters needed
+        to reconstruct this encoder instance.
+
+        Returns
+        -------
+        Dict[str, Any]
+            Configuration dictionary with all __init__ parameters
+        """
+        return self._init_args.copy()
+
+    def encode(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_data: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """
+        Alias for forward method for consistency with other models.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Node feature matrix [num_nodes, in_channels]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        edge_data : Optional[torch.Tensor]
+            Edge data [num_edges, edge_dim] for edge weighting.
+            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
+
+        Returns
+        -------
+        torch.Tensor
+            Node embeddings [num_nodes, hidden_channels]
+        """
+        return self.forward(x, edge_index, edge_data)
 
     def forward(
         self,
@@ -257,32 +330,6 @@ class MessagePassingEncoder(nn.Module):
                 x = F.dropout(x, p=self.dropout, training=self.training)
 
         return x
-
-    def encode(
-        self,
-        x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_data: Optional[torch.Tensor] = None,
-    ) -> torch.Tensor:
-        """
-        Alias for forward method for consistency with other models.
-
-        Parameters
-        ----------
-        x : torch.Tensor
-            Node feature matrix [num_nodes, in_channels]
-        edge_index : torch.Tensor
-            Edge connectivity [2, num_edges]
-        edge_data : Optional[torch.Tensor]
-            Edge data [num_edges, edge_dim] for edge weighting.
-            Can be edge attributes (for learnable encoder) or edge weights (for static weighting).
-
-        Returns
-        -------
-        torch.Tensor
-            Node embeddings [num_nodes, hidden_channels]
-        """
-        return self.forward(x, edge_index, edge_data)
 
     @classmethod
     def from_config(
@@ -365,7 +412,7 @@ class MessagePassingEncoder(nn.Module):
             in_channels=in_channels,
             hidden_channels=getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             num_layers=getattr(config, MODEL_DEFS.NUM_LAYERS),
-            dropout=getattr(config, ENCODER_SPECIFIC_ARGS.DROPOUT),
+            dropout=getattr(config, MODEL_DEFS.DROPOUT),
             encoder_type=encoder_type,
             weight_edges_by=weight_edges_by,
             **model_kwargs,
@@ -374,6 +421,37 @@ class MessagePassingEncoder(nn.Module):
             f"Created MessagePassingEncoder with edge_weighting_type={getattr(result, ENCODER_DEFS.EDGE_WEIGHTING_TYPE, 'N/A')}"
         )
         return result
+
+    def get_summary(self) -> Dict[str, Any]:
+        """
+        Get encoder metadata summary for checkpointing.
+
+        Returns essential metadata needed to reconstruct the encoder.
+        """
+        summary = {}
+        summary[MODEL_DEFS.ENCODER] = self._init_args[MODEL_DEFS.ENCODER_TYPE]
+        summary[MODEL_DEFS.IN_CHANNELS] = self._init_args[MODEL_DEFS.IN_CHANNELS]
+        summary[MODEL_DEFS.HIDDEN_CHANNELS] = self._init_args[
+            MODEL_DEFS.HIDDEN_CHANNELS
+        ]
+        summary[MODEL_DEFS.NUM_LAYERS] = self._init_args[MODEL_DEFS.NUM_LAYERS]
+        summary[MODEL_DEFS.DROPOUT] = self._init_args[MODEL_DEFS.DROPOUT]
+        if self.encoder_type == ENCODERS.GAT:
+            summary[ENCODER_SPECIFIC_ARGS.GAT_HEADS] = self._init_args[
+                ENCODER_SPECIFIC_ARGS.GAT_HEADS
+            ]
+            summary[ENCODER_SPECIFIC_ARGS.GAT_CONCAT] = self._init_args[
+                ENCODER_SPECIFIC_ARGS.GAT_CONCAT
+            ]
+        elif self.encoder_type == ENCODERS.GRAPH_CONV:
+            summary[ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR] = self._init_args[
+                ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR
+            ]
+        elif self.encoder_type == ENCODERS.SAGE:
+            summary[ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR] = self._init_args[
+                ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR
+            ]
+        return summary
 
 
 # private utils

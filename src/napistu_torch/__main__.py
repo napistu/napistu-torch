@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import sys
 from pathlib import Path
 from typing import Optional
@@ -18,7 +19,7 @@ from napistu_torch._cli import (
 from napistu_torch.configs import create_template_yaml
 from napistu_torch.constants import RUN_MANIFEST, RUN_MANIFEST_DEFAULTS
 from napistu_torch.evaluation.evaluation_manager import EvaluationManager
-from napistu_torch.lightning.constants import EXPERIMENT_DICT, TRAINER_MODES
+from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import (
     fit_model,
     log_experiment_overview,
@@ -167,7 +168,7 @@ def publish(
     "--checkpoint",
     type=str,
     default="last",
-    help="Checkpoint name or path. Can be 'last' (default), a checkpoint filename (e.g., 'best-epoch=50-val_auc=0.85.ckpt'), or a full path.",
+    help="Checkpoint name or path. Can be 'last' (default), 'best' (highest validation AUC), a checkpoint filename (e.g., 'best-epoch=50-val_auc=0.85.ckpt'), or a full path.",
 )
 @verbosity_option
 def resume(out_dir: Path, checkpoint: str, verbosity: str):
@@ -204,8 +205,11 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
     try:
         # Load experiment from manifest
         evaluation_manager = EvaluationManager(out_dir)
+        run_manifest = evaluation_manager.manifest
 
         # Determine checkpoint to use
+        if checkpoint == "best":
+            checkpoint = None  # default behavior is to use the best checkpoint
         try:
             checkpoint_path = evaluation_manager._resolve_checkpoint_path(checkpoint)
         except ValueError as e:
@@ -219,12 +223,7 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
         logger.info("=" * 80)
 
         # Resume experiment (in train mode)
-        experiment_dict = resume_experiment(
-            evaluation_manager, mode=TRAINER_MODES.TRAIN, logger=logger
-        )
-
-        # Continue training
-        fit_model(experiment_dict, resume_from=checkpoint_path, logger=logger)
+        fit_model(run_manifest, resume_from=checkpoint_path, logger=logger)
 
         logger.info("Training resumed and completed successfully! 🎉")
 
@@ -405,12 +404,25 @@ def train(
         manifest_path = (
             config.output_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
         )
+
+        logger.info("Preparing experiment to generate manifest...")
         experiment_dict = prepare_experiment(config, logger=logger)
         log_experiment_overview(experiment_dict, logger=logger)
-        experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST].to_yaml(manifest_path)
+
+        # Extract and save manifest
+        run_manifest = experiment_dict[EXPERIMENT_DICT.RUN_MANIFEST]
+        manifest_path = (
+            config.output_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
+        )
+        run_manifest.to_yaml(manifest_path)
         logger.info(f"Saved run manifest to {manifest_path}")
 
-        fit_model(experiment_dict, resume_from=None, logger=logger)
+        # Clean up the big experiment_dict - fit_model will recreate it from manifest
+        del experiment_dict
+        gc.collect()
+
+        # When training from scratch, clean up all existing checkpoints
+        fit_model(run_manifest, resume_from=None, logger=logger)
 
         logger.info("Training completed successfully! 🎉")
 

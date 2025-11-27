@@ -9,6 +9,7 @@ from napistu_torch.models.constants import (
     EDGE_ENCODER_ARGS,
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,
+    HEAD_SPECIFIC_ARGS,
     HEADS,
     MODEL_DEFS,
 )
@@ -25,18 +26,26 @@ ARTIFACT_TYPES = SimpleNamespace(
 
 VALID_ARTIFACT_TYPES = list(ARTIFACT_TYPES.__dict__.values())
 
-NAPISTU_DATA = SimpleNamespace(
-    EDGE_ATTR="edge_attr",
-    EDGE_FEATURE_NAMES="edge_feature_names",
-    EDGE_FEATURE_NAME_ALIASES="edge_feature_name_aliases",
+PYG = SimpleNamespace(
+    X="x",
+    Y="y",
     EDGE_INDEX="edge_index",
     EDGE_WEIGHT="edge_weight",
+    EDGE_ATTR="edge_attr",
+    # properites
+    NUM_NODES="num_nodes",
+    NUM_EDGES="num_edges",
+    NUM_NODE_FEATURES="num_node_features",
+    NUM_EDGE_FEATURES="num_edge_features",
+)
+
+NAPISTU_DATA = SimpleNamespace(
+    EDGE_FEATURE_NAMES="edge_feature_names",
+    EDGE_FEATURE_NAME_ALIASES="edge_feature_name_aliases",
     NG_EDGE_NAMES="ng_edge_names",
     NG_VERTEX_NAMES="ng_vertex_names",
     VERTEX_FEATURE_NAMES="vertex_feature_names",
     VERTEX_FEATURE_NAME_ALIASES="vertex_feature_name_aliases",
-    X="x",
-    Y="y",
     NAME="name",
     SPLITTING_STRATEGY="splitting_strategy",
     LABELS="labels",
@@ -55,6 +64,22 @@ NAPISTU_DATA_TRIM_ARGS = SimpleNamespace(
     KEEP_LABELS="keep_labels",
     KEEP_MASKS="keep_masks",
     KEEP_RELATION_TYPE="keep_relation_type",
+)
+
+NAPISTU_DATA_SUMMARIES = SimpleNamespace(
+    HAS_VERTEX_FEATURE_NAMES="has_vertex_feature_names",
+    HAS_EDGE_FEATURE_NAMES="has_edge_feature_names",
+    HAS_EDGE_WEIGHTS="has_edge_weights",
+    HAS_NG_VERTEX_NAMES="has_ng_vertex_names",
+    HAS_NG_EDGE_NAMES="has_ng_edge_names",
+    HAS_SPLITTING_STRATEGY="has_splitting_strategy",
+    HAS_LABELING_MANAGER="has_labeling_manager",
+    HAS_RELATION_MANAGER="has_relation_manager",
+    NUM_UNIQUE_RELATIONS="num_unique_relations",
+    NUM_UNIQUE_CLASSES="num_unique_classes",
+    NUM_TRAIN_EDGES="num_train_edges",
+    NUM_VAL_EDGES="num_val_edges",
+    NUM_TEST_EDGES="num_test_edges",
 )
 
 # VertexTensor
@@ -143,19 +168,37 @@ DATA_CONFIG_DEFAULTS = {
 }
 
 MODEL_CONFIG = SimpleNamespace(
-    ENCODER="encoder",  # for brevity, maps to encoder_type in models.constants.ENCODERS
-    HEAD="head",  # for brevity, maps to head_type in models.constants.HEADS
+    ENCODER=MODEL_DEFS.ENCODER,  # for brevity, maps to encoder_type in models.constants.ENCODERS
+    HEAD=MODEL_DEFS.HEAD,  # for brevity, maps to head_type in models.constants.HEADS
     USE_EDGE_ENCODER="use_edge_encoder",
+    # encoders
     HIDDEN_CHANNELS=MODEL_DEFS.HIDDEN_CHANNELS,
     NUM_LAYERS=MODEL_DEFS.NUM_LAYERS,
-    DROPOUT=ENCODER_SPECIFIC_ARGS.DROPOUT,
+    DROPOUT=MODEL_DEFS.DROPOUT,
     GAT_HEADS=ENCODER_SPECIFIC_ARGS.GAT_HEADS,
     GAT_CONCAT=ENCODER_SPECIFIC_ARGS.GAT_CONCAT,
     GRAPH_CONV_AGGREGATOR=ENCODER_SPECIFIC_ARGS.GRAPH_CONV_AGGREGATOR,
     SAGE_AGGREGATOR=ENCODER_SPECIFIC_ARGS.SAGE_AGGREGATOR,
-    EDGE_IN_CHANNELS=EDGE_ENCODER_ARGS.EDGE_IN_CHANNELS,
+    # edge encoders
     EDGE_ENCODER_DIM=EDGE_ENCODER_ARGS.EDGE_ENCODER_DIM,
     EDGE_ENCODER_DROPOUT=EDGE_ENCODER_ARGS.EDGE_ENCODER_DROPOUT,
+    EDGE_ENCODER_INIT_BIAS=EDGE_ENCODER_ARGS.EDGE_ENCODER_INIT_BIAS,
+    # heads
+    MLP_HIDDEN_DIM=HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM,
+    MLP_NUM_LAYERS=HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS,
+    MLP_DROPOUT=HEAD_SPECIFIC_ARGS.MLP_DROPOUT,
+    BILINEAR_BIAS=HEAD_SPECIFIC_ARGS.BILINEAR_BIAS,
+    NC_DROPOUT=HEAD_SPECIFIC_ARGS.NC_DROPOUT,
+    ROTATE_MARGIN=HEAD_SPECIFIC_ARGS.ROTATE_MARGIN,
+    TRANSE_MARGIN=HEAD_SPECIFIC_ARGS.TRANSE_MARGIN,
+    # loading
+    USE_PRETRAINED_MODEL="use_pretrained_model",
+    PRETRAINED_MODEL_SOURCE="pretrained_model_source",
+    PRETRAINED_MODEL_PATH="pretrained_model_path",
+    PRETRAINED_MODEL_REVISION="pretrained_model_revision",
+    PRETRAINED_MODEL_LOAD_HEAD="pretrained_model_load_head",
+    PRETRAINED_MODEL_FREEZE_ENCODER_WEIGHTS="pretrained_model_freeze_encoder_weights",
+    PRETRAINED_MODEL_FREEZE_HEAD_WEIGHTS="pretrained_model_freeze_head_weights",
 )
 
 MODEL_CONFIG_DEFAULTS = {
@@ -163,6 +206,46 @@ MODEL_CONFIG_DEFAULTS = {
     MODEL_CONFIG.HEAD: HEADS.DOT_PRODUCT,
     MODEL_CONFIG.USE_EDGE_ENCODER: False,
 }
+
+# split up the architecture specification by component
+MODEL_COMPONENTS = {
+    MODEL_DEFS.ENCODER: {
+        MODEL_CONFIG.ENCODER,
+        MODEL_CONFIG.HIDDEN_CHANNELS,
+        MODEL_CONFIG.NUM_LAYERS,
+        MODEL_CONFIG.DROPOUT,
+        MODEL_CONFIG.GAT_HEADS,
+        MODEL_CONFIG.GAT_CONCAT,
+        MODEL_CONFIG.GRAPH_CONV_AGGREGATOR,
+        MODEL_CONFIG.SAGE_AGGREGATOR,
+    },
+    MODEL_DEFS.HEAD: {
+        MODEL_DEFS.HEAD,
+        MODEL_CONFIG.MLP_HIDDEN_DIM,
+        MODEL_CONFIG.MLP_NUM_LAYERS,
+        MODEL_CONFIG.MLP_DROPOUT,
+        MODEL_CONFIG.BILINEAR_BIAS,
+        MODEL_CONFIG.NC_DROPOUT,
+        MODEL_CONFIG.ROTATE_MARGIN,
+        MODEL_CONFIG.TRANSE_MARGIN,
+    },
+    MODEL_DEFS.EDGE_ENCODER: {
+        MODEL_CONFIG.EDGE_ENCODER_DIM,
+        MODEL_CONFIG.EDGE_ENCODER_DROPOUT,
+        MODEL_CONFIG.EDGE_ENCODER_INIT_BIAS,
+    },
+}
+
+PRETRAINING_DEFS = SimpleNamespace(
+    PRETRAINED="pretrained",
+)
+PRETRAINED_COMPONENT_SOURCES = SimpleNamespace(
+    HUGGINGFACE="huggingface",
+    LOCAL="local",
+)
+VALID_PRETRAINED_COMPONENT_SOURCES = list(
+    PRETRAINED_COMPONENT_SOURCES.__dict__.values()
+)
 
 TASK_CONFIG = SimpleNamespace(
     TASK="task",

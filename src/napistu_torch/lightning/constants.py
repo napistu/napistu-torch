@@ -16,3 +16,11 @@ TRAINER_MODES = SimpleNamespace(
 )
 
 VALID_TRAINER_MODES = list(TRAINER_MODES.__dict__.values())
+
+NAPISTU_DATA_MODULE = SimpleNamespace(
+    NAPISTU_DATA="napistu_data",
+    TRAIN_DATA="train_data",
+    VAL_DATA="val_data",
+    TEST_DATA="test_data",
+    DATA="data",
+)

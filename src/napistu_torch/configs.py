@@ -3,7 +3,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from napistu_torch.constants import (
     ANONYMIZATION_PLACEHOLDER_DEFAULT,
@@ -21,6 +21,7 @@ from napistu_torch.constants import (
     TRAINING_CONFIG,
     TRAINING_CONFIG_DEFAULTS,
     VALID_OPTIMIZERS,
+    VALID_PRETRAINED_COMPONENT_SOURCES,
     VALID_SCHEDULERS,
     VALID_WANDB_MODES,
     WANDB_CONFIG,
@@ -50,6 +51,8 @@ class ModelConfig(BaseModel):
     hidden_channels: int = Field(default=128, gt=0)
     num_layers: int = Field(default=3, ge=1, le=10)
     dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
+
+    # Head-specific fields (optional, with defaults)
     head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
 
     # Model-specific fields (optional, with defaults)
@@ -80,9 +83,37 @@ class ModelConfig(BaseModel):
         default=0.1, ge=0.0, lt=1.0
     )  # Edge encoder dropout
 
+    # Using a pretrained model
+    use_pretrained_model: Optional[bool] = Field(
+        default=False, description="Whether to use a pretrained model (True)"
+    )
+    pretrained_model_source: Optional[str] = Field(
+        default=None,
+        description="Source for pretrained encoder: 'huggingface' or 'local'",
+    )
+    pretrained_model_path: Optional[str] = Field(
+        default=None, description="Path to pretrained encoder (HF repo or local path)"
+    )
+    pretrained_model_revision: Optional[str] = Field(
+        default=None, description="Git revision for HF models (branch, tag, or commit)"
+    )
+    pretrained_model_load_head: Optional[bool] = Field(
+        default=True,
+        description="Whether to load the heads from the pretrained model (optional) or just the encoder (required)",
+    )
+    pretrained_model_freeze_encoder_weights: Optional[bool] = Field(
+        default=False,
+        description="Whether to freeze the pretrained model's encoder weights so they aren't updated during training",
+    )
+    pretrained_model_freeze_head_weights: Optional[bool] = Field(
+        default=False,
+        description="Whether to freeze the pretrained model's head weights so they aren't updated during training",
+    )
+
     @field_validator(MODEL_DEFS.ENCODER)
     @classmethod
-    def validate_encoder(cls, v):
+    def validate_encoder(cls, v, info):
+        # Check if it's a valid encoder type
         if v not in VALID_ENCODERS:
             raise ValueError(
                 f"Invalid encoder type: {v}. Valid types are: {VALID_ENCODERS}"
@@ -91,10 +122,31 @@ class ModelConfig(BaseModel):
 
     @field_validator(MODEL_DEFS.HEAD)
     @classmethod
-    def validate_head(cls, v):
+    def validate_head(cls, v, info):
+        # Check if it's a valid head type
         if v not in VALID_HEADS:
             raise ValueError(f"Invalid head type: {v}. Valid types are: {VALID_HEADS}")
         return v
+
+    @model_validator(mode="after")
+    def validate_pretrained_model(self):
+        """Validate that pretrained model settings are provided when use_pretrained_model=True."""
+        if self.use_pretrained_model:
+            if self.pretrained_model_source is None:
+                raise ValueError(
+                    "pretrained_model_source must be specified when use_pretrained_model=True"
+                )
+            if self.pretrained_model_path is None:
+                raise ValueError(
+                    "pretrained_model_path must be specified when use_pretrained_model=True"
+                )
+            # Validate source type
+            if self.pretrained_model_source not in VALID_PRETRAINED_COMPONENT_SOURCES:
+                raise ValueError(
+                    f"Invalid pretrained_model_source: {self.pretrained_model_source}. "
+                    f"Valid: {VALID_PRETRAINED_COMPONENT_SOURCES}"
+                )
+        return self
 
     @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
