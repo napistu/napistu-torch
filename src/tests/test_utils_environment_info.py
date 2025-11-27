@@ -94,3 +94,20 @@ def test_from_current_env_with_extra_packages():
     for package, version in env_info.extra_packages.items():
         assert package in summary_dict
         assert summary_dict[package] == version
+
+
+def test_get_install_directions():
+    """Test get_install_directions returns formatted installation commands."""
+    env_info = EnvironmentInfo(
+        python_version="3.11.13",
+        python_implementation="CPython",
+        platform_system="Darwin",
+        platform_release="25.1.0",
+        torch_version="2.8.0",
+        napistu_version="0.8.1",
+        napistu_torch_version="0.2.12",
+    )
+    directions = env_info.get_install_directions()
+    assert "pip install torch==2.8.0" in directions
+    assert "pip install 'napistu==0.8.1'" in directions
+    assert "napistu-torch[pyg,lightning]==0.2.12" in directions

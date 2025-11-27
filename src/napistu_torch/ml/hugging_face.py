@@ -303,7 +303,7 @@ class HuggingFacePublisher(HuggingFaceClient):
         Upload model checkpoint file
     _upload_config(repo_id, config, commit_message)
         Upload model configuration as JSON
-    _upload_model_card(repo_id, manifest, commit_message)
+    _upload_model_card(repo_id, manifest, checkpoint_path, commit_message)
         Generate and upload model card (README.md)
     """
 
@@ -393,7 +393,7 @@ class HuggingFacePublisher(HuggingFaceClient):
         self._upload_config(repo_id, config, commit_message)
 
         logger.info("Uploading model card...")
-        self._upload_model_card(repo_id, manifest, commit_message)
+        self._upload_model_card(repo_id, manifest, checkpoint_path, commit_message)
 
         return repo_url
 
@@ -456,6 +456,7 @@ class HuggingFacePublisher(HuggingFaceClient):
         self,
         repo_id: str,
         manifest: RunManifest,
+        checkpoint_path: Path,
         commit_message: str,
     ) -> None:
         """
@@ -469,10 +470,12 @@ class HuggingFacePublisher(HuggingFaceClient):
             Experiment configuration
         manifest : RunManifest
             Run manifest with metadata
+        checkpoint_path : Path
+            Path to checkpoint file
         commit_message : str
             Commit message
         """
-        model_card = generate_model_card(manifest, repo_id)
+        model_card = generate_model_card(manifest, repo_id, checkpoint_path)
 
         self.api.upload_file(
             path_or_fileobj=model_card.encode("utf-8"),
@@ -487,11 +490,25 @@ class HuggingFacePublisher(HuggingFaceClient):
 # public functions
 
 
-def generate_model_card(manifest: RunManifest, repo_id: str) -> str:
+def generate_model_card(
+    manifest: RunManifest, repo_id: str, checkpoint_path: Path
+) -> str:
     """
     Generate a comprehensive HuggingFace model card from run metadata.
 
-    ... (docstring remains same)
+    Parameters
+    ----------
+    manifest : RunManifest
+        Run manifest with metadata
+    repo_id : str
+        Repository ID in format "username/repo-name"
+    checkpoint_path : Path
+        Path to checkpoint file
+
+    Returns
+    -------
+    str
+        Model card as a string
     """
 
     config = manifest.experiment_config
@@ -521,7 +538,7 @@ def generate_model_card(manifest: RunManifest, repo_id: str) -> str:
         tags.append("relation-aware")
 
     # Get architecture details from ModelConfig __repr__
-    arch_details = str(model_config)
+    arch_details = repr(model_config)
 
     # Get task description
     task_description = TASK_DESCRIPTIONS[task]
@@ -538,6 +555,10 @@ def generate_model_card(manifest: RunManifest, repo_id: str) -> str:
     wandb_link = ""
     if manifest.wandb_run_url:
         wandb_link = f"- 📊 [W&B Run]({manifest.wandb_run_url})"
+
+    # get installation directions
+    checkpoint = Checkpoint.load(checkpoint_path)
+    installation_directions = checkpoint.environment_info.get_install_directions()
 
     # Build the model card
     card = f"""---
@@ -580,7 +601,15 @@ For detailed experiment and training settings see this repository's `config.json
 
 ## Usage
 
-### 1. Setup Data Store
+### 1. Setup Environment
+
+To reproduce the environment used for training, run the following commands:
+
+```bash
+{installation_directions}
+```
+
+### 2. Setup Data Store
 
 First, download the Octopus consensus network data to create a local `NapistuDataStore`:
 ```python
@@ -596,7 +625,7 @@ napistu_data_store = gcs_model_to_store(
 )
 ```
 
-### 2. Load Pretrained Model from HuggingFace Hub
+### 3. Load Pretrained Model from HuggingFace Hub
 ```python
 from napistu_torch.ml.hugging_face import HuggingFaceLoader
 
@@ -608,7 +637,7 @@ checkpoint = loader.load_checkpoint()
 experiment_config = loader.load_config()
 ```
 
-### 3. Use Pretrained Model for Training
+### 4. Use Pretrained Model for Training
 
 You can use this pretrained model as initialization for training via the CLI:
 ```bash

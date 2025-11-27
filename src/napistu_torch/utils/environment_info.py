@@ -150,8 +150,57 @@ class EnvironmentInfo(BaseModel):
 
         return summary
 
+    def get_install_directions(self) -> str:
+        """
+        Format environment information as installation directions.
+
+        Returns a multiline string with suggested installation commands to reproduce the environment.
+
+        Returns
+        -------
+        str
+            Multiline string with installation directions
+        """
+
+        return create_install_directions(
+            self.torch_version, self.napistu_version, self.napistu_torch_version
+        )
+
     def __str__(self) -> str:
         """Human-readable string representation."""
-        summary = self.to_summary_dict()
+        summary = self.get_summary()
         lines = [f"{key}: {value}" for key, value in summary.items()]
         return "\n".join(lines)
+
+
+def create_install_directions(
+    torch_version: str, napistu_version: str, napistu_torch_version: str
+) -> str:
+    """
+    Format environment information as installation directions.
+
+    Returns a multiline string with suggested installation commands to reproduce the environment.
+
+    Parameters
+    ----------
+    torch_version : str
+        PyTorch version
+    napistu_version : str
+        Napistu version
+    napistu_torch_version : str
+        Napistu-Torch version
+
+    Returns
+    -------
+    str
+        Multiline string with installation directions
+    """
+
+    lines = [
+        f"pip install torch=={torch_version}",
+        f"pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/{torch_version}+cpu.html",
+        f"pip install 'napistu=={napistu_version}'",
+        f"pip install 'napistu-torch[pyg,lightning]=={napistu_torch_version}'",
+    ]
+
+    return "\n".join(lines)
