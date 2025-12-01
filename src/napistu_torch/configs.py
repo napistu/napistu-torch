@@ -92,6 +92,9 @@ class ModelConfig(BaseModel):
     edge_encoder_dropout: Optional[float] = Field(
         default=0.1, ge=0.0, lt=1.0
     )  # Edge encoder dropout
+    edge_encoder_init_bias: Optional[float] = Field(
+        default=None, description="Initial bias for edge encoder output layer"
+    )  # Edge encoder initial bias
 
     # Using a pretrained model
     use_pretrained_model: Optional[bool] = Field(
