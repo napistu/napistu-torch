@@ -180,7 +180,7 @@ def fit_model(
         try:
             # Create/reload experiment dict for this attempt
             if experiment_dict is None:
-                # we are rusing an experiment regardless of whether its fresh because we are working off of a manifest
+                # we are resuming an experiment regardless of whether its fresh because we are working off of a manifest
                 experiment_dict = resume_experiment(
                     run_manifest, mode=TRAINER_MODES.TRAIN, logger=logger
                 )
@@ -375,6 +375,7 @@ def predict(
 def prepare_experiment(
     config: ExperimentConfig,
     logger: logging.Logger = logger,
+    verbose: bool = True,
 ) -> Dict[str, Any]:
     """
     Prepare the experiment for training.
@@ -385,6 +386,8 @@ def prepare_experiment(
         Configuration for the experiment
     logger : logging.Logger, optional
         Logger instance to use
+    verbose: bool, default=True
+        Whether to log verbose information
 
     Returns
     -------
@@ -404,7 +407,8 @@ def prepare_experiment(
     # create an output directory and update the wandb config based on the model and training configs
     prepare_wandb_config(config)
     # create the actual wandb logger
-    logger.info("Setting up W&B logger...")
+    if verbose:
+        logger.info("Setting up W&B logger...")
     wandb_logger = setup_wandb_logger(config)
 
     # Initialize wandb by accessing the experiment (this triggers lazy initialization)
@@ -415,12 +419,14 @@ def prepare_experiment(
         wandb_run_id, wandb_run_url = None, None
 
     # 2. Create Data Module
-    logger.info("Creating Data Module from config...")
-    data_module = _create_data_module(config, logger=logger)
+    if verbose:
+        logger.info("Creating Data Module from config...")
+    data_module = _create_data_module(config, logger=logger, verbose=verbose)
 
     # define the strata for negative sampling
     stratify_by = config.task.edge_prediction_neg_sampling_stratify_by
-    logger.info("Getting edge strata from artifacts...")
+    if verbose:
+        logger.info("Getting edge strata from artifacts...")
     edge_strata = get_edge_strata_from_artifacts(
         stratify_by=stratify_by,
         artifacts=data_module.other_artifacts,
@@ -429,31 +435,42 @@ def prepare_experiment(
     # 3 create model
     # 3a. load a pretrained checkpoint if specified
     if config.model.use_pretrained_model:
-        logger.info("Loading pretrained checkpoint...")
-        pretrained_checkpoint = _load_pretrained_checkpoint(config.model, logger=logger)
+        if verbose:
+            logger.info("Loading pretrained checkpoint...")
+        pretrained_checkpoint = _load_pretrained_checkpoint(
+            config.model, logger=logger, verbose=verbose
+        )
         # validate compatibility of checkpoint with data module (they should be trained on the same dataset or at least have compatible channels)
         pretrained_checkpoint.assert_same_napistu_data(data_module.napistu_data)
         # update model config so its attribute reflect the loaded encoder and head
         pretrained_checkpoint.update_model_config(config.model, inplace=True)
 
     # 3b. create the model based on the model config (which may have been updated based on the pretrained checkpoint)
-    model = _create_model(config, data_module, edge_strata, logger=logger)
+    model = _create_model(
+        config, data_module, edge_strata, logger=logger, verbose=verbose
+    )
 
     # 3c. load pretrained weights if specified
     if config.model.use_pretrained_model:
-        logger.info("Loading pretrained weights...")
+        if verbose:
+            logger.info("Loading pretrained weights...")
         _load_pretrained_weights(
-            model, pretrained_checkpoint, config.model, logger=logger
+            model, pretrained_checkpoint, config.model, logger=logger, verbose=verbose
         )
 
     # 4. trainer
-    logger.info("Creating NapistuTrainer from config...")
+
+    if verbose:
+        logger.info("Creating NapistuTrainer from config...")
     trainer = NapistuTrainer(config)
 
     # 5. create a run manifest
     # Use the same naming scheme as wandb: config.name or generated name
     experiment_name = config.name or config.get_experiment_name()
-    logger.info("Creating RunManifest with experiment_name = %s...", experiment_name)
+    if verbose:
+        logger.info(
+            "Creating RunManifest with experiment_name = %s...", experiment_name
+        )
     run_manifest = RunManifest(
         experiment_name=experiment_name,
         wandb_run_id=wandb_run_id,
@@ -478,6 +495,7 @@ def resume_experiment(
     run_manifest: RunManifest,
     mode: str = TRAINER_MODES.EVAL,
     logger: logging.Logger = logger,
+    verbose: bool = False,
 ) -> Dict[str, Any]:
     """
     Resume an experiment using its run manifest.
@@ -490,6 +508,8 @@ def resume_experiment(
         Trainer mode: TRAINER_MODES.TRAIN for training, TRAINER_MODES.EVAL for evaluation
     logger: logging.Logger, optional
         Logger instance to use
+    verbose: bool, default=False
+        Whether to log verbose information
 
     Returns
     -------
@@ -511,17 +531,38 @@ def resume_experiment(
     data_module = _create_data_module(experiment_config, logger=logger)
 
     stratify_by = experiment_config.task.edge_prediction_neg_sampling_stratify_by
-    logger.info("Getting edge strata from artifacts...")
+    if verbose:
+        logger.info("Getting edge strata from artifacts...")
     edge_strata = get_edge_strata_from_artifacts(
         stratify_by=stratify_by,
         artifacts=data_module.other_artifacts,
     )
 
     # 3. create model
-    model = _create_model(experiment_config, data_module, edge_strata, logger=logger)
+    model = _create_model(
+        experiment_config, data_module, edge_strata, logger=logger, verbose=verbose
+    )
+
+    # 3a. load pretrained weights if specified
+    if experiment_config.model.use_pretrained_model:
+        if verbose:
+            logger.info("Loading pretrained checkpoint...")
+        pretrained_checkpoint = _load_pretrained_checkpoint(
+            experiment_config.model, logger=logger, verbose=verbose
+        )
+        if verbose:
+            logger.info("Loading pretrained weights...")
+        _load_pretrained_weights(
+            model,
+            pretrained_checkpoint,
+            experiment_config.model,
+            logger=logger,
+            verbose=verbose,
+        )
 
     # 4. trainer
-    logger.info(f"Creating NapistuTrainer from config (mode={mode})...")
+    if verbose:
+        logger.info(f"Creating NapistuTrainer from config (mode={mode})...")
     trainer = NapistuTrainer(experiment_config, mode=mode, wandb_logger=wandb_logger)
 
     experiment_dict = {
@@ -640,17 +681,20 @@ def _cleanup_stale_checkpoints(
 def _create_data_module(
     config: ExperimentConfig,
     logger: logging.Logger = logger,
+    verbose: bool = True,
 ) -> Union[FullGraphDataModule, EdgeBatchDataModule]:
     """Create the appropriate data module based on the configuration."""
     batches_per_epoch = config.training.batches_per_epoch
     if batches_per_epoch == 1:
-        logger.info("Creating FullGraphDataModule...")
+        if verbose:
+            logger.info("Creating FullGraphDataModule...")
         return FullGraphDataModule(config)
     else:
-        logger.info(
-            "Creating EdgeBatchDataModule with batches_per_epoch = %s...",
-            batches_per_epoch,
-        )
+        if verbose:
+            logger.info(
+                "Creating EdgeBatchDataModule with batches_per_epoch = %s...",
+                batches_per_epoch,
+            )
         return EdgeBatchDataModule(config=config, batches_per_epoch=batches_per_epoch)
 
 
@@ -659,11 +703,13 @@ def _create_model(
     data_module: Union[FullGraphDataModule, EdgeBatchDataModule],
     edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
     logger: logging.Logger = logger,
+    verbose: bool = True,
 ) -> EdgePredictionLightning:
     """Create the model based on the configuration."""
 
     # a. encoder
-    logger.info("Creating MessagePassingEncoder from config...")
+    if verbose:
+        logger.info("Creating MessagePassingEncoder from config...")
     encoder = MessagePassingEncoder.from_config(
         config.model,
         data_module.num_node_features,
@@ -671,12 +717,14 @@ def _create_model(
     )
 
     # b. decoder/head
-    logger.info("Creating Decoder from config...")
+    if verbose:
+        logger.info("Creating Decoder from config...")
     if config.model.head in RELATION_AWARE_HEADS:
         num_relations = data_module.napistu_data.get_num_relations()
-        logger.info(
-            f"Using relation-aware head '{config.model.head}' with {num_relations} relations"
-        )
+        if verbose:
+            logger.info(
+                f"Using relation-aware head '{config.model.head}' with {num_relations} relations"
+            )
     else:
         num_relations = None
 
@@ -684,7 +732,8 @@ def _create_model(
     task = EdgePredictionTask(encoder, head, edge_strata=edge_strata)
 
     # 4. create lightning module
-    logger.info("Creating EdgePredictionLightning from task and config...")
+    if verbose:
+        logger.info("Creating EdgePredictionLightning from task and config...")
     model = EdgePredictionLightning(
         task,
         config=config.training,
@@ -694,7 +743,9 @@ def _create_model(
 
 
 def _load_pretrained_checkpoint(
-    model_config: ModelConfig, logger: logging.Logger = logger
+    model_config: ModelConfig,
+    logger: logging.Logger = logger,
+    verbose: bool = True,
 ) -> Checkpoint:
     """
     Load a pretrained model's checkpoint from HuggingFace or local file.
@@ -732,18 +783,20 @@ def _load_pretrained_checkpoint(
     )
 
     if pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.HUGGINGFACE:
-        logger.info(
-            f"Loading pretrained checkpoint from HuggingFace: {pretrained_model_path} "
-            f"(revision: {pretrained_model_revision})"
-        )
+        if verbose:
+            logger.info(
+                f"Loading pretrained checkpoint from HuggingFace: {pretrained_model_path} "
+                f"(revision: {pretrained_model_revision})"
+            )
         hf_loader = HuggingFaceLoader(
             repo_id=pretrained_model_path, revision=pretrained_model_revision
         )
         checkpoint = hf_loader.load_checkpoint(raw_checkpoint=False)
     elif pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.LOCAL:
-        logger.info(
-            f"Loading pretrained checkpoint from local file: {pretrained_model_path}"
-        )
+        if verbose:
+            logger.info(
+                f"Loading pretrained checkpoint from local file: {pretrained_model_path}"
+            )
         checkpoint = Checkpoint.load(pretrained_model_path)
     else:
         raise ValueError(
@@ -759,6 +812,7 @@ def _load_pretrained_weights(
     checkpoint: Checkpoint,
     model_config: ModelConfig,
     logger: logging.Logger = logger,
+    verbose: bool = True,
 ) -> None:
     """
     Load pretrained weights from a checkpoint and apply them to the model.
@@ -778,6 +832,8 @@ def _load_pretrained_weights(
         Model configuration containing freezing settings
     logger : logging.Logger, optional
         Logger instance to use
+    verbose : bool, default=True
+        Whether to log verbose information
 
     Raises
     ------
@@ -786,7 +842,9 @@ def _load_pretrained_weights(
     RuntimeError
         If any required encoder or head weights are missing from the checkpoint
     """
-    logger.info("Applying pretrained weights to model...")
+
+    if verbose:
+        logger.info("Applying pretrained weights to model...")
 
     # Extract state dicts with proper prefix handling
     # Lightning checkpoints store weights with "task." prefix
@@ -807,7 +865,8 @@ def _load_pretrained_weights(
 
     # Load encoder weights
     if encoder_state_dict:
-        logger.info(f"Loading {len(encoder_state_dict)} encoder parameters...")
+        if verbose:
+            logger.info(f"Loading {len(encoder_state_dict)} encoder parameters...")
         missing_keys, unexpected_keys = model.task.encoder.load_state_dict(
             encoder_state_dict, strict=False
         )
@@ -820,7 +879,8 @@ def _load_pretrained_weights(
 
         # Freeze encoder if requested
         if model_config.pretrained_model_freeze_encoder_weights:
-            logger.info("Freezing encoder weights")
+            if verbose:
+                logger.info("Freezing encoder weights")
             for param in model.task.encoder.parameters():
                 param.requires_grad = False
     else:
@@ -832,12 +892,14 @@ def _load_pretrained_weights(
         head_has_params = len(list(model.task.head.parameters())) > 0
 
         if not head_has_params:
-            logger.info(
-                "Head has no trainable parameters (e.g., DotProductHead). "
-                "Skipping head weight loading."
-            )
+            if verbose:
+                logger.info(
+                    "Head has no trainable parameters (e.g., DotProductHead). "
+                    "Skipping head weight loading."
+                )
         elif head_state_dict:
-            logger.info(f"Loading {len(head_state_dict)} head parameters...")
+            if verbose:
+                logger.info(f"Loading {len(head_state_dict)} head parameters...")
             missing_keys, unexpected_keys = model.task.head.load_state_dict(
                 head_state_dict, strict=False
             )
@@ -850,7 +912,8 @@ def _load_pretrained_weights(
 
             # Freeze head if requested
             if model_config.pretrained_model_freeze_head_weights:
-                logger.info("Freezing head weights")
+                if verbose:
+                    logger.info("Freezing head weights")
                 for param in model.task.head.parameters():
                     param.requires_grad = False
         else:
@@ -860,7 +923,10 @@ def _load_pretrained_weights(
                 "The head has trainable parameters that need to be loaded."
             )
 
-    logger.info("✓ Pretrained weights loaded successfully")
+    if verbose:
+        logger.info("✓ Pretrained weights loaded successfully")
+
+    return None
 
 
 def _log_corruption_to_wandb(
