@@ -272,7 +272,12 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
     "If not specified, uses checkpoint_dir from config.",
 )
 @click.option("--seed", type=int, help="Override random seed")
-@click.option("--fast_dev_run", is_flag=True, help="Run 1 batch for quick debugging")
+@click.option(
+    "--fast_dev_run",
+    type=click.BOOL,
+    default=False,
+    help="Run 1 batch for quick debugging",
+)
 @click.option(
     "--encoder", type=str, help="The model encoder (e.g., sage, gcn, gat, graph_conv)"
 )
@@ -283,9 +288,20 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 )
 @click.option("--hidden_channels", "hidden_channels", type=int, help="Hidden channels")
 @click.option("--dropout", type=float, help="Dropout rate")
+@click.option(
+    "--init_head_as_identity",
+    type=click.BOOL,
+    default=False,
+    help="Initialize the head to approximate an identity transformation",
+)
 @click.option("--lr", type=float, help="Learning rate")
 @click.option("--weight_decay", "weight_decay", type=float, help="Weight decay")
 @click.option("--optimizer", type=str, help="Optimizer")
+@click.option(
+    "--scheduler",
+    type=str,
+    help="Learning rate scheduler (cosine, onecycle, plateau, none), default: none",
+)
 @click.option("--epochs", type=int, help="Number of epochs")
 @click.option("--wandb_group", type=str, help="WandB group")
 @click.option(
@@ -309,9 +325,11 @@ def train(
     head: Optional[str],
     hidden_channels: Optional[int],
     dropout: Optional[float],
+    init_head_as_identity: bool,
     lr: Optional[float],
     weight_decay: Optional[float],
     optimizer: Optional[str],
+    scheduler: Optional[str],
     epochs: Optional[int],
     wandb_mode: Optional[str],
     wandb_group: Optional[str],
@@ -346,8 +364,10 @@ def train(
         head=head,
         hidden_channels=hidden_channels,
         dropout=dropout,
+        init_head_as_identity=init_head_as_identity,
         lr=lr,
         optimizer=optimizer,
+        scheduler=scheduler,
         weight_decay=weight_decay,
         epochs=epochs,
         wandb_group=wandb_group,

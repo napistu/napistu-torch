@@ -455,6 +455,13 @@ def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFram
     ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
+def _create_species_identifiers(sbml_dfs: SBML_dfs) -> pd.DataFrame:
+    """
+    Create species identifiers.
+    """
+    return sbml_dfs.get_characteristic_species_ids(dogmatic=False)
+
+
 # artifact registry
 
 # Define artifacts as a list (single source of truth for names)
@@ -506,6 +513,12 @@ DEFAULT_ARTIFACTS = [
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_type,
         description="Pandas DataFrame containing edge strata by node type",
+    ),
+    ArtifactDefinition(
+        name=DEFAULT_ARTIFACTS_NAMES.SPECIES_IDENTIFIERS,
+        artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
+        creation_func=_create_species_identifiers,
+        description="Pandas DataFrame containing species identifiers",
     ),
 ]
 

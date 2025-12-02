@@ -11,13 +11,14 @@ from napistu.network.constants import (
 
 DEFAULT_ARTIFACTS_NAMES = SimpleNamespace(
     UNLABELED="unlabeled",
-    EDGE_STRATA_BY_EDGE_SBO_TERMS="edge_strata_by_edge_sbo_terms",
     EDGE_PREDICTION="edge_prediction",
     RELATION_PREDICTION="relation_prediction",
     SPECIES_TYPE_PREDICTION="species_type_prediction",
     COMPREHENSIVE_PATHWAY_MEMBERSHIPS="comprehensive_pathway_memberships",
+    EDGE_STRATA_BY_EDGE_SBO_TERMS="edge_strata_by_edge_sbo_terms",
     EDGE_STRATA_BY_NODE_SPECIES_TYPE="edge_strata_by_node_species_type",
     EDGE_STRATA_BY_NODE_TYPE="edge_strata_by_node_type",
+    SPECIES_IDENTIFIERS="species_identifiers",
 )
 
 ARTIFACT_DEFS = SimpleNamespace(

@@ -14,7 +14,11 @@ from rich.logging import RichHandler
 
 import napistu_torch
 from napistu_torch.configs import ExperimentConfig
-from napistu_torch.constants import PARAM_OVERRIDE_MAP, TRAIN_NAMED_ARGS
+from napistu_torch.constants import (
+    PARAM_OVERRIDE_MAP,
+    TRAIN_BOOLEAN_FLAGS,
+    TRAIN_NAMED_ARGS,
+)
 
 
 def format_named_overrides(
@@ -24,9 +28,11 @@ def format_named_overrides(
     head: Optional[str] = None,
     hidden_channels: Optional[int] = None,
     dropout: Optional[float] = None,
+    init_head_as_identity: bool = False,
     lr: Optional[float] = None,
     weight_decay: Optional[float] = None,
     optimizer: Optional[str] = None,
+    scheduler: Optional[str] = None,
     epochs: Optional[int] = None,
     wandb_group: Optional[str] = None,
     wandb_mode: Optional[str] = None,
@@ -51,12 +57,16 @@ def format_named_overrides(
         Model hidden channels
     dropout : Optional[float]
         Dropout rate
+    init_head_as_identity : bool
+        Whether to initialize the head to approximate an identity transformation
     lr : Optional[float]
         Learning rate
     weight_decay : Optional[float]
         Weight decay
     optimizer : Optional[str]
         Optimizer name (adam, adamw)
+    scheduler : Optional[str]
+        Learning rate scheduler (cosine, onecycle, plateau)
     epochs : Optional[int]
         Number of training epochs
     wandb_group : Optional[str]
@@ -93,9 +103,11 @@ def format_named_overrides(
         TRAIN_NAMED_ARGS.HEAD: head,
         TRAIN_NAMED_ARGS.HIDDEN_CHANNELS: hidden_channels,
         TRAIN_NAMED_ARGS.DROPOUT: dropout,
+        TRAIN_NAMED_ARGS.INIT_HEAD_AS_IDENTITY: init_head_as_identity,
         TRAIN_NAMED_ARGS.LR: lr,
         TRAIN_NAMED_ARGS.WEIGHT_DECAY: weight_decay,
         TRAIN_NAMED_ARGS.OPTIMIZER: optimizer,
+        TRAIN_NAMED_ARGS.SCHEDULER: scheduler,
         TRAIN_NAMED_ARGS.EPOCHS: epochs,
         TRAIN_NAMED_ARGS.WANDB_GROUP: wandb_group,
         TRAIN_NAMED_ARGS.WANDB_MODE: wandb_mode,
@@ -105,12 +117,12 @@ def format_named_overrides(
     for param_name, override_path in PARAM_OVERRIDE_MAP.items():
         value = kwargs[param_name]
 
-        # Skip None values (except for fast_dev_run which is boolean)
+        # Skip None values
         if value is None:
             continue
 
-        # Handle boolean fast_dev_run - only add if True
-        if param_name == "fast_dev_run" and not value:
+        # Handle boolean flags - only add override if True
+        if param_name in TRAIN_BOOLEAN_FLAGS and not value:
             continue
 
         # Format the override string
@@ -390,7 +402,15 @@ def _apply_config_overrides(
             elif isinstance(current_value, Path):
                 converted_value = Path(value)
             else:
-                converted_value = value
+                # Handle Optional[str] fields: convert "none" or empty string to None
+                # This is needed for WandB sweeps compatibility where we need to explicitly
+                # set scheduler=None to override a config that has a scheduler
+                if (
+                    current_value is None or isinstance(current_value, str)
+                ) and value.lower() in ("none", ""):
+                    converted_value = None
+                else:
+                    converted_value = value
 
             setattr(target, keys[-1], converted_value)
 
