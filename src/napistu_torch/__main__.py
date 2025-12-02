@@ -272,7 +272,12 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
     "If not specified, uses checkpoint_dir from config.",
 )
 @click.option("--seed", type=int, help="Override random seed")
-@click.option("--fast_dev_run", is_flag=True, help="Run 1 batch for quick debugging")
+@click.option(
+    "--fast_dev_run",
+    type=click.BOOL,
+    default=False,
+    help="Run 1 batch for quick debugging",
+)
 @click.option(
     "--encoder", type=str, help="The model encoder (e.g., sage, gcn, gat, graph_conv)"
 )
@@ -285,8 +290,7 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 @click.option("--dropout", type=float, help="Dropout rate")
 @click.option(
     "--init_head_as_identity",
-    "init_head_as_identity",
-    is_flag=True,
+    type=click.BOOL,
     default=False,
     help="Initialize the head to approximate an identity transformation",
 )
