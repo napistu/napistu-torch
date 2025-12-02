@@ -83,6 +83,7 @@ EDGE_PREDICTION_HEADS = {
 
 # Head-specific parameter names
 HEAD_SPECIFIC_ARGS = SimpleNamespace(
+    INIT_HEAD_AS_IDENTITY="init_head_as_identity",
     MLP_HIDDEN_DIM="mlp_hidden_dim",
     MLP_NUM_LAYERS="mlp_num_layers",
     MLP_DROPOUT="mlp_dropout",

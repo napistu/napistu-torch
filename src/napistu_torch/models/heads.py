@@ -39,14 +39,23 @@ class BilinearHead(nn.Module):
         Whether to add bias term, by default True
     """
 
-    def __init__(self, embedding_dim: int, bias: bool = True):
+    def __init__(
+        self, embedding_dim: int, bias: bool = True, init_as_identity: bool = False
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.bilinear = nn.Bilinear(embedding_dim, embedding_dim, 1, bias=bias)
 
-        # Initialize bilinear weights properly to avoid NaN
-        # Use Xavier uniform initialization for stability
-        nn.init.xavier_uniform_(self.bilinear.weight)
+        if init_as_identity:
+            with torch.no_grad():
+                # Start with small random weights
+                nn.init.xavier_uniform_(self.bilinear.weight, gain=0.01)
+                # Add small diagonal component to bias toward dot product
+                for i in range(embedding_dim):
+                    self.bilinear.weight[0, i, i] += 0.1
+        else:
+            # Standard initialization
+            nn.init.xavier_uniform_(self.bilinear.weight)
         if bias:
             nn.init.zeros_(self.bilinear.bias)
 
@@ -118,15 +127,21 @@ class DistMultHead(nn.Module):
     >>> scores = head(z, edge_index, relation_type)
     """
 
-    def __init__(self, embedding_dim: int, num_relations: int):
+    def __init__(
+        self, embedding_dim: int, num_relations: int, init_as_identity: bool = False
+    ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_relations = num_relations
 
-        # Relation embeddings (diagonal of relation matrix)
         self.relation_emb = nn.Embedding(num_relations, embedding_dim)
 
-        nn.init.xavier_uniform_(self.relation_emb.weight)
+        if init_as_identity:
+            # Initialize to ones: h * 1 * t = h · t
+            nn.init.ones_(self.relation_emb.weight)
+        else:
+            # Standard initialization
+            nn.init.xavier_uniform_(self.relation_emb.weight)
 
     def forward(
         self,
@@ -361,7 +376,13 @@ class RotatEHead(nn.Module):
     >>> scores = head(z, edge_index, relation_type)  # [num_edges]
     """
 
-    def __init__(self, embedding_dim: int, num_relations: int, margin: float = 9.0):
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_relations: int,
+        margin: float = 9.0,
+        init_as_identity: bool = False,
+    ):
         super().__init__()
 
         if embedding_dim % 2 != 0:
@@ -374,11 +395,14 @@ class RotatEHead(nn.Module):
         self.num_relations = num_relations
         self.margin = margin
 
-        # Relation embeddings (phases in complex space)
         self.relation_emb = nn.Embedding(num_relations, embedding_dim // 2)
 
-        # Initialize relation phases uniformly in [-π, π]
-        nn.init.uniform_(self.relation_emb.weight, -self.margin, self.margin)
+        if init_as_identity:
+            # Initialize to zero phase (no rotation)
+            nn.init.zeros_(self.relation_emb.weight)
+        else:
+            # Initialize with small random phases
+            nn.init.uniform_(self.relation_emb.weight, -0.1, 0.1)
 
     def forward(
         self,
@@ -480,6 +504,7 @@ class TransEHead(nn.Module):
         num_relations: int,
         margin: float = 1.0,
         norm: int = 2,
+        init_as_identity: bool = False,
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -487,11 +512,14 @@ class TransEHead(nn.Module):
         self.margin = margin
         self.norm = norm
 
-        # Relation embeddings (translations in embedding space)
         self.relation_emb = nn.Embedding(num_relations, embedding_dim)
 
-        # Initialize with Xavier uniform
-        nn.init.xavier_uniform_(self.relation_emb.weight)
+        if init_as_identity:
+            # Initialize to zero: h + 0 - t = h - t
+            nn.init.zeros_(self.relation_emb.weight)
+        else:
+            # Standard initialization
+            nn.init.xavier_uniform_(self.relation_emb.weight)
 
     def forward(
         self,
@@ -551,6 +579,8 @@ class Decoder(nn.Module):
         Number of relation types (required for relation-aware heads)
     num_classes : int, optional
         Number of output classes for node classification head
+    init_head_as_identity : bool, optional
+        Whether to initialize the head to approximate an identity transformation, by default False
     mlp_hidden_dim : int, optional
         Hidden layer dimension for MLP head, by default 64
     mlp_num_layers : int, optional
@@ -584,6 +614,7 @@ class Decoder(nn.Module):
         head_type: str = HEADS.DOT_PRODUCT,
         num_relations: Optional[int] = None,
         num_classes: Optional[int] = None,
+        init_head_as_identity: bool = False,
         mlp_hidden_dim: int = 64,
         mlp_num_layers: int = 2,
         mlp_dropout: float = 0.1,
@@ -600,6 +631,7 @@ class Decoder(nn.Module):
             MODEL_DEFS.HEAD_TYPE: head_type,
             MODEL_DEFS.NUM_RELATIONS: num_relations,
             MODEL_DEFS.NUM_CLASSES: num_classes,
+            HEAD_SPECIFIC_ARGS.INIT_HEAD_AS_IDENTITY: init_head_as_identity,
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: mlp_hidden_dim,
             HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS: mlp_num_layers,
             HEAD_SPECIFIC_ARGS.MLP_DROPOUT: mlp_dropout,
@@ -638,9 +670,13 @@ class Decoder(nn.Module):
 
         # Create the appropriate head based on type
         if head_type == HEADS.BILINEAR:
-            self.head = BilinearHead(self.hidden_channels, bilinear_bias)
+            self.head = BilinearHead(
+                self.hidden_channels, bilinear_bias, init_head_as_identity
+            )
         elif head_type == HEADS.DISTMULT:
-            self.head = DistMultHead(self.hidden_channels, num_relations)
+            self.head = DistMultHead(
+                self.hidden_channels, num_relations, init_head_as_identity
+            )
         elif head_type == HEADS.DOT_PRODUCT:
             self.head = DotProductHead()
         elif head_type == HEADS.MLP:
@@ -652,9 +688,19 @@ class Decoder(nn.Module):
                 self.hidden_channels, num_classes, nc_dropout
             )
         elif head_type == HEADS.ROTATE:
-            self.head = RotatEHead(self.hidden_channels, num_relations, rotate_margin)
+            self.head = RotatEHead(
+                self.hidden_channels,
+                num_relations,
+                rotate_margin,
+                init_head_as_identity,
+            )
         elif head_type == HEADS.TRANSE:
-            self.head = TransEHead(self.hidden_channels, num_relations, transe_margin)
+            self.head = TransEHead(
+                self.hidden_channels,
+                num_relations,
+                transe_margin,
+                init_head_as_identity,
+            )
         else:
             raise ValueError(f"Unsupported head type: {head_type}")
 
@@ -823,6 +869,10 @@ class Decoder(nn.Module):
             MODEL_DEFS.HEAD_TYPE: getattr(config, MODEL_CONFIG.HEAD),
             MODEL_DEFS.NUM_RELATIONS: num_relations,
             MODEL_DEFS.NUM_CLASSES: num_classes,
+            HEAD_SPECIFIC_ARGS.INIT_HEAD_AS_IDENTITY: getattr(
+                config,
+                HEAD_SPECIFIC_ARGS.INIT_HEAD_AS_IDENTITY,
+            ),
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: getattr(
                 config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
             ),

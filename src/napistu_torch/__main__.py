@@ -283,9 +283,21 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 )
 @click.option("--hidden_channels", "hidden_channels", type=int, help="Hidden channels")
 @click.option("--dropout", type=float, help="Dropout rate")
+@click.option(
+    "--init_head_as_identity",
+    "init_head_as_identity",
+    is_flag=True,
+    default=False,
+    help="Initialize the head to approximate an identity transformation",
+)
 @click.option("--lr", type=float, help="Learning rate")
 @click.option("--weight_decay", "weight_decay", type=float, help="Weight decay")
 @click.option("--optimizer", type=str, help="Optimizer")
+@click.option(
+    "--scheduler",
+    type=str,
+    help="Learning rate scheduler (cosine, onecycle, plateau, none), default: none",
+)
 @click.option("--epochs", type=int, help="Number of epochs")
 @click.option("--wandb_group", type=str, help="WandB group")
 @click.option(
@@ -309,9 +321,11 @@ def train(
     head: Optional[str],
     hidden_channels: Optional[int],
     dropout: Optional[float],
+    init_head_as_identity: bool,
     lr: Optional[float],
     weight_decay: Optional[float],
     optimizer: Optional[str],
+    scheduler: Optional[str],
     epochs: Optional[int],
     wandb_mode: Optional[str],
     wandb_group: Optional[str],
@@ -346,8 +360,10 @@ def train(
         head=head,
         hidden_channels=hidden_channels,
         dropout=dropout,
+        init_head_as_identity=init_head_as_identity,
         lr=lr,
         optimizer=optimizer,
+        scheduler=scheduler,
         weight_decay=weight_decay,
         epochs=epochs,
         wandb_group=wandb_group,

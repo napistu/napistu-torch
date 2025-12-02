@@ -182,13 +182,17 @@ def fit_model(
             if experiment_dict is None:
                 # we are resuming an experiment regardless of whether its fresh because we are working off of a manifest
                 experiment_dict = resume_experiment(
-                    run_manifest, mode=TRAINER_MODES.TRAIN, logger=logger
+                    run_manifest,
+                    mode=TRAINER_MODES.TRAIN,
+                    logger=logger,
                 )
             else:
                 # Retry after corruption - reload everything with resume_experiment
                 logger.info("Reloading experiment from manifest for clean state...")
                 experiment_dict = resume_experiment(
-                    run_manifest, mode=TRAINER_MODES.TRAIN, logger=logger
+                    run_manifest,
+                    mode=TRAINER_MODES.TRAIN,
+                    logger=logger,
                 )
 
             # Train with the current checkpoint
@@ -231,10 +235,11 @@ def fit_model(
                     f"global_step={ckpt_data['global_step']}"
                 )
             else:
-                logger.error("No last.ckpt found for corruption recovery!")
-                raise RuntimeError(
-                    "Corruption recovery requires last.ckpt. "
-                    "Enable save_checkpoints in config."
+                # No checkpoint exists (e.g., corruption during first epoch)
+                # Set to None to start from scratch
+                current_checkpoint = None
+                logger.warning(
+                    "No last.ckpt found for corruption recovery. Either checkpoints were not saved (enable save_checkpoints in the config) or the failure happened before the first checkpoint was saved. Will start training from scratch."
                 )
 
             # Log corruption event to WandB if available

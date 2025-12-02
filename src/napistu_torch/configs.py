@@ -64,6 +64,10 @@ class ModelConfig(BaseModel):
 
     # Head-specific fields (optional, with defaults)
     head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
+    init_head_as_identity: Optional[bool] = Field(
+        default=False,
+        description="Whether to initialize the head to approximate an identity transformation",
+    )
 
     # Model-specific fields (optional, with defaults)
     gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT

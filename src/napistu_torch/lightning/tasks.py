@@ -9,7 +9,7 @@ import pytorch_lightning as pl
 import torch
 import torch.nn as nn
 from torch.optim import Adam, AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, ReduceLROnPlateau
+from torch.optim.lr_scheduler import CosineAnnealingLR, OneCycleLR, ReduceLROnPlateau
 
 from napistu_torch.configs import TrainingConfig
 from napistu_torch.constants import (
@@ -32,6 +32,16 @@ class BaseLightningTask(pl.LightningModule):
 
     This handles all the Lightning boilerplate (optimizer config, logging, etc.)
     so your task-specific classes can focus on task logic.
+
+    Public methods
+    --------------
+    configure_optimizers(self) -> Dict[str, Any]:
+        Configure optimizer and scheduler.
+
+    Private methods
+    --------------
+    _configure_scheduler(self, optimizer) -> Dict[str, Any]:
+        Configure learning rate scheduler.
     """
 
     def __init__(
@@ -42,6 +52,8 @@ class BaseLightningTask(pl.LightningModule):
         super().__init__()
         self.task = task
         self.config = config
+
+    # public methods
 
     def configure_optimizers(self):
         """Shared optimizer configuration."""
@@ -65,8 +77,33 @@ class BaseLightningTask(pl.LightningModule):
             raise ValueError(f"Unknown optimizer: {self.config.optimizer}")
 
         # Optional scheduler
-        if self.config.scheduler is None:
+        lr_scheduler_dict = self._configure_scheduler(optimizer)
+        if lr_scheduler_dict is None:
             return optimizer
+
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": lr_scheduler_dict,
+        }
+
+    # private methods
+
+    def _configure_scheduler(self, optimizer):
+        """
+        Configure learning rate scheduler.
+
+        Parameters
+        ----------
+        optimizer : torch.optim.Optimizer
+            The optimizer to attach the scheduler to
+
+        Returns
+        -------
+        dict or None
+            lr_scheduler dict for Lightning, or None if no scheduler configured
+        """
+        if self.config.scheduler is None:
+            return None
 
         elif self.config.scheduler == SCHEDULERS.PLATEAU:
             scheduler = ReduceLROnPlateau(
@@ -76,12 +113,9 @@ class BaseLightningTask(pl.LightningModule):
                 patience=self.config.early_stopping_patience,
             )
             return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "monitor": self.config.early_stopping_metric,
-                    "interval": "epoch",
-                },
+                "scheduler": scheduler,
+                "monitor": self.config.early_stopping_metric,
+                "interval": "epoch",
             }
 
         elif self.config.scheduler == SCHEDULERS.COSINE:
@@ -91,11 +125,23 @@ class BaseLightningTask(pl.LightningModule):
                 eta_min=self.config.lr * 0.01,
             )
             return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "interval": "epoch",
-                },
+                "scheduler": scheduler,
+                "interval": "epoch",
+            }
+
+        elif self.config.scheduler == SCHEDULERS.ONECYCLE:
+            scheduler = OneCycleLR(
+                optimizer,
+                max_lr=self.config.lr,
+                total_steps=self.trainer.estimated_stepping_batches,
+                pct_start=0.1,
+                anneal_strategy="cos",
+                div_factor=25.0,
+                final_div_factor=1e4,
+            )
+            return {
+                "scheduler": scheduler,
+                "interval": "step",
             }
 
         else:
