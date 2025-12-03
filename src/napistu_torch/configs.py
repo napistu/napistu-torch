@@ -309,21 +309,47 @@ class TrainingConfig(BaseModel):
     batches_per_epoch: int = Field(default=1, gt=0)
 
     # Training infrastructure
-    accelerator: str = "auto"
+    accelerator: str = Field(
+        default="auto", description="Accelerator to use for training"
+    )
     devices: int = 1
     precision: Literal[16, 32, "16-mixed", "32-true"] = 32
 
     # Callbacks
-    early_stopping: bool = True
-    early_stopping_patience: int = 20
-    early_stopping_metric: str = METRIC_SUMMARIES.VAL_AUC
+    early_stopping: bool = Field(default=True, description="Enable early stopping")
+    early_stopping_patience: int = Field(
+        default=20, ge=1, description="Early stopping patience"
+    )
+    early_stopping_metric: str = Field(
+        default=METRIC_SUMMARIES.VAL_AUC,
+        description="Metric to monitor for early stopping",
+    )
 
+    save_checkpoints: bool = Field(
+        default=True, description="Enable model checkpointing"
+    )
     checkpoint_subdir: str = Field(
         default=TRAINING_CONFIG_DEFAULTS[TRAINING_CONFIG.CHECKPOINT_SUBDIR],
         description="Subdirectory for checkpoints within output_dir",
     )
-    save_checkpoints: bool = True
-    checkpoint_metric: str = METRIC_SUMMARIES.VAL_AUC
+    checkpoint_metric: str = Field(
+        default=METRIC_SUMMARIES.VAL_AUC,
+        description="Metric to monitor for checkpointing",
+    )
+
+    score_distribution_monitoring: bool = Field(
+        default=False, description="Enable score distribution monitoring callback"
+    )
+    score_distribution_monitoring_log_every_n_epochs: int = Field(
+        default=10, ge=1, description="Log score distribution statistics every N epochs"
+    )
+
+    embedding_norm_monitoring: bool = Field(
+        default=False, description="Enable embedding norm monitoring callback"
+    )
+    embedding_norm_monitoring_log_every_n_epochs: int = Field(
+        default=10, ge=1, description="Log embedding norm statistics every N epochs"
+    )
 
     def get_checkpoint_dir(self, output_dir: Path) -> Path:
         """Get absolute checkpoint directory"""

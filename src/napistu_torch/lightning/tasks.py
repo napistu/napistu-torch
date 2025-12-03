@@ -4,6 +4,7 @@ Simplified Lightning task adapters that handle single-graph batches correctly.
 
 import gc
 import logging
+from typing import Any, Dict
 
 import pytorch_lightning as pl
 import torch
@@ -340,6 +341,33 @@ class EdgePredictionLightning(BaseLightningTask):
         """
         _validate_is_napistu_data(batch, "predict_step")
         return self.task.predict(batch)
+
+    @torch.no_grad()
+    def get_score_distributions(
+        self,
+        data: NapistuData,
+        split: str = TRAINING.VALIDATION,
+    ) -> Dict[str, Any]:
+        """
+        Get score distribution statistics.
+
+        Wrapper around task.get_score_distributions that handles device placement.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data
+        split : str
+            Which split to diagnose
+
+        Returns
+        -------
+        Dict[str, Any]
+            Diagnostic metrics
+        """
+        self.eval()
+        data = data.to(self.device)
+        return self.task.get_score_distributions(data, split)
 
     def on_batch_end(self):
         _cleanup()

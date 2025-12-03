@@ -18,7 +18,9 @@ from torch.utils.data import DataLoader
 
 from napistu_torch.configs import ExperimentConfig
 from napistu_torch.lightning.callbacks import (
+    EmbeddingNormCallback,
     ExperimentTimingCallback,
+    ScoreDistributionMonitoringCallback,
     SetHyperparametersCallback,
 )
 from napistu_torch.lightning.constants import (
@@ -185,12 +187,29 @@ class NapistuTrainer:
                 )
             )
 
+        # Score distribution monitoring to check on the distribution of positive and negative scores prior to loss calculation (e.g., BCE loss)
+        if self.config.training.score_distribution_monitoring:
+            callbacks.append(
+                ScoreDistributionMonitoringCallback(
+                    log_every_n_epochs=self.config.training.score_distribution_monitoring_log_every_n_epochs
+                )
+            )
+
+        # Embedding norm monitoring
+        if self.config.training.embedding_norm_monitoring:
+            callbacks.append(
+                EmbeddingNormCallback(
+                    log_every_n_epochs=self.config.training.embedding_norm_monitoring_log_every_n_epochs
+                )
+            )
+
         # Learning rate monitoring (always useful)
         callbacks.append(LearningRateMonitor(logging_interval="epoch"))
 
         # Timing callback (always useful)
         callbacks.append(ExperimentTimingCallback())
 
+        # Save model and data hyperparameters to help with checkpoint loading
         callbacks.append(SetHyperparametersCallback())
 
         return callbacks

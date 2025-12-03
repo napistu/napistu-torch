@@ -280,6 +280,10 @@ TRAINING_CONFIG = SimpleNamespace(
     CHECKPOINT_SUBDIR="checkpoint_subdir",
     SAVE_CHECKPOINTS="save_checkpoints",
     CHECKPOINT_METRIC="checkpoint_metric",
+    SCORE_DISTRIBUTION_MONITORING="score_distribution_monitoring",
+    SCORE_DISTRIBUTION_MONITORING_LOG_EVERY_N_EPOCHS="score_distribution_monitoring_log_every_n_epochs",
+    EMBEDDING_NORM_MONITORING="embedding_norm_monitoring",
+    EMBEDDING_NORM_MONITORING_LOG_EVERY_N_EPOCHS="embedding_norm_monitoring_log_every_n_epochs",
 )
 
 TRAINING_CONFIG_DEFAULTS = {
