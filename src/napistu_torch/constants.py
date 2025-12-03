@@ -124,13 +124,6 @@ NAPISTU_DATA_STORE_STRUCTURE = SimpleNamespace(
 
 # Configs
 
-METRICS = SimpleNamespace(
-    AUC="auc",
-    AP="ap",
-)
-
-VALID_METRICS = list(METRICS.__dict__.values())
-
 OPTIMIZERS = SimpleNamespace(
     ADAM="adam",
     ADAMW="adamw",

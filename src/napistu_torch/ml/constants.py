@@ -27,6 +27,18 @@ VALID_DEVICES = list(DEVICE.__dict__.values())
 
 # metrics
 
+METRICS = SimpleNamespace(
+    AUC="auc",
+    AP="ap",
+)
+
+VALID_METRICS = list(METRICS.__dict__.values())
+
+RELATION_WEIGHTED_AUC_DEFS = SimpleNamespace(
+    RELATION_WEIGHTED_AUC="relation_weighted_auc",
+    RELATION_AUC_TEMPLATE="auc_{relation_name}",
+)
+
 METRIC_SUMMARIES = SimpleNamespace(
     VAL_AUC="val_auc",
     TEST_AUC="test_auc",
