@@ -5,7 +5,11 @@ import pandas as pd
 import torch
 import torch.nn as nn
 
-from napistu_torch.constants import NAPISTU_DATA, PYG
+from napistu_torch.constants import (
+    METRICS,
+    NAPISTU_DATA,
+    PYG,
+)
 from napistu_torch.labels.create import _prepare_discrete_labels
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.load.constants import (
@@ -16,7 +20,11 @@ from napistu_torch.load.stratification import (
     ensure_strata_series,
     validate_edge_strata_alignment,
 )
-from napistu_torch.ml.constants import SPLIT_TO_MASK, TRAINING
+from napistu_torch.ml.constants import (
+    SCORE_DISTRIBUTION_STATS,
+    SPLIT_TO_MASK,
+    TRAINING,
+)
 from napistu_torch.models.constants import (
     EDGE_WEIGHTING_TYPE,
     ENCODER_DEFS,
@@ -63,6 +71,32 @@ class EdgePredictionTask(BaseTask):
     metrics : List[str]
         Metrics to compute ('auc', 'ap', etc.)
 
+    Public Methods
+    --------------
+    compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+        Compute task-specific loss.
+    compute_metrics(self, data: NapistuData, split: str = TRAINING.VALIDATION) -> Dict[str, float]:
+        Compute evaluation metrics.
+    get_score_distributions(self, data: NapistuData, split: str = TRAINING.VALIDATION) -> Dict[str, Any]:
+        Get score distributions and quality metrics.
+    predict_edge_scores(self, data: NapistuData, edge_index: torch.Tensor, relation_type: Optional[torch.Tensor] = None) -> torch.Tensor:
+        Predict scores for all edges in data.
+
+    Private Methods
+    ---------------
+    _ensure_negative_sampler(self, data: NapistuData) -> None:
+        Ensure negative sampler is initialized.
+    _ensure_using_relations(self, data: NapistuData) -> None:
+        Ensure using_relations is set.
+    _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
+        Get relation type from data.
+    _predict_impl(self, data: NapistuData) -> torch.Tensor:
+        Implementation of prediction logic.
+    _score_edges(self, node_embeddings: torch.Tensor, edge_index: torch.Tensor, relation_type: Optional[torch.Tensor] = None, apply_sigmoid: bool = False) -> torch.Tensor:
+        Score edges using the head.
+    _validate_data_dims(self, batch_dict: Dict[str, Optional[torch.Tensor]], data: NapistuData) -> None:
+        Check that the dimensions of the tensors in the batch_dict are compatible.
+
     Examples
     --------
     >>> # Create task with stratified sampling
@@ -93,7 +127,7 @@ class EdgePredictionTask(BaseTask):
         self.neg_sampling_ratio = neg_sampling_ratio
         self.edge_strata = edge_strata
         self.neg_sampling_strategy = neg_sampling_strategy
-        self.metrics = metrics or ["auc", "ap"]
+        self.metrics = metrics or [METRICS.AUC, METRICS.AP]
 
         # Whether we're actually using relations (set during sampler initialization)
         self.using_relations = False
@@ -303,12 +337,117 @@ class EdgePredictionTask(BaseTask):
 
             # Compute metrics
             results = {}
-            if "auc" in self.metrics:
-                results["auc"] = roc_auc_score(y_true, y_pred)
-            if "ap" in self.metrics:
-                results["ap"] = average_precision_score(y_true, y_pred)
+            if METRICS.AUC in self.metrics:
+                results[METRICS.AUC] = roc_auc_score(y_true, y_pred)
+            if METRICS.AP in self.metrics:
+                results[METRICS.AP] = average_precision_score(y_true, y_pred)
 
             return results
+
+    def get_score_distributions(
+        self,
+        data: NapistuData,
+        split: str = TRAINING.VALIDATION,
+    ) -> Dict[str, Any]:
+        """
+        Get score distributions and quality metrics.
+
+        Checks:
+        - Score ranges and saturation
+        - Positive/negative separation
+        - Rank correlation with dot product baseline
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data
+        split : str
+            Which split to get score distributions from ('train', 'validation', 'test')
+
+        Returns
+        -------
+        Dict[str, Any]
+            Score distribution metrics including score statistics, separation,
+            saturation, and rank correlation with dot product
+        """
+        from scipy.stats import spearmanr
+
+        self.eval()
+        with torch.no_grad():
+            # Prepare batch
+            batch = self.prepare_batch(data, split=split)
+
+            # Encode nodes
+            z = self.encoder.encode(
+                batch[EDGE_PREDICTION_BATCH.X],
+                batch[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES],
+                batch.get(EDGE_PREDICTION_BATCH.EDGE_DATA, None),
+            )
+
+            # Score positive and negative edges
+            pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
+            neg_relation_type = batch.get(EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE)
+            pos_scores = self._score_edges(
+                z,
+                batch[EDGE_PREDICTION_BATCH.POS_EDGES],
+                relation_type=pos_relation_type,
+                apply_sigmoid=False,  # Raw scores
+            )
+            neg_scores = self._score_edges(
+                z,
+                batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
+                relation_type=neg_relation_type,
+                apply_sigmoid=False,
+            )
+
+            # Compute dot product baseline for comparison
+            dp_pos = (
+                z[batch[EDGE_PREDICTION_BATCH.POS_EDGES][0]]
+                * z[batch[EDGE_PREDICTION_BATCH.POS_EDGES][1]]
+            ).sum(dim=1)
+            dp_neg = (
+                z[batch[EDGE_PREDICTION_BATCH.NEG_EDGES][0]]
+                * z[batch[EDGE_PREDICTION_BATCH.NEG_EDGES][1]]
+            ).sum(dim=1)
+
+            # Compute score distribution statistics
+            score_distributions = {
+                SCORE_DISTRIBUTION_STATS.HEAD_TYPE: (
+                    self.head.head_type
+                    if isinstance(self.head, Decoder)
+                    else type(self.head).__name__
+                ),
+                SCORE_DISTRIBUTION_STATS.SPLIT: split,
+                # Score statistics
+                SCORE_DISTRIBUTION_STATS.POS_SCORE_MEAN: pos_scores.mean().item(),
+                SCORE_DISTRIBUTION_STATS.POS_SCORE_STD: pos_scores.std().item(),
+                SCORE_DISTRIBUTION_STATS.POS_SCORE_MIN: pos_scores.min().item(),
+                SCORE_DISTRIBUTION_STATS.POS_SCORE_MAX: pos_scores.max().item(),
+                SCORE_DISTRIBUTION_STATS.NEG_SCORE_MEAN: neg_scores.mean().item(),
+                SCORE_DISTRIBUTION_STATS.NEG_SCORE_STD: neg_scores.std().item(),
+                SCORE_DISTRIBUTION_STATS.NEG_SCORE_MIN: neg_scores.min().item(),
+                SCORE_DISTRIBUTION_STATS.NEG_SCORE_MAX: neg_scores.max().item(),
+                # Separation (Cohen's d)
+                SCORE_DISTRIBUTION_STATS.SEPARATION_COHENS_D: (
+                    (pos_scores.mean() - neg_scores.mean()) / neg_scores.std()
+                ).item(),
+                # Saturation (% of scores outside sigmoid linear region [-3, 3])
+                SCORE_DISTRIBUTION_STATS.POS_SATURATED_PCT: (pos_scores.abs() > 3)
+                .float()
+                .mean()
+                .item(),
+                SCORE_DISTRIBUTION_STATS.NEG_SATURATED_PCT: (neg_scores.abs() > 3)
+                .float()
+                .mean()
+                .item(),
+                # Rank correlation with dot product
+                SCORE_DISTRIBUTION_STATS.RANK_CORR_WITH_DOTPROD: spearmanr(
+                    torch.cat([pos_scores, neg_scores]).cpu().numpy(),
+                    torch.cat([dp_pos, dp_neg]).cpu().numpy(),
+                ).correlation,
+            }
+
+            return score_distributions
 
     def predict_edge_scores(
         self,
@@ -379,13 +518,12 @@ class EdgePredictionTask(BaseTask):
                     )
 
             # load a fixed tensor for weights if one exists
-            if (
-                hasattr(self.encoder, "static_edge_weights")
-                and self.encoder.static_edge_weights is not None
+            if hasattr(self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS) and getattr(
+                self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS
             ):
-                edge_data = self.encoder.static_edge_weights
+                edge_data = getattr(self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS)
             else:
-                edge_data = getattr(data, "edge_attr", None)
+                edge_data = getattr(data, PYG.EDGE_ATTR, None)
 
             # Encode nodes
             z = self.encoder.encode(
@@ -402,100 +540,6 @@ class EdgePredictionTask(BaseTask):
             return scores
 
     # private methods
-
-    def _ensure_using_relations(self, data: NapistuData) -> None:
-        """
-        Determine if we should use relations based on head support and data availability.
-
-        Sets self.using_relations to True if:
-        - Head supports relations (relation-aware head, only if head is a Decoder)
-        - Relations exist in data
-
-        Parameters
-        ----------
-        data : NapistuData
-            Graph data to check for relations
-        """
-        # Check if head is a Decoder and supports relations
-        if isinstance(self.head, Decoder):
-            head_supports_relations = self.head.supports_relations
-        else:
-            # Raw head instances don't support relations
-            logger.warning(
-                "Head is not a Decoder instance - assuming that it is NOT relation-aware."
-            )
-            head_supports_relations = False
-
-        relation_type_exists = (
-            getattr(data, NAPISTU_DATA.RELATION_TYPE, None) is not None
-        )
-        if head_supports_relations and not relation_type_exists:
-            raise ValueError(
-                "Relation type not found in data for a relation-aware head. Expected attribute 'relation_type'."
-            )
-
-        self.using_relations = head_supports_relations and relation_type_exists
-
-    def _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
-        """
-        Retrieve relation_type from data if using_relations is True.
-
-        Parameters
-        ----------
-        data : NapistuData
-            Graph data to retrieve relation_type from
-
-        Returns
-        -------
-        Optional[torch.Tensor]
-            Relation type tensor if using_relations is True, None otherwise
-        """
-        self._ensure_using_relations(data)
-        if self.using_relations:
-            if not hasattr(data, NAPISTU_DATA.RELATION_TYPE):
-                raise ValueError(
-                    f"Relation type not found in data. Expected attribute '{NAPISTU_DATA.RELATION_TYPE}'."
-                )
-            return data.relation_type
-        return None
-
-    def _score_edges(
-        self,
-        node_embeddings: torch.Tensor,
-        edge_index: torch.Tensor,
-        relation_type: Optional[torch.Tensor] = None,
-        apply_sigmoid: bool = False,
-    ) -> torch.Tensor:
-        """
-        Score edges using the head.
-
-        Parameters
-        ----------
-        node_embeddings : torch.Tensor
-            Node embeddings [num_nodes, embedding_dim]
-        edge_index : torch.Tensor
-            Edge connectivity [2, num_edges]
-        relation_type : torch.Tensor, optional
-            Relation type for each edge [num_edges]. Only used if head supports relations.
-        apply_sigmoid : bool
-            Whether to apply sigmoid to the scores. Default is False.
-
-        Returns
-        -------
-        torch.Tensor
-            Edge scores [num_edges]
-        """
-        if self.using_relations:
-            if relation_type is None:
-                raise ValueError("relation_type is required for relation-aware heads")
-            scores = self.head(node_embeddings, edge_index, relation_type=relation_type)
-        else:
-            scores = self.head(node_embeddings, edge_index)
-
-        if apply_sigmoid:
-            scores = torch.sigmoid(scores)
-
-        return scores
 
     def _ensure_negative_sampler(self, data: NapistuData):
         """
@@ -558,6 +602,62 @@ class EdgePredictionTask(BaseTask):
 
         self._sampler_initialized = True
 
+    def _ensure_using_relations(self, data: NapistuData) -> None:
+        """
+        Determine if we should use relations based on head support and data availability.
+
+        Sets self.using_relations to True if:
+        - Head supports relations (relation-aware head, only if head is a Decoder)
+        - Relations exist in data
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data to check for relations
+        """
+        # Check if head is a Decoder and supports relations
+        if isinstance(self.head, Decoder):
+            head_supports_relations = self.head.supports_relations
+        else:
+            # Raw head instances don't support relations
+            logger.warning(
+                "Head is not a Decoder instance - assuming that it is NOT relation-aware."
+            )
+            head_supports_relations = False
+
+        relation_type_exists = (
+            getattr(data, NAPISTU_DATA.RELATION_TYPE, None) is not None
+        )
+        if head_supports_relations and not relation_type_exists:
+            raise ValueError(
+                "Relation type not found in data for a relation-aware head. Expected attribute 'relation_type'."
+            )
+
+        self.using_relations = head_supports_relations and relation_type_exists
+
+    def _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
+        """
+        Retrieve relation_type from data if using_relations is True.
+
+        Parameters
+        ----------
+        data : NapistuData
+            Graph data to retrieve relation_type from
+
+        Returns
+        -------
+        Optional[torch.Tensor]
+            Relation type tensor if using_relations is True, None otherwise
+        """
+        self._ensure_using_relations(data)
+        if self.using_relations:
+            if not hasattr(data, NAPISTU_DATA.RELATION_TYPE):
+                raise ValueError(
+                    f"Relation type not found in data. Expected attribute '{NAPISTU_DATA.RELATION_TYPE}'."
+                )
+            return data.relation_type
+        return None
+
     def _predict_impl(self, data: NapistuData) -> torch.Tensor:
         """
         Predict scores for all edges in data.
@@ -568,12 +668,12 @@ class EdgePredictionTask(BaseTask):
         self._ensure_using_relations(data)
 
         if (
-            hasattr(self.encoder, "static_edge_weights")
-            and self.encoder.static_edge_weights is not None
+            hasattr(self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS)
+            and getattr(self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS) is not None
         ):
-            edge_data = self.encoder.static_edge_weights
+            edge_data = getattr(self.encoder, ENCODER_DEFS.STATIC_EDGE_WEIGHTS)
         else:
-            edge_data = getattr(data, "edge_attr", None)
+            edge_data = getattr(data, PYG.EDGE_ATTR, None)
 
         # Encode nodes using all edges
         z = self.encoder.encode(
@@ -589,6 +689,44 @@ class EdgePredictionTask(BaseTask):
         scores = self._score_edges(
             z, data.edge_index, relation_type=relation_type, apply_sigmoid=True
         )
+
+        return scores
+
+    def _score_edges(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+        relation_type: Optional[torch.Tensor] = None,
+        apply_sigmoid: bool = False,
+    ) -> torch.Tensor:
+        """
+        Score edges using the head.
+
+        Parameters
+        ----------
+        node_embeddings : torch.Tensor
+            Node embeddings [num_nodes, embedding_dim]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        relation_type : torch.Tensor, optional
+            Relation type for each edge [num_edges]. Only used if head supports relations.
+        apply_sigmoid : bool
+            Whether to apply sigmoid to the scores. Default is False.
+
+        Returns
+        -------
+        torch.Tensor
+            Edge scores [num_edges]
+        """
+        if self.using_relations:
+            if relation_type is None:
+                raise ValueError("relation_type is required for relation-aware heads")
+            scores = self.head(node_embeddings, edge_index, relation_type=relation_type)
+        else:
+            scores = self.head(node_embeddings, edge_index)
+
+        if apply_sigmoid:
+            scores = torch.sigmoid(scores)
 
         return scores
 

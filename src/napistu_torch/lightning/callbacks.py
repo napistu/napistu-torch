@@ -6,16 +6,65 @@ from typing import Any, Dict
 
 import numpy as np
 import pytorch_lightning as pl
+import torch
 from pytorch_lightning.callbacks import Callback
 
 from napistu_torch.constants import NAPISTU_DATA
-from napistu_torch.lightning.constants import NAPISTU_DATA_MODULE
+from napistu_torch.lightning.constants import (
+    EMBEDDING_NORM_STATS,
+    EXPERIMENT_TIMING_STATS,
+    NAPISTU_DATA_MODULE,
+)
 from napistu_torch.load.checkpoints import CheckpointHyperparameters
 from napistu_torch.load.constants import CHECKPOINT_HYPERPARAMETERS
-from napistu_torch.ml.constants import TRAINING
+from napistu_torch.ml.constants import SCORE_DISTRIBUTION_STATS, TRAINING
 from napistu_torch.models.constants import MODEL_DEFS
 
 logger = logging.getLogger(__name__)
+
+
+class EmbeddingNormCallback(Callback):
+    """Monitor embedding norm statistics during training."""
+
+    def __init__(self, log_every_n_epochs: int = 10):
+        super().__init__()
+        self.log_every_n_epochs = log_every_n_epochs
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        """Log embedding statistics periodically."""
+        if trainer.current_epoch % self.log_every_n_epochs != 0:
+            return
+
+        # Get validation data
+        val_data = trainer.datamodule.data
+        val_data = val_data.to(pl_module.device)
+
+        # Get embeddings
+        with torch.no_grad():
+            embeddings = pl_module.get_embeddings(val_data)
+            norms = embeddings.norm(dim=1)
+
+            stats = {
+                EMBEDDING_NORM_STATS.EMBEDDING_NORM_MEAN: norms.mean().item(),
+                EMBEDDING_NORM_STATS.EMBEDDING_NORM_MEDIAN: norms.median().item(),
+                EMBEDDING_NORM_STATS.EMBEDDING_NORM_STD: norms.std().item(),
+                EMBEDDING_NORM_STATS.EMBEDDING_NORM_MAX: norms.max().item(),
+            }
+
+        # Log to wandb
+        if trainer.logger is not None:
+            trainer.logger.experiment.log(
+                {f"embeddings/{k}": v for k, v in stats.items()},
+                step=trainer.global_step,
+            )
+
+        # Print summary
+        logger.info(
+            f"\n=== Embedding Norm Statistics (epoch {trainer.current_epoch}) ===\n"
+            f"Mean ± Std: {stats[EMBEDDING_NORM_STATS.EMBEDDING_NORM_MEAN]:.3f} ± {stats[EMBEDDING_NORM_STATS.EMBEDDING_NORM_STD]:.3f}\n"
+            f"Median: {stats[EMBEDDING_NORM_STATS.EMBEDDING_NORM_MEDIAN]:.3f}\n"
+            f"Max: {stats[EMBEDDING_NORM_STATS.EMBEDDING_NORM_MAX]:.3f}\n"
+        )
 
 
 class ExperimentTimingCallback(Callback):
@@ -54,8 +103,9 @@ class ExperimentTimingCallback(Callback):
         if trainer.logger is not None and hasattr(trainer.logger, "experiment"):
             trainer.logger.experiment.log(
                 {
-                    "epoch_duration_seconds": epoch_duration,
-                    "avg_epoch_duration": sum(self.epoch_times) / len(self.epoch_times),
+                    EXPERIMENT_TIMING_STATS.EPOCH_DURATION_SECONDS: epoch_duration,
+                    EXPERIMENT_TIMING_STATS.AVG_EPOCH_DURATION: sum(self.epoch_times)
+                    / len(self.epoch_times),
                 }
             )
 
@@ -71,27 +121,75 @@ class ExperimentTimingCallback(Callback):
             if self.epoch_times:
                 trainer.logger.experiment.log(
                     {
-                        "total_train_time_minutes": total_time / 60,
-                        "total_epochs_completed": len(self.epoch_times),
-                        "time_per_epoch_avg": sum(self.epoch_times)
+                        EXPERIMENT_TIMING_STATS.TOTAL_TRAIN_TIME_MINUTES: total_time
+                        / 60,
+                        EXPERIMENT_TIMING_STATS.TOTAL_EPOCHS_COMPLETED: len(
+                            self.epoch_times
+                        ),
+                        EXPERIMENT_TIMING_STATS.TIME_PER_EPOCH_AVG: sum(
+                            self.epoch_times
+                        )
                         / len(self.epoch_times),
-                        "time_per_epoch_std": np.std(self.epoch_times),
+                        EXPERIMENT_TIMING_STATS.TIME_PER_EPOCH_STD: np.std(
+                            self.epoch_times
+                        ),
                     }
                 )
 
     def state_dict(self) -> Dict[str, Any]:
         """Save callback state for checkpointing."""
         return {
-            "start_time": self.start_time,
-            "epoch_times": self.epoch_times,
-            "epoch_start": getattr(self, "epoch_start", None),
+            EXPERIMENT_TIMING_STATS.START_TIME: self.start_time,
+            EXPERIMENT_TIMING_STATS.EPOCH_TIMES: self.epoch_times,
+            EXPERIMENT_TIMING_STATS.EPOCH_START: getattr(self, "epoch_start", None),
         }
 
     def load_state_dict(self, state_dict: Dict[str, Any]) -> None:
         """Load callback state from checkpoint."""
-        self.start_time = state_dict.get("start_time")
-        self.epoch_times = state_dict.get("epoch_times", [])
-        self.epoch_start = state_dict.get("epoch_start")
+        self.start_time = state_dict.get(EXPERIMENT_TIMING_STATS.START_TIME)
+        self.epoch_times = state_dict.get(EXPERIMENT_TIMING_STATS.EPOCH_TIMES, [])
+        self.epoch_start = state_dict.get(EXPERIMENT_TIMING_STATS.EPOCH_START)
+
+
+class ScoreDistributionMonitoringCallback(Callback):
+    """Monitor score distribution statistics periodically during training."""
+
+    def __init__(self, log_every_n_epochs: int = 5):
+        super().__init__()
+        self.log_every_n_epochs = log_every_n_epochs
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.log_every_n_epochs == 0:
+            # Get validation data
+            val_data = trainer.datamodule.data  # transductive
+
+            # Get score distribution statistics
+            score_distributions = pl_module.get_score_distributions(
+                val_data, split=TRAINING.VALIDATION
+            )
+
+            # Log to wandb
+            if trainer.logger is not None:
+                trainer.logger.experiment.log(
+                    {
+                        f"score_distributions/{k}": v
+                        for k, v in score_distributions.items()
+                    },
+                    step=trainer.global_step,
+                )
+
+            # Print summary
+            logger.info(
+                f"\n=== Score Distribution Statistics (epoch {trainer.current_epoch}) ===\n"
+                f"Head: {score_distributions[SCORE_DISTRIBUTION_STATS.HEAD_TYPE]}\n"
+                f"Pos scores: {score_distributions[SCORE_DISTRIBUTION_STATS.POS_SCORE_MEAN]:.2f} ± {score_distributions[SCORE_DISTRIBUTION_STATS.POS_SCORE_STD]:.2f} "
+                f"[{score_distributions[SCORE_DISTRIBUTION_STATS.POS_SCORE_MIN]:.2f}, {score_distributions[SCORE_DISTRIBUTION_STATS.POS_SCORE_MAX]:.2f}]\n"
+                f"Neg scores: {score_distributions[SCORE_DISTRIBUTION_STATS.NEG_SCORE_MEAN]:.2f} ± {score_distributions[SCORE_DISTRIBUTION_STATS.NEG_SCORE_STD]:.2f} "
+                f"[{score_distributions[SCORE_DISTRIBUTION_STATS.NEG_SCORE_MIN]:.2f}, {score_distributions[SCORE_DISTRIBUTION_STATS.NEG_SCORE_MAX]:.2f}]\n"
+                f"Separation (Cohen's d): {score_distributions[SCORE_DISTRIBUTION_STATS.SEPARATION_COHENS_D]:.2f}\n"
+                f"Saturated: pos={score_distributions[SCORE_DISTRIBUTION_STATS.POS_SATURATED_PCT]:.1%}, neg={score_distributions[SCORE_DISTRIBUTION_STATS.NEG_SATURATED_PCT]:.1%}\n"
+                f"Rank corr with dot product: {score_distributions[SCORE_DISTRIBUTION_STATS.RANK_CORR_WITH_DOTPROD]:.3f}\n"
+            )
 
 
 class SetHyperparametersCallback(Callback):

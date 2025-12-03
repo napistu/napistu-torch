@@ -86,10 +86,9 @@ class BilinearHead(nn.Module):
             -1
         )  # [num_edges]
 
-        # Clamp to prevent overflow (values becoming too large/too negative) that could lead to NaN
-        # This is a safety measure - if scores are extremely large, clamp them
-        # The range [-50, 50] is safe for sigmoid (sigmoid(50) ≈ 1, sigmoid(-50) ≈ 0)
-        edge_scores = torch.clamp(edge_scores, min=-50.0, max=50.0)
+        # Normalize by sqrt(embedding_dim) to prevent score explosion
+        # This keeps scores in a reasonable range regardless of dimensionality
+        edge_scores = edge_scores / torch.sqrt(torch.tensor(float(self.embedding_dim)))
 
         return edge_scores
 
@@ -140,8 +139,9 @@ class DistMultHead(nn.Module):
             # Initialize to ones: h * 1 * t = h · t
             nn.init.ones_(self.relation_emb.weight)
         else:
-            # Standard initialization
-            nn.init.xavier_uniform_(self.relation_emb.weight)
+            # Initialize around 1 with small noise
+            # This gives score ≈ dot product initially
+            nn.init.normal_(self.relation_emb.weight, mean=1.0, std=0.1)
 
     def forward(
         self,
@@ -173,8 +173,8 @@ class DistMultHead(nn.Module):
         # Get relation embeddings
         rel = self.relation_emb(relation_type)
 
-        # DistMult scoring: trilinear dot product
-        score = (head * rel * tail).sum(dim=-1)
+        # DistMult scoring: trilinear dot product (use mean for dimension-agnostic)
+        score = (head * rel * tail).mean(dim=-1)
 
         return score
 
@@ -212,8 +212,8 @@ class DotProductHead(nn.Module):
         src_embeddings = node_embeddings[edge_index[0]]  # [num_edges, embedding_dim]
         tgt_embeddings = node_embeddings[edge_index[1]]  # [num_edges, embedding_dim]
 
-        # Compute dot product
-        edge_scores = torch.sum(src_embeddings * tgt_embeddings, dim=1)  # [num_edges]
+        # Compute mean dot product (dimension-agnostic)
+        edge_scores = (src_embeddings * tgt_embeddings).mean(dim=1)  # [num_edges]
 
         return edge_scores
 
@@ -404,6 +404,12 @@ class RotatEHead(nn.Module):
             # Initialize with small random phases
             nn.init.uniform_(self.relation_emb.weight, -0.1, 0.1)
 
+        # Learnable centering parameters (initialize to reasonable defaults)
+        self.temperature = nn.Parameter(torch.tensor(1.0))
+        self.bias = nn.Parameter(
+            torch.tensor(1.0)
+        )  # Expected distance for random pairs if unit norm embeddings
+
     def forward(
         self,
         node_embeddings: torch.Tensor,
@@ -453,9 +459,12 @@ class RotatEHead(nn.Module):
         re_diff = re_score - re_tail
         im_diff = im_score - im_tail
 
-        # L2 distance (negative because lower distance = higher score)
-        score = torch.sqrt(re_diff**2 + im_diff**2).sum(dim=-1)
-        score = -score  # Negate so higher score = better match
+        # L2 distance: sqrt(re_diff**2 + im_diff**2)
+        # MEAN distance (dimension-agnostic)
+        distance = torch.sqrt(re_diff**2 + im_diff**2).mean(dim=-1)
+
+        # CENTER around zero with learnable parameters
+        score = -(distance / self.temperature) + self.bias
 
         return score
 
@@ -521,6 +530,12 @@ class TransEHead(nn.Module):
             # Standard initialization
             nn.init.xavier_uniform_(self.relation_emb.weight)
 
+        # Learnable centering parameters (initialize to reasonable defaults)
+        self.temperature = nn.Parameter(torch.tensor(1.0))
+        self.bias = nn.Parameter(
+            torch.tensor(1.0)
+        )  # Expected distance for random pairs if unit norm embeddings
+
     def forward(
         self,
         node_embeddings: torch.Tensor,
@@ -544,19 +559,25 @@ class TransEHead(nn.Module):
         torch.Tensor
             Edge scores [num_edges] (higher = more likely)
         """
-        # Get head and tail embeddings
-        head = node_embeddings[edge_index[0]]  # [num_edges, embedding_dim]
-        tail = node_embeddings[edge_index[1]]  # [num_edges, embedding_dim]
-
-        # Get relation embeddings
-        rel = self.relation_emb(relation_type)  # [num_edges, embedding_dim]
+        head = node_embeddings[edge_index[0]]
+        tail = node_embeddings[edge_index[1]]
+        rel = self.relation_emb(relation_type)
 
         # TransE scoring: h + r should be close to t
-        # Distance metric: ||h + r - t||
-        distance = (head + rel - tail).norm(p=self.norm, dim=-1)
+        diff = head + rel - tail
 
-        # Negate so higher score = better match
-        score = -distance
+        # Compute norm and normalize by sqrt(dim) for dimension-agnostic scaling
+        if self.norm == 1:
+            # L1 norm: just take mean of absolute values
+            distance = diff.abs().mean(dim=-1)
+        else:
+            # L2 norm: ||diff|| / sqrt(dim) = sqrt(mean(diff²))
+            distance = torch.norm(diff, p=2, dim=-1) / torch.sqrt(
+                torch.tensor(float(self.embedding_dim))
+            )
+
+        # CENTER around zero with learnable parameters
+        score = -(distance - self.bias) / self.temperature
 
         return score
 

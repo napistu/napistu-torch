@@ -54,3 +54,21 @@ DEFAULT_MODEL_CARD_METRICS = [
     METRIC_SUMMARIES.TEST_AP,
     METRIC_SUMMARIES.BEST_EPOCH,
 ]
+
+# Score distribution statistics keys
+SCORE_DISTRIBUTION_STATS = SimpleNamespace(
+    HEAD_TYPE="head_type",
+    SPLIT="split",
+    POS_SCORE_MEAN="pos_score_mean",
+    POS_SCORE_STD="pos_score_std",
+    POS_SCORE_MIN="pos_score_min",
+    POS_SCORE_MAX="pos_score_max",
+    NEG_SCORE_MEAN="neg_score_mean",
+    NEG_SCORE_STD="neg_score_std",
+    NEG_SCORE_MIN="neg_score_min",
+    NEG_SCORE_MAX="neg_score_max",
+    SEPARATION_COHENS_D="separation_cohens_d",
+    POS_SATURATED_PCT="pos_saturated_pct",
+    NEG_SATURATED_PCT="neg_saturated_pct",
+    RANK_CORR_WITH_DOTPROD="rank_corr_with_dotprod",
+)

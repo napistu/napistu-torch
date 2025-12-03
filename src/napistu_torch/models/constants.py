@@ -38,6 +38,7 @@ VALID_ENCODER_NAMED_ARGS = list(ENCODER_SPECIFIC_ARGS.__dict__.values())
 
 # defaults and other miscellaneous encoder definitions
 ENCODER_DEFS = SimpleNamespace(
+    STATIC_EDGE_WEIGHTS="static_edge_weights",
     GRAPH_CONV_DEFAULT_AGGREGATOR="mean",
     SAGE_DEFAULT_AGGREGATOR="mean",
     # derived encoder attributes
