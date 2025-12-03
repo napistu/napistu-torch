@@ -1,6 +1,4 @@
-"""
-Simplified Lightning task adapters that handle single-graph batches correctly.
-"""
+"""Lightning task adapters which handle configuration and train/val/test/predict logic."""
 
 import gc
 import logging
@@ -32,12 +30,19 @@ class BaseLightningTask(pl.LightningModule):
     Base class for Lightning task adapters.
 
     This handles all the Lightning boilerplate (optimizer config, logging, etc.)
-    so your task-specific classes can focus on task logic.
+    so the task-specific classes can focus on task logic.
+
+    Parameters
+    ----------
+    task : BaseTask
+        The task to wrap.
+    config : TrainingConfig
+        The training configuration.
 
     Public methods
     --------------
     configure_optimizers(self) -> Dict[str, Any]:
-        Configure optimizer and scheduler.
+        Reserved Lightning method - configure optimizer and scheduler.
 
     Private methods
     --------------
@@ -158,6 +163,44 @@ class EdgePredictionLightning(BaseLightningTask):
     Supports relation-aware heads automatically - if the task's head supports
     relations and the NapistuData contains relation_type, relations will be
     used automatically in training, validation, testing, and prediction.
+
+    Parameters
+    ----------
+    task : EdgePredictionTask
+        The task to wrap.
+    config : TrainingConfig
+        The training configuration.
+
+    Lightning Methods (Standard PyTorch Lightning Interface)
+    --------------------------------------------------------
+    on_train_epoch_end(self) -> None:
+        Lightning hook called at the end of each training epoch - cleans up memory.
+    on_validation_epoch_end(self) -> None:
+        Lightning hook called at the end of each validation epoch - cleans up memory.
+    predict_step(self, batch, batch_idx) -> torch.Tensor:
+        Lightning method for prediction - returns per-edge predictions for analysis.
+    test_step(self, batch, batch_idx) -> Dict[str, float]:
+        Lightning method for testing - batch should be a NapistuData object.
+    training_step(self, batch, batch_idx) -> torch.Tensor:
+        Lightning method for training - handles both full-batch and mini-batch modes.
+    validation_step(self, batch, batch_idx) -> Dict[str, float]:
+        Lightning method for validation - batch should be a NapistuData object.
+
+    Note: configure_optimizers is inherited from BaseLightningTask.
+
+    Custom Methods (Napistu-Torch Specific)
+    ----------------------------------------
+    get_embeddings(self, data: NapistuData) -> torch.Tensor:
+        Extract node embeddings for the given data.
+    get_learned_edge_weights(self, data: NapistuData) -> torch.Tensor:
+        Extract learned edge weights for the given data.
+    get_score_distributions(self, data: NapistuData, split: str = TRAINING.VALIDATION) -> Dict[str, Any]:
+        Get score distribution statistics.
+
+    Private Methods
+    ---------------
+    _unpack_batch(self, batch) -> tuple[NapistuData, Optional[torch.Tensor]]:
+        Unpack training batch into (data, edge_indices).
     """
 
     def __init__(
@@ -166,6 +209,110 @@ class EdgePredictionLightning(BaseLightningTask):
         config: TrainingConfig,
     ):
         super().__init__(task, config)
+
+    # Lightning Methods (Standard PyTorch Lightning Interface)
+
+    def on_train_epoch_end(self):
+        _cleanup()
+
+    def on_validation_epoch_end(self):
+        _cleanup()
+
+    def predict_step(self, batch, batch_idx):
+        """
+        Predict step - returns per-edge predictions for analysis.
+
+        This method is called by trainer.predict() and returns predictions
+        for each edge in the batch, which can be used for analysis.
+
+        Returns
+        -------
+        torch.Tensor
+            The actual model predictions (sigmoid probabilities).
+            Higher scores = more likely to be a real edge.
+        """
+        _validate_is_napistu_data(batch, "predict_step")
+        return self.task.predict(batch)
+
+    def test_step(self, batch, batch_idx):
+        """Test step - batch should be a NapistuData object."""
+        _validate_is_napistu_data(batch, "test_step")
+
+        # Delegates to the core task
+        metrics = self.task.test_step(batch)
+
+        # Log all metrics
+        for metric_name, value in metrics.items():
+            self.log(f"test_{metric_name}", value, on_epoch=True)
+
+        return metrics
+
+    def training_step(self, batch, batch_idx):
+        """
+        Training step - handles both full-batch and mini-batch modes.
+
+        Parameters
+        ----------
+        batch : NapistuData or torch.Tensor
+            Either:
+            - NapistuData object (from FullGraphDataModule)
+            - Edge indices tensor (from EdgeBatchDataModule)
+        batch_idx : int
+            Batch index within epoch
+
+        Returns
+        -------
+        torch.Tensor
+            Loss value
+        """
+        # Detect batch type and extract data
+        data, edge_indices = self._unpack_batch(batch)
+
+        # Ensure data is on the correct device
+        # In full-batch mode, Lightning moves the NapistuData batch automatically, so data is already on device
+        # In mini-batch mode, datamodule.data is stored data (not a batch), so it may still be on CPU
+        # Calling .to() is idempotent, so safe to call in both cases
+        data = data.to(self.device)
+        if edge_indices is not None:
+            # edge_indices is part of the batch, so Lightning moves it automatically
+            # but ensure it's on the same device as data (defensive)
+            edge_indices = edge_indices.to(self.device)
+
+        # Prepare batch for the task
+        prepared_batch = self.task.prepare_batch(
+            data,
+            split=TRAINING.TRAIN,
+            edge_indices=edge_indices,
+        )
+
+        # Compute loss
+        loss = self.task.compute_loss(prepared_batch)
+
+        # Log
+        self.log(
+            METRIC_SUMMARIES.TRAIN_LOSS,
+            loss,
+            prog_bar=True,
+            on_step=False,
+            on_epoch=True,
+        )
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        """Validation step - batch should be a NapistuData object."""
+        _validate_is_napistu_data(batch, "validation_step")
+
+        # Delegates to the core task
+        metrics = self.task.validation_step(batch)
+
+        # Log all metrics
+        for metric_name, value in metrics.items():
+            self.log(f"val_{metric_name}", value, prog_bar=True, on_epoch=True)
+
+        return metrics
+
+    # Custom Methods (Napistu-Torch Specific)
 
     @torch.no_grad()
     def get_embeddings(self, data: NapistuData) -> torch.Tensor:
@@ -248,100 +395,6 @@ class EdgePredictionLightning(BaseLightningTask):
         learned_weights = self.task.get_learned_edge_weights(edge_attr)
         return learned_weights.detach().cpu()
 
-    def training_step(self, batch, batch_idx):
-        """
-        Training step - handles both full-batch and mini-batch modes.
-
-        Parameters
-        ----------
-        batch : NapistuData or torch.Tensor
-            Either:
-            - NapistuData object (from FullGraphDataModule)
-            - Edge indices tensor (from EdgeBatchDataModule)
-        batch_idx : int
-            Batch index within epoch
-
-        Returns
-        -------
-        torch.Tensor
-            Loss value
-        """
-        # Detect batch type and extract data
-        data, edge_indices = self._unpack_batch(batch)
-
-        # Ensure data is on the correct device
-        # In full-batch mode, Lightning moves the NapistuData batch automatically, so data is already on device
-        # In mini-batch mode, datamodule.data is stored data (not a batch), so it may still be on CPU
-        # Calling .to() is idempotent, so safe to call in both cases
-        data = data.to(self.device)
-        if edge_indices is not None:
-            # edge_indices is part of the batch, so Lightning moves it automatically
-            # but ensure it's on the same device as data (defensive)
-            edge_indices = edge_indices.to(self.device)
-
-        # Prepare batch for the task
-        prepared_batch = self.task.prepare_batch(
-            data,
-            split=TRAINING.TRAIN,
-            edge_indices=edge_indices,
-        )
-
-        # Compute loss
-        loss = self.task.compute_loss(prepared_batch)
-
-        # Log
-        self.log(
-            METRIC_SUMMARIES.TRAIN_LOSS,
-            loss,
-            prog_bar=True,
-            on_step=False,
-            on_epoch=True,
-        )
-
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        """Validation step - batch should be a NapistuData object."""
-        _validate_is_napistu_data(batch, "validation_step")
-
-        # Delegates to the core task
-        metrics = self.task.validation_step(batch)
-
-        # Log all metrics
-        for metric_name, value in metrics.items():
-            self.log(f"val_{metric_name}", value, prog_bar=True, on_epoch=True)
-
-        return metrics
-
-    def test_step(self, batch, batch_idx):
-        """Test step - batch should be a NapistuData object."""
-        _validate_is_napistu_data(batch, "test_step")
-
-        # Delegates to the core task
-        metrics = self.task.test_step(batch)
-
-        # Log all metrics
-        for metric_name, value in metrics.items():
-            self.log(f"test_{metric_name}", value, on_epoch=True)
-
-        return metrics
-
-    def predict_step(self, batch, batch_idx):
-        """
-        Predict step - returns per-edge predictions for analysis.
-
-        This method is called by trainer.predict() and returns predictions
-        for each edge in the batch, which can be used for analysis.
-
-        Returns
-        -------
-        torch.Tensor
-            The actual model predictions (sigmoid probabilities).
-            Higher scores = more likely to be a real edge.
-        """
-        _validate_is_napistu_data(batch, "predict_step")
-        return self.task.predict(batch)
-
     @torch.no_grad()
     def get_score_distributions(
         self,
@@ -369,14 +422,7 @@ class EdgePredictionLightning(BaseLightningTask):
         data = data.to(self.device)
         return self.task.get_score_distributions(data, split)
 
-    def on_batch_end(self):
-        _cleanup()
-
-    def on_train_epoch_end(self):
-        _cleanup()
-
-    def on_validation_epoch_end(self):
-        _cleanup()
+    # Private Methods
 
     def _unpack_batch(self, batch):
         """
@@ -519,6 +565,7 @@ def _validate_is_napistu_data(batch, method_name: str):
 
 
 def _cleanup():
+    """Clean orphaned tensors and free up the memory."""
     if torch.backends.mps.is_available():
         torch.mps.synchronize()
         torch.mps.empty_cache()
