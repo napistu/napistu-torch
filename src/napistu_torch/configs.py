@@ -11,7 +11,6 @@ from napistu_torch.constants import (
     DATA_CONFIG_DEFAULTS,
     EXPERIMENT_CONFIG,
     EXPERIMENT_CONFIG_DEFAULTS,
-    METRICS,
     MODEL_CONFIG,
     MODEL_CONFIG_DEFAULTS,
     NAPISTU_DATA_TRIM_ARGS,
@@ -28,7 +27,7 @@ from napistu_torch.constants import (
     WANDB_CONFIG_DEFAULTS,
 )
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
-from napistu_torch.ml.constants import METRIC_SUMMARIES
+from napistu_torch.ml.constants import METRIC_SUMMARIES, METRICS
 from napistu_torch.models.constants import (
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
@@ -277,7 +276,19 @@ class TaskConfig(BaseModel):
         ]
     )
     edge_prediction_neg_sampling_strategy: str = Field(
-        default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY]
+        default=TASK_CONFIG_DEFAULTS[TASK_CONFIG.EDGE_PREDICTION_NEG_SAMPLING_STRATEGY],
+        description="Strategy for negative sampling: 'uniform' or 'degree_weighted'",
+    )
+
+    # Loss weighting
+    weight_loss_by_relation_frequency: bool = Field(
+        default=False, description="Whether to weight loss by relation type frequency"
+    )
+    loss_weight_alpha: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Weight interpolation: 0.0=uniform, 0.5=sqrt, 1.0=inverse_freq",
     )
 
     @field_validator(TASK_CONFIG.TASK)
@@ -813,7 +824,11 @@ def config_to_data_trimming_spec(config: ExperimentConfig) -> Dict[str, bool]:
     if head in RELATION_AWARE_HEADS:
         keep_relation_type = True
     else:
-        keep_relation_type = False
+        # are we using relation-weighted loss?
+        if config.task.weight_loss_by_relation_frequency:
+            keep_relation_type = True
+        else:
+            keep_relation_type = False
 
     return {
         NAPISTU_DATA_TRIM_ARGS.KEEP_EDGE_ATTR: keep_edge_attr,

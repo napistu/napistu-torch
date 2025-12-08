@@ -396,6 +396,10 @@ def test_trim_no_relation_type(edge_prediction_with_sbo_relations):
     # Verify relation_type is removed
     assert not hasattr(trimmed, NAPISTU_DATA.RELATION_TYPE)
 
+    # Verify relation_manager is also removed when relation_type is not kept
+    assert hasattr(edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_MANAGER)
+    assert not hasattr(trimmed, NAPISTU_DATA.RELATION_MANAGER)
+
     # Verify core attributes are still present
     assert hasattr(trimmed, PYG.X)
     assert hasattr(trimmed, PYG.EDGE_INDEX)
@@ -417,9 +421,43 @@ def test_trim_keep_relation_type(edge_prediction_with_sbo_relations):
     assert trimmed.relation_type is not None
     assert torch.equal(trimmed.relation_type, original_relation_type)
 
+    # Verify relation_manager is also preserved when relation_type is kept
+    original_relation_manager = getattr(
+        edge_prediction_with_sbo_relations, NAPISTU_DATA.RELATION_MANAGER
+    )
+    assert original_relation_manager is not None
+    assert hasattr(trimmed, NAPISTU_DATA.RELATION_MANAGER)
+    assert trimmed.relation_manager is not None
+    assert trimmed.relation_manager is original_relation_manager
+
     # Verify get_num_relations still works
     num_relations = trimmed.get_num_relations()
     assert num_relations > 0
+
+
+def test_trim_keep_labels(species_type_prediction_napistu_data):
+    """Test trim method with keep_labels=True preserves labels and labeling_manager."""
+    # Verify original data has labels
+    assert hasattr(species_type_prediction_napistu_data, PYG.Y)
+    original_labels = species_type_prediction_napistu_data.y
+    assert original_labels is not None
+
+    # Trim with keep_labels=True (default)
+    trimmed = species_type_prediction_napistu_data.trim(keep_labels=True)
+
+    # Verify labels are preserved
+    assert hasattr(trimmed, PYG.Y)
+    assert trimmed.y is not None
+    assert torch.equal(trimmed.y, original_labels)
+
+    # Verify labeling_manager is also preserved when labels are kept
+    original_labeling_manager = getattr(
+        species_type_prediction_napistu_data, NAPISTU_DATA.LABELING_MANAGER
+    )
+    assert original_labeling_manager is not None
+    assert hasattr(trimmed, NAPISTU_DATA.LABELING_MANAGER)
+    assert trimmed.labeling_manager is not None
+    assert trimmed.labeling_manager is original_labeling_manager
 
 
 def test_estimate_memory_footprint(napistu_data):

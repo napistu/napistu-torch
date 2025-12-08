@@ -23,7 +23,6 @@ from napistu_torch.constants import (
     ANONYMIZATION_PLACEHOLDER_DEFAULT,
     DATA_CONFIG,
     EXPERIMENT_CONFIG,
-    METRICS,
     NAPISTU_DATA_TRIM_ARGS,
     OPTIMIZERS,
     PRETRAINED_COMPONENT_SOURCES,
@@ -43,6 +42,7 @@ from napistu_torch.load.constants import (
     STRATIFY_BY,
     STRATIFY_BY_ARTIFACT_NAMES,
 )
+from napistu_torch.ml.constants import METRICS
 from napistu_torch.models.constants import (
     ENCODER_SPECIFIC_ARGS,
     ENCODERS,

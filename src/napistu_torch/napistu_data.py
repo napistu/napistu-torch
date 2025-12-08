@@ -869,7 +869,11 @@ class NapistuData(Data):
         **What's Always Removed:**
         - ng_vertex_names, ng_edge_names (pandas objects)
         - vertex_feature_names, edge_feature_names (metadata)
-        - name, splitting_strategy, labeling_manager, relation_manager (metadata)
+        - name, splitting_strategy (metadata)
+
+        **Conditionally Kept:**
+        - labeling_manager: Kept if keep_labels=True (needed for label metadata)
+        - relation_manager: Kept if keep_relation_type=True (needed for relation metadata)
 
         Parameters
         ----------
@@ -939,6 +943,11 @@ class NapistuData(Data):
         # Add labels if requested
         if keep_labels and hasattr(self, PYG.Y) and self.y is not None:
             new_attrs[PYG.Y] = self.y
+            # Also keep labeling_manager if labels are kept (needed for label metadata)
+            if hasattr(self, NAPISTU_DATA.LABELING_MANAGER):
+                labeling_manager = getattr(self, NAPISTU_DATA.LABELING_MANAGER)
+                if labeling_manager is not None:
+                    new_attrs[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
 
         # Add masks if requested
         if keep_masks:
@@ -957,6 +966,11 @@ class NapistuData(Data):
             new_attrs[NAPISTU_DATA.RELATION_TYPE] = getattr(
                 self, NAPISTU_DATA.RELATION_TYPE
             )
+            # Also keep relation_manager if relations are kept (needed for relation metadata)
+            if hasattr(self, NAPISTU_DATA.RELATION_MANAGER):
+                relation_manager = getattr(self, NAPISTU_DATA.RELATION_MANAGER)
+                if relation_manager is not None:
+                    new_attrs[NAPISTU_DATA.RELATION_MANAGER] = relation_manager
 
         if inplace:
             # Modify the object in place by clearing all attributes and setting new ones

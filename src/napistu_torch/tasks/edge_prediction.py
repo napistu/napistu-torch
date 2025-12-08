@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 
 from napistu_torch.constants import (
-    METRICS,
     NAPISTU_DATA,
     PYG,
 )
@@ -21,10 +20,12 @@ from napistu_torch.load.stratification import (
     validate_edge_strata_alignment,
 )
 from napistu_torch.ml.constants import (
+    METRICS,
     SCORE_DISTRIBUTION_STATS,
     SPLIT_TO_MASK,
     TRAINING,
 )
+from napistu_torch.ml.metrics import RelationWeightedAUC
 from napistu_torch.models.constants import (
     EDGE_WEIGHTING_TYPE,
     ENCODER_DEFS,
@@ -70,6 +71,10 @@ class EdgePredictionTask(BaseTask):
         'uniform' or 'degree_weighted'
     metrics : List[str]
         Metrics to compute ('auc', 'ap', etc.)
+    weight_loss_by_relation_frequency : bool
+        Whether to weight loss by relation type frequency, default is False.
+    loss_weight_alpha : float
+        Weight interpolation: 0.0=uniform, 0.5=sqrt, 1.0=inverse_freq, default is 0.5.
 
     Public Methods
     --------------
@@ -81,13 +86,19 @@ class EdgePredictionTask(BaseTask):
         Get score distributions and quality metrics.
     predict_edge_scores(self, data: NapistuData, edge_index: torch.Tensor, relation_type: Optional[torch.Tensor] = None) -> torch.Tensor:
         Predict scores for all edges in data.
+    prepare_batch(self, data: NapistuData, split: str = TRAINING.TRAIN) -> Dict[str, torch.Tensor]:
+        Prepare data batch for this task.
 
     Private Methods
     ---------------
     _ensure_negative_sampler(self, data: NapistuData) -> None:
         Ensure negative sampler is initialized.
+    _ensure_relation_weights(self, data: NapistuData) -> None:
+        Ensure relation weights are initialized.
     _ensure_using_relations(self, data: NapistuData) -> None:
         Ensure using_relations is set.
+    _get_edge_weights(self, relation_type: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        Map relation types to their corresponding weights.
     _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
         Get relation type from data.
     _predict_impl(self, data: NapistuData) -> torch.Tensor:
@@ -121,6 +132,8 @@ class EdgePredictionTask(BaseTask):
         edge_strata: Optional[Union[pd.Series, pd.DataFrame]] = None,
         neg_sampling_strategy: str = NEGATIVE_SAMPLING_STRATEGIES.DEGREE_WEIGHTED,
         metrics: List[str] = None,
+        weight_loss_by_relation_frequency: bool = False,
+        loss_weight_alpha: float = 0.5,
     ):
         super().__init__(encoder, head)
         self.loss_fn = nn.BCEWithLogitsLoss()
@@ -128,6 +141,8 @@ class EdgePredictionTask(BaseTask):
         self.edge_strata = edge_strata
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or [METRICS.AUC, METRICS.AP]
+        # use reduction='none' to return per-sample losses
+        self.loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         # Whether we're actually using relations (set during sampler initialization)
         self.using_relations = False
@@ -136,123 +151,11 @@ class EdgePredictionTask(BaseTask):
         self.negative_sampler = None
         self._sampler_initialized = False
 
-    def prepare_batch(
-        self,
-        data: NapistuData,
-        split: str = TRAINING.TRAIN,
-        edge_indices: Optional[torch.Tensor] = None,
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Prepare batch for edge prediction.
-
-        For transductive (mask-based) splits, this:
-        1. Gets positive edges from the split mask (or edge_indices subset)
-        2. Gets supervision edges (for message passing)
-        3. Samples negative edges
-
-        Parameters
-        ----------
-        data : NapistuData
-            Full graph data
-        split : str
-            Which split ('train', 'val', 'test')
-        edge_indices : torch.Tensor, optional
-            Indices into data.edge_index for this mini-batch.
-            If None, uses all edges from the split mask (full-batch mode).
-            If provided, uses only these edges (mini-batch mode).
-
-        Returns
-        -------
-        Dict with keys:
-            - x: Node features
-            - supervision_edges: Edges for message passing (always full training graph)
-            - pos_edges: Positive edges to predict (from edge_indices or split mask)
-            - neg_edges: Negative edges to predict (sampled)
-            - edge_data: Edge data for supervision edges (attributes for learnable encoders,
-                        weights for static weighting)
-        """
-        # Lazy initialization on first call
-        self._ensure_using_relations(data)
-        self._ensure_negative_sampler(data)
-
-        # Get positive edges for this batch
-        if edge_indices is not None:
-            # Mini-batch mode: use provided edge indices and make sure they are on the data's device
-            edge_indices = edge_indices.to(data.edge_index.device)
-            pos_edge_index = data.edge_index[:, edge_indices]
-        else:
-            # Full-batch mode: use all edges from split mask
-            mask_attr = SPLIT_TO_MASK[split]
-            mask = getattr(data, mask_attr)
-            pos_edge_index = data.edge_index[:, mask]
-
-        # Always use training edges for message passing (prevents data leakage)
-        train_indices = torch.where(data.train_mask)[0]
-        supervision_edges = data.edge_index[:, train_indices]
-
-        # Sample negative edges proportional to batch size
-        num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
-        neg_edge_index, neg_relation_type, _ = self.negative_sampler.sample(
-            num_neg=num_neg,
-            device=str(pos_edge_index.device),
-            return_relations=self.using_relations,
-        )
-
-        # Extract relation types if we're using them
-        relation_type = self._get_relation_type(data)
-        if relation_type is not None:
-            if edge_indices is not None:
-                # Mini-batch mode: use provided edge indices
-                pos_relation_type = relation_type[edge_indices]
-            else:
-                # Full-batch mode: use split mask
-                mask_attr = SPLIT_TO_MASK[split]
-                mask = getattr(data, mask_attr)
-                pos_relation_type = relation_type[mask]
-        else:
-            pos_relation_type = None
-
-        # Handle edge data based on encoder edge weighting type
-        edge_data = None
-        if hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE):
-
-            if self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER:
-                # Learnable edge encoder - pass edge attributes for supervision edges
-                edge_attr = getattr(data, PYG.EDGE_ATTR, None)
-                if edge_attr is not None:
-                    edge_data = edge_attr[train_indices]
-                else:
-                    logger.warning(
-                        f"No edge attributes present in NapistuData despite edge weighting type being {EDGE_WEIGHTING_TYPE.LEARNED_ENCODER}. Falling back to uniform message passing."
-                    )
-            elif self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS:
-                # Static edge weights - pass weights for supervision edges
-                if (
-                    hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
-                    and getattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
-                    is not None
-                ):
-                    edge_data = getattr(
-                        self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE
-                    )[train_indices]
-                else:
-                    logger.warning(
-                        f"No edge weighting value present in encoder despite edge weighting type being {EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS}. Falling back to uniform message passing."
-                    )
-
-        batch_dict = {
-            EDGE_PREDICTION_BATCH.X: data.x,
-            EDGE_PREDICTION_BATCH.SUPERVISION_EDGES: supervision_edges,
-            EDGE_PREDICTION_BATCH.POS_EDGES: pos_edge_index,
-            EDGE_PREDICTION_BATCH.NEG_EDGES: neg_edge_index,
-            EDGE_PREDICTION_BATCH.EDGE_DATA: edge_data,
-            EDGE_PREDICTION_BATCH.POS_RELATION_TYPE: pos_relation_type,
-            EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE: neg_relation_type,
-        }
-
-        self._validate_data_dims(batch_dict, data)
-
-        return batch_dict
+        # Loss weighting (_relation_weights is initialized lazily on first prepare_batch call)
+        self.weight_loss_by_relation_frequency = weight_loss_by_relation_frequency
+        self.loss_weight_alpha = loss_weight_alpha
+        self._relation_weights = None
+        self._relation_weights_initialized = False
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
@@ -280,9 +183,24 @@ class EdgePredictionTask(BaseTask):
             z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES], relation_type=neg_relation_type
         )
 
-        # Binary classification loss
-        pos_loss = self.loss_fn(pos_scores, torch.ones_like(pos_scores))
-        neg_loss = self.loss_fn(neg_scores, torch.zeros_like(neg_scores))
+        # Get weights for positive and negative edges
+        pos_weights = self._get_edge_weights(pos_relation_type)
+        neg_weights = self._get_edge_weights(neg_relation_type)
+
+        # Compute unreduced loss
+        pos_loss_unreduced = self.loss_fn(pos_scores, torch.ones_like(pos_scores))
+        neg_loss_unreduced = self.loss_fn(neg_scores, torch.zeros_like(neg_scores))
+
+        # Apply weights and reduce manually
+        if pos_weights is not None:
+            pos_loss = (pos_loss_unreduced * pos_weights).mean()
+        else:
+            pos_loss = pos_loss_unreduced.mean()
+
+        if neg_weights is not None:
+            neg_loss = (neg_loss_unreduced * neg_weights).mean()
+        else:
+            neg_loss = neg_loss_unreduced.mean()
 
         return pos_loss + neg_loss
 
@@ -338,8 +256,29 @@ class EdgePredictionTask(BaseTask):
             # Compute metrics
             results = {}
             if METRICS.AUC in self.metrics:
-                results[METRICS.AUC] = roc_auc_score(y_true, y_pred)
+                if (
+                    self.weight_loss_by_relation_frequency
+                    and pos_relation_type is not None
+                ):
+                    # Relation-weighted AUC
+                    relation_type = torch.cat([pos_relation_type, neg_relation_type])
+                    relation_manager = getattr(
+                        data, NAPISTU_DATA.RELATION_MANAGER, None
+                    )
+
+                    rw_auc = RelationWeightedAUC(
+                        loss_weights=self._relation_weights,
+                        loss_weight_alpha=self.loss_weight_alpha,
+                        relation_manager=relation_manager,
+                    )
+                    auc_results = rw_auc.compute(y_true, y_pred, relation_type)
+                    results.update(auc_results)
+                else:
+                    # Standard AUC (unweighted)
+                    results[METRICS.AUC] = roc_auc_score(y_true, y_pred)
+
             if METRICS.AP in self.metrics:
+                # Average precision (keep simple, no weighting)
                 results[METRICS.AP] = average_precision_score(y_true, y_pred)
 
             return results
@@ -539,6 +478,125 @@ class EdgePredictionTask(BaseTask):
 
             return scores
 
+    def prepare_batch(
+        self,
+        data: NapistuData,
+        split: str = TRAINING.TRAIN,
+        edge_indices: Optional[torch.Tensor] = None,
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Prepare batch for edge prediction.
+
+        For transductive (mask-based) splits, this:
+        1. Gets positive edges from the split mask (or edge_indices subset)
+        2. Gets supervision edges (for message passing)
+        3. Samples negative edges
+
+        Parameters
+        ----------
+        data : NapistuData
+            Full graph data
+        split : str
+            Which split ('train', 'val', 'test')
+        edge_indices : torch.Tensor, optional
+            Indices into data.edge_index for this mini-batch.
+            If None, uses all edges from the split mask (full-batch mode).
+            If provided, uses only these edges (mini-batch mode).
+
+        Returns
+        -------
+        Dict with keys:
+            - x: Node features
+            - supervision_edges: Edges for message passing (always full training graph)
+            - pos_edges: Positive edges to predict (from edge_indices or split mask)
+            - neg_edges: Negative edges to predict (sampled)
+            - edge_data: Edge data for supervision edges (attributes for learnable encoders,
+                weights for static weighting)
+        """
+        # Lazy initialization on first call
+        self._ensure_using_relations(data)
+        self._ensure_negative_sampler(data)
+        self._ensure_relation_weights(data)
+
+        # Get positive edges for this batch
+        if edge_indices is not None:
+            # Mini-batch mode: use provided edge indices and make sure they are on the data's device
+            edge_indices = edge_indices.to(data.edge_index.device)
+            pos_edge_index = data.edge_index[:, edge_indices]
+        else:
+            # Full-batch mode: use all edges from split mask
+            mask_attr = SPLIT_TO_MASK[split]
+            mask = getattr(data, mask_attr)
+            pos_edge_index = data.edge_index[:, mask]
+
+        # Always use training edges for message passing (prevents data leakage)
+        train_indices = torch.where(data.train_mask)[0]
+        supervision_edges = data.edge_index[:, train_indices]
+
+        # Sample negative edges proportional to batch size
+        num_neg = int(pos_edge_index.size(1) * self.neg_sampling_ratio)
+        neg_edge_index, neg_relation_type, _ = self.negative_sampler.sample(
+            num_neg=num_neg,
+            device=str(pos_edge_index.device),
+            return_relations=self.using_relations,
+        )
+
+        # Extract relation types if we're using them
+        relation_type = self._get_relation_type(data)
+        if relation_type is not None:
+            if edge_indices is not None:
+                # Mini-batch mode: use provided edge indices
+                pos_relation_type = relation_type[edge_indices]
+            else:
+                # Full-batch mode: use split mask
+                mask_attr = SPLIT_TO_MASK[split]
+                mask = getattr(data, mask_attr)
+                pos_relation_type = relation_type[mask]
+        else:
+            pos_relation_type = None
+
+        # Handle edge data based on encoder edge weighting type
+        edge_data = None
+        if hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_TYPE):
+
+            if self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.LEARNED_ENCODER:
+                # Learnable edge encoder - pass edge attributes for supervision edges
+                edge_attr = getattr(data, PYG.EDGE_ATTR, None)
+                if edge_attr is not None:
+                    edge_data = edge_attr[train_indices]
+                else:
+                    logger.warning(
+                        f"No edge attributes present in NapistuData despite edge weighting type being {EDGE_WEIGHTING_TYPE.LEARNED_ENCODER}. Falling back to uniform message passing."
+                    )
+            elif self.encoder.edge_weighting_type == EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS:
+                # Static edge weights - pass weights for supervision edges
+                if (
+                    hasattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+                    and getattr(self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE)
+                    is not None
+                ):
+                    edge_data = getattr(
+                        self.encoder, ENCODER_DEFS.EDGE_WEIGHTING_VALUE
+                    )[train_indices]
+                else:
+                    logger.warning(
+                        f"No edge weighting value present in encoder despite edge weighting type being {EDGE_WEIGHTING_TYPE.STATIC_WEIGHTS}. Falling back to uniform message passing."
+                    )
+
+        batch_dict = {
+            EDGE_PREDICTION_BATCH.X: data.x,
+            EDGE_PREDICTION_BATCH.SUPERVISION_EDGES: supervision_edges,
+            EDGE_PREDICTION_BATCH.POS_EDGES: pos_edge_index,
+            EDGE_PREDICTION_BATCH.NEG_EDGES: neg_edge_index,
+            EDGE_PREDICTION_BATCH.EDGE_DATA: edge_data,
+            EDGE_PREDICTION_BATCH.POS_RELATION_TYPE: pos_relation_type,
+            EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE: neg_relation_type,
+        }
+
+        self._validate_data_dims(batch_dict, data)
+
+        return batch_dict
+
     # private methods
 
     def _ensure_negative_sampler(self, data: NapistuData):
@@ -602,6 +660,65 @@ class EdgePredictionTask(BaseTask):
 
         self._sampler_initialized = True
 
+    def _ensure_relation_weights(self, data: NapistuData) -> None:
+        """
+        Lazy initialization of relation weights from training data.
+
+        Only initializes if weight_loss_by_relation_frequency=True.
+        Raises error if weighting enabled but no relations available.
+
+        Note: This method accesses relation_type directly from data, bypassing
+        the using_relations check, so relation weights can be initialized even
+        if the head doesn't support relations (for loss weighting purposes).
+        """
+        if self._relation_weights_initialized:
+            return
+
+        # Only initialize if weighting is enabled
+        if not self.weight_loss_by_relation_frequency:
+            self._relation_weights = None
+            self._relation_weights_initialized = True
+            return
+
+        # Get relation types directly from data (bypass using_relations check)
+        # This allows relation weights to be initialized even for non-relation-aware heads
+        if not hasattr(data, NAPISTU_DATA.RELATION_TYPE):
+            raise ValueError(
+                "weight_loss_by_relation_frequency=True but no relation_type found in data. "
+                "Either disable relation-based weighting or provide relation_type in NapistuData."
+            )
+        relation_type = data.relation_type
+        if relation_type is None:
+            raise ValueError(
+                "weight_loss_by_relation_frequency=True but relation_type is None in data. "
+                "Either disable relation-based weighting or provide relation_type in NapistuData."
+            )
+
+        # Extract training relation types (same pattern as negative sampler)
+        if hasattr(data, NAPISTU_DATA.TRAIN_MASK):
+            # Transductive
+            train_relation_type = relation_type[data.train_mask].cpu()
+        else:
+            # Inductive (data is already train split)
+            train_relation_type = relation_type.cpu()
+
+        # Compute counts and weights
+        relation_counts = torch.bincount(train_relation_type)
+        self._relation_weights = get_relation_weights(
+            relation_counts, alpha=self.loss_weight_alpha
+        )
+
+        # Log weight statistics
+        logger.info(
+            f"Initialized relation weights: "
+            f"{len(relation_counts)} relation types, "
+            f"alpha={self.loss_weight_alpha}"
+        )
+        logger.debug(f"Relation counts: {relation_counts.tolist()}")
+        logger.debug(f"Relation weights: {self._relation_weights.tolist()}")
+
+        self._relation_weights_initialized = True
+
     def _ensure_using_relations(self, data: NapistuData) -> None:
         """
         Determine if we should use relations based on head support and data availability.
@@ -634,6 +751,34 @@ class EdgePredictionTask(BaseTask):
             )
 
         self.using_relations = head_supports_relations and relation_type_exists
+
+    def _get_edge_weights(
+        self, relation_type: Optional[torch.Tensor]
+    ) -> Optional[torch.Tensor]:
+        """
+        Map relation types to their corresponding weights.
+
+        Parameters
+        ----------
+        relation_type : torch.Tensor, optional
+            Relation type indices for edges [num_edges]
+
+        Returns
+        -------
+        torch.Tensor or None
+            Weights for each edge [num_edges], or None if weighting disabled
+        """
+        if self._relation_weights is None:
+            return None  # BCE will use uniform weighting
+
+        if relation_type is None:
+            raise ValueError(
+                "relation_type required when weight_loss_by_relation_frequency=True"
+            )
+
+        # Index weights and move to correct device
+        weights = self._relation_weights[relation_type.cpu()]
+        return weights.to(relation_type.device)
 
     def _get_relation_type(self, data: NapistuData) -> Optional[torch.Tensor]:
         """
@@ -847,6 +992,54 @@ def get_edge_strata_from_artifacts(
             f"Proceeding with single category."
         )
         return None
+
+
+def get_relation_weights(
+    relation_counts: torch.Tensor, alpha: float = 0.5
+) -> torch.Tensor:
+    """
+    Compute relation weights normalized to mean=1.0.
+
+    Interpolates between uniform (alpha=0.0) and inverse frequency (alpha=1.0).
+
+    Parameters
+    ----------
+    relation_counts : torch.Tensor
+        Count of each relation type in training data [num_relations]
+    alpha : float, default=0.5
+        Interpolation parameter:
+        - 0.0: uniform weighting (all weights = 1.0)
+        - 0.5: square root of inverse frequency
+        - 1.0: inverse frequency
+
+    Returns
+    -------
+    torch.Tensor
+        Normalized weights [num_relations] with mean=1.0
+
+    Examples
+    --------
+    >>> counts = torch.tensor([800, 100, 100])  # 80%, 10%, 10%
+    >>> weights = get_relation_weights(counts, alpha=1.0)
+    >>> weights
+    tensor([0.375, 3.000, 3.000])  # Rare types get 8x weight
+    >>> weights.mean()
+    tensor(1.0)
+
+    >>> weights = get_relation_weights(counts, alpha=0.0)
+    >>> weights
+    tensor([1.0, 1.0, 1.0])  # Uniform
+    """
+    # Convert to float for numerical stability
+    counts_float = relation_counts.float()
+
+    # Compute inverse frequency weights
+    weights = 1.0 / (counts_float**alpha)
+
+    # Normalize to mean=1.0 (preserves loss scale)
+    normalized_weights = weights * (len(weights) / weights.sum())
+
+    return normalized_weights
 
 
 def _get_encoded_edge_strata(

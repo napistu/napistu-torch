@@ -734,7 +734,16 @@ def _create_model(
         num_relations = None
 
     head = Decoder.from_config(config.model, num_relations=num_relations)
-    task = EdgePredictionTask(encoder, head, edge_strata=edge_strata)
+    task = EdgePredictionTask(
+        encoder,
+        head,
+        neg_sampling_ratio=config.task.edge_prediction_neg_sampling_ratio,
+        edge_strata=edge_strata,
+        neg_sampling_strategy=config.task.edge_prediction_neg_sampling_strategy,
+        metrics=config.task.metrics,
+        weight_loss_by_relation_frequency=config.task.weight_loss_by_relation_frequency,
+        loss_weight_alpha=config.task.loss_weight_alpha,
+    )
 
     # 4. create lightning module
     if verbose:
