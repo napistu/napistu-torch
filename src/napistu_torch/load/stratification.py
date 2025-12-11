@@ -14,6 +14,7 @@ from napistu.network.ng_core import NapistuGraph
 
 from napistu_torch.constants import NAPISTU_DATA
 from napistu_torch.load.constants import (
+    MERGE_RARE_STRATA_DEFS,
     STRATIFICATION_DEFS,
     STRATIFY_BY,
     VALID_STRATIFY_BY,
@@ -37,6 +38,7 @@ def create_composite_edge_strata(
         The attribute(s) to stratify by. Must be one of the following:
         - STRATIFY_BY.NODE_SPECIES_TYPE - species and node type
         - STRATIFY_BY.NODE_TYPE - node type (species and reactions)
+        - STRATIFY_BY.EDGE_SBO_TERMS - SBO terms (upstream and downstream)
 
     Returns
     -------
@@ -152,6 +154,66 @@ def ensure_strata_series(
             )
     else:
         raise TypeError(f"Expected pd.Series or pd.DataFrame, got {type(edge_strata)}")
+
+
+def merge_rare_strata(
+    edge_strata: pd.Series,
+    min_count: int,
+    other_category_name: str = MERGE_RARE_STRATA_DEFS.OTHER,
+) -> pd.Series:
+    """
+    Merge rare strata categories into an "other" category.
+
+    Categories with fewer than min_count edges are collapsed into a single
+    "other" category. This helps prevent issues with rare relation types that
+    may not have sufficient samples for reliable AUC computation.
+
+    Parameters
+    ----------
+    edge_strata : pd.Series
+        Edge strata series with composite edge attributes.
+    min_count : int
+        Minimum number of edges required for a category to be kept separate.
+        Categories with fewer edges will be merged into "other".
+    other_category_name : str, default="other"
+        Name for the merged category containing rare strata.
+
+    Returns
+    -------
+    pd.Series
+        Edge strata with rare categories merged into "other".
+
+    Examples
+    --------
+    >>> edge_strata = pd.Series([
+    ...     "interactor -> interactor",
+    ...     "interactor -> interactor",
+    ...     "stimulator -> product",  # Rare (only 1)
+    ... ])
+    >>> merged = merge_rare_strata(edge_strata, min_count=2)
+    >>> merged.unique()
+    array(['interactor -> interactor', 'other'])
+    """
+    value_counts = edge_strata.value_counts()
+    rare_categories = value_counts[value_counts < min_count].index.tolist()
+
+    if len(rare_categories) == 0:
+        logger.info(
+            f"No rare strata categories found (all categories have >= {min_count} edges)"
+        )
+        return edge_strata
+
+    # Log which categories are being merged
+    logger.info(
+        f"Merging {len(rare_categories)} rare strata categories into '{other_category_name}': "
+        f"{rare_categories}"
+    )
+
+    # Create a copy and replace rare categories with "other"
+    merged_strata = edge_strata.copy()
+    merged_strata[merged_strata.isin(rare_categories)] = other_category_name
+
+    return merged_strata
 
 
 def validate_edge_strata_alignment(

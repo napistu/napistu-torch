@@ -33,6 +33,7 @@ from napistu_torch.labels.constants import LABEL_TYPE
 from napistu_torch.load.constants import (
     ARTIFACT_DEFS,
     DEFAULT_ARTIFACTS_NAMES,
+    MERGE_RARE_STRATA_DEFS,
     SPLITTING_STRATEGIES,
     STRATIFICATION_DEFS,
     STRATIFY_BY,
@@ -44,7 +45,10 @@ from napistu_torch.load.napistu_graphs import (
     construct_unlabeled_napistu_data,
     construct_vertex_labeled_napistu_data,
 )
-from napistu_torch.load.stratification import create_composite_edge_strata
+from napistu_torch.load.stratification import (
+    create_composite_edge_strata,
+    merge_rare_strata,
+)
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.vertex_tensor import VertexTensor
 
@@ -380,6 +384,7 @@ def _create_relation_prediction_data(
         napistu_graph,
         splitting_strategy=SPLITTING_STRATEGIES.EDGE_MASK,
         relation_strata_type=STRATIFY_BY.EDGE_SBO_TERMS,
+        min_relation_count=1000,  # merge rare categories into an "other relation" category
     )
 
 
@@ -406,13 +411,34 @@ def _create_comprehensive_pathway_memberships(
 
 def _create_edge_strata_by_edge_sbo_terms(
     napistu_graph: NapistuGraph,
+    min_relation_count: int = 1000,
 ) -> pd.DataFrame:
     """
     Create edge strata by edge SBO terms.
+
+    Parameters
+    ----------
+    napistu_graph : NapistuGraph
+        Napistu graph
+    min_relation_count : int
+        Minimum number of edges required for a category to be kept separate.
+        Categories with fewer edges will be merged into "other relation".
+
+    Returns
+    -------
+    pd.DataFrame
+        Edge strata DataFrame
     """
-    return create_composite_edge_strata(
+    edge_strata = create_composite_edge_strata(
         napistu_graph, stratify_by=STRATIFY_BY.EDGE_SBO_TERMS
-    ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
+    )
+    edge_strata = merge_rare_strata(
+        edge_strata,
+        min_count=min_relation_count,
+        other_category_name=MERGE_RARE_STRATA_DEFS.OTHER,
+    )
+
+    return edge_strata.to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
 def _create_edge_strata_by_node_species_type(
