@@ -71,11 +71,19 @@ HEADS = SimpleNamespace(
     ROTATE="rotate",
     TRANSE="transe",
     DISTMULT="distmult",
+    RELATION_GATED_MLP="relation_gated_mlp",
+    RELATION_ATTENTION_MLP="relation_attention_mlp",
 )
 
 VALID_HEADS = list(HEADS.__dict__.values())
 
-RELATION_AWARE_HEADS = {HEADS.ROTATE, HEADS.TRANSE, HEADS.DISTMULT}
+RELATION_AWARE_HEADS = {
+    HEADS.ROTATE,
+    HEADS.TRANSE,
+    HEADS.DISTMULT,
+    HEADS.RELATION_GATED_MLP,
+    HEADS.RELATION_ATTENTION_MLP,
+}
 EDGE_PREDICTION_HEADS = {
     HEADS.DOT_PRODUCT,
     HEADS.MLP,
@@ -92,6 +100,8 @@ HEAD_SPECIFIC_ARGS = SimpleNamespace(
     NC_DROPOUT="nc_dropout",
     ROTATE_MARGIN="rotate_margin",
     TRANSE_MARGIN="transe_margin",
+    RELATION_EMB_DIM="relation_emb_dim",
+    RELATION_ATTENTION_HEADS="relation_attention_heads",
 )
 
 EDGE_ENCODER_ARGS = SimpleNamespace(

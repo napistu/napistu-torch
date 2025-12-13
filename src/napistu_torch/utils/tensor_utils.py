@@ -101,3 +101,51 @@ def compute_spearman_correlation_torch(
         result = correlation.item()
 
         return result
+
+
+def validate_tensor_for_nan_inf(
+    tensor: torch.Tensor,
+    name: str,
+) -> None:
+    """
+    Validate tensor for NaN/Inf values and raise informative error if found.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        Tensor to validate
+    name : str
+        Name of the tensor for error messages
+
+    Raises
+    ------
+    ValueError
+        If NaN or Inf values are found in the tensor
+    """
+    if tensor is None:
+        return
+
+    nan_mask = torch.isnan(tensor)
+    inf_mask = torch.isinf(tensor)
+
+    if nan_mask.any() or inf_mask.any():
+        n_nan = nan_mask.sum().item()
+        n_inf = inf_mask.sum().item()
+        total = tensor.numel()
+
+        error_msg = (
+            f"Found {n_nan} NaN and {n_inf} Inf values in {name}. "
+            f"Total elements: {total}, NaN rate: {n_nan/total:.2%}, Inf rate: {n_inf/total:.2%}."
+        )
+
+        # Add statistics about the tensor
+        if not nan_mask.all() and not inf_mask.all():
+            valid_values = tensor[~(nan_mask | inf_mask)]
+            if len(valid_values) > 0:
+                error_msg += (
+                    f" Valid values: min={valid_values.min().item():.4f}, "
+                    f"max={valid_values.max().item():.4f}, "
+                    f"mean={valid_values.mean().item():.4f}."
+                )
+
+        raise ValueError(error_msg)

@@ -56,20 +56,34 @@ class ModelConfig(BaseModel):
         Return a formatted string representation of the model architecture.
     """
 
-    encoder: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER])
-    hidden_channels: int = Field(default=128, gt=0)
-    num_layers: int = Field(default=3, ge=1, le=10)
-    dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
+    encoder: str = Field(
+        default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER],
+        description="Type of encoder to use",
+    )
+    hidden_channels: int = Field(
+        default=128, gt=0, description="Hidden dimension for the encoder"
+    )
+    num_layers: int = Field(
+        default=3, ge=1, le=10, description="Number of layers for the encoder"
+    )
+    dropout: float = Field(
+        default=0.2, ge=0.0, lt=1.0, description="Dropout for the encoder"
+    )
 
     # Head-specific fields (optional, with defaults)
-    head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
+    head: str = Field(
+        default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD],
+        description="Type of head to use",
+    )
     init_head_as_identity: Optional[bool] = Field(
         default=False,
         description="Whether to initialize the head to approximate an identity transformation",
     )
 
     # Model-specific fields (optional, with defaults)
-    gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
+    gat_heads: Optional[int] = Field(
+        default=4, gt=0, description="Number of heads for GAT"
+    )  # For GAT
     gat_concat: Optional[bool] = True  # For GAT
     graph_conv_aggregator: Optional[str] = (
         ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR
@@ -77,15 +91,36 @@ class ModelConfig(BaseModel):
     sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
 
     # Head-specific fields (optional, with defaults)
-    mlp_hidden_dim: Optional[int] = 64  # For MLP head
-    mlp_num_layers: Optional[int] = Field(default=2, ge=1)  # For MLP head
-    mlp_dropout: Optional[float] = Field(default=0.1, ge=0.0, lt=1.0)  # For MLP head
+    mlp_hidden_dim: Optional[int] = Field(
+        default=64, gt=0, description="Hidden dimension for MLP-based heads"
+    )
+    mlp_num_layers: Optional[int] = Field(
+        default=2, ge=1, description="Number of hidden layers for MLP-based heads"
+    )
+    mlp_dropout: Optional[float] = Field(
+        default=0.1, ge=0.0, lt=1.0, description="Dropout for MLP-based heads"
+    )
     bilinear_bias: Optional[bool] = True  # For bilinear head
     nc_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0
-    )  # For node classification head
-    rotate_margin: Optional[float] = Field(default=9.0, gt=0.0)  # For RotatE head
-    transe_margin: Optional[float] = Field(default=1.0, gt=0.0)  # For TransE head
+        default=0.1, ge=0.0, lt=1.0, description="Dropout for node classification head"
+    )
+    rotate_margin: Optional[float] = Field(
+        default=9.0, gt=0.0, description="Margin for RotatE head"
+    )
+    transe_margin: Optional[float] = Field(
+        default=1.0, gt=0.0, description="Margin for TransE head"
+    )
+    # Relation-aware MLP head parameters
+    relation_emb_dim: Optional[int] = Field(
+        default=64,
+        gt=0,
+        description="Dimension of relation embeddings for relation-aware MLP heads",
+    )
+    relation_attention_heads: Optional[int] = Field(
+        default=4,
+        gt=0,
+        description="Number of attention heads for RelationAttentionMLP",
+    )
 
     # Edge encoder fields (optional, with defaults)
     use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
@@ -315,6 +350,12 @@ class TrainingConfig(BaseModel):
     weight_decay: float = Field(default=0.0, ge=0.0)
     optimizer: str = Field(default=OPTIMIZERS.ADAM)
     scheduler: Optional[str] = None
+    gradient_clip_val: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Gradient clipping value (max norm). If None, no clipping. Recommended: 1.0 for RotatE/Bilinear heads.",
+        validate_default=False,  # Allow None default without validation
+    )
 
     epochs: int = Field(default=200, gt=0)
     batches_per_epoch: int = Field(default=1, gt=0)
@@ -360,6 +401,10 @@ class TrainingConfig(BaseModel):
     )
     embedding_norm_monitoring_log_every_n_epochs: int = Field(
         default=10, ge=1, description="Log embedding norm statistics every N epochs"
+    )
+    weight_monitoring: bool = Field(
+        default=True,
+        description="Enable weight monitoring callback to detect NaN/Inf in model weights",
     )
 
     def get_checkpoint_dir(self, output_dir: Path) -> Path:

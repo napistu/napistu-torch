@@ -1,6 +1,7 @@
 import logging
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -26,6 +27,7 @@ from napistu_torch.ml.constants import (
     SPLIT_TO_MASK,
     TRAINING,
 )
+from napistu_torch.ml.losses import compute_simple_bce_loss, compute_weighted_bce_loss
 from napistu_torch.ml.metrics import RelationWeightedAUC
 from napistu_torch.models.constants import (
     EDGE_WEIGHTING_TYPE,
@@ -40,6 +42,7 @@ from napistu_torch.tasks.constants import (
 )
 from napistu_torch.tasks.negative_sampler import NegativeSampler
 from napistu_torch.utils.base_utils import CorruptionError
+from napistu_torch.utils.tensor_utils import validate_tensor_for_nan_inf
 
 logger = logging.getLogger(__name__)
 
@@ -137,13 +140,10 @@ class EdgePredictionTask(BaseTask):
         loss_weight_alpha: float = 0.5,
     ):
         super().__init__(encoder, head)
-        self.loss_fn = nn.BCEWithLogitsLoss()
         self.neg_sampling_ratio = neg_sampling_ratio
         self.edge_strata = edge_strata
         self.neg_sampling_strategy = neg_sampling_strategy
         self.metrics = metrics or [METRICS.AUC, METRICS.AP]
-        # use reduction='none' to return per-sample losses
-        self.loss_fn = nn.BCEWithLogitsLoss(reduction="none")
 
         # Whether we're actually using relations (set during sampler initialization)
         self.using_relations = False
@@ -173,6 +173,7 @@ class EdgePredictionTask(BaseTask):
             batch[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES],
             batch.get(EDGE_PREDICTION_BATCH.EDGE_DATA, None),
         )
+        validate_tensor_for_nan_inf(z, name="node_embeddings")
 
         # Score positive and negative edges
         pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
@@ -188,22 +189,22 @@ class EdgePredictionTask(BaseTask):
         pos_weights = self._get_edge_weights(pos_relation_type)
         neg_weights = self._get_edge_weights(neg_relation_type)
 
-        # Compute unreduced loss
-        pos_loss_unreduced = self.loss_fn(pos_scores, torch.ones_like(pos_scores))
-        neg_loss_unreduced = self.loss_fn(neg_scores, torch.zeros_like(neg_scores))
-
-        # Apply weights and reduce manually
-        if pos_weights is not None:
-            pos_loss = (pos_loss_unreduced * pos_weights).mean()
+        if self.weight_loss_by_relation_frequency:
+            # Compute weighted BCE loss
+            loss = compute_weighted_bce_loss(
+                pos_scores=pos_scores,
+                neg_scores=neg_scores,
+                pos_weights=pos_weights,
+                neg_weights=neg_weights,
+            )
         else:
-            pos_loss = pos_loss_unreduced.mean()
+            # compute standard BCE loss
+            loss = compute_simple_bce_loss(
+                pos_scores=pos_scores,
+                neg_scores=neg_scores,
+            )
 
-        if neg_weights is not None:
-            neg_loss = (neg_loss_unreduced * neg_weights).mean()
-        else:
-            neg_loss = neg_loss_unreduced.mean()
-
-        return pos_loss + neg_loss
+        return loss
 
     def compute_metrics(
         self,
@@ -227,6 +228,7 @@ class EdgePredictionTask(BaseTask):
                 batch[EDGE_PREDICTION_BATCH.SUPERVISION_EDGES],
                 batch.get(EDGE_PREDICTION_BATCH.EDGE_DATA, None),
             )
+            validate_tensor_for_nan_inf(z, name="node_embeddings")
 
             # Score positive and negative edges
             pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
@@ -237,15 +239,25 @@ class EdgePredictionTask(BaseTask):
                 relation_type=pos_relation_type,
                 apply_sigmoid=True,
             )
+            validate_tensor_for_nan_inf(pos_scores, name="pos_scores")
             neg_scores = self._score_edges(
                 z,
                 batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
                 relation_type=neg_relation_type,
                 apply_sigmoid=True,
             )
+            validate_tensor_for_nan_inf(neg_scores, name="neg_scores")
 
             # Combine predictions and labels
             y_pred = torch.cat([pos_scores, neg_scores]).cpu().numpy()
+            # Final validation before passing to metrics
+            if np.isnan(y_pred).any() or np.isinf(y_pred).any():
+                n_nan = np.isnan(y_pred).sum()
+                n_inf = np.isinf(y_pred).sum()
+                raise ValueError(
+                    f"Found {n_nan} NaN and {n_inf} Inf values in y_pred after concatenation "
+                    f"in compute_metrics. This indicates an issue upstream in the prediction pipeline."
+                )
             y_true = torch.cat(
                 [
                     torch.ones(pos_scores.size(0)),
@@ -470,6 +482,7 @@ class EdgePredictionTask(BaseTask):
                 data.edge_index,
                 edge_data,
             )
+            validate_tensor_for_nan_inf(z, name="node_embeddings")
 
             # Score the specified edges
             scores = self._score_edges(
@@ -856,6 +869,7 @@ class EdgePredictionTask(BaseTask):
             data.edge_index,
             edge_data,
         )
+        validate_tensor_for_nan_inf(z, name="node_embeddings")
 
         # Extract relation types for all edges if available
         relation_type = self._get_relation_type(data)
@@ -900,8 +914,11 @@ class EdgePredictionTask(BaseTask):
         else:
             scores = self.head(node_embeddings, edge_index)
 
+        validate_tensor_for_nan_inf(scores, name="edge_scores")
+
         if apply_sigmoid:
             scores = torch.sigmoid(scores)
+            validate_tensor_for_nan_inf(scores, name="edge_scores")
 
         return scores
 
@@ -1070,6 +1087,9 @@ def get_relation_weights(
     normalized_weights = weights * (len(weights) / weights.sum())
 
     return normalized_weights
+
+
+# private functions
 
 
 def _get_encoded_edge_strata(

@@ -19,6 +19,7 @@ from napistu_torch.load.checkpoints import CheckpointHyperparameters
 from napistu_torch.load.constants import CHECKPOINT_HYPERPARAMETERS
 from napistu_torch.ml.constants import SCORE_DISTRIBUTION_STATS, TRAINING
 from napistu_torch.models.constants import MODEL_DEFS
+from napistu_torch.utils.tensor_utils import validate_tensor_for_nan_inf
 
 logger = logging.getLogger(__name__)
 
@@ -295,3 +296,36 @@ class SetHyperparametersCallback(Callback):
             return datamodule.data
 
         return None
+
+
+class WeightMonitoringCallback(Callback):
+    """
+    Monitor model weights for NaN/Inf values.
+
+    Checks weights after each training step and before validation to catch
+    corrupted weights early. Raises ValueError if NaN/Inf detected.
+    No logging - just fails fast to prevent further corruption.
+    """
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """Check weights after each training batch."""
+        self._check_weights(pl_module, context="after training batch")
+
+    def on_validation_epoch_start(self, trainer, pl_module):
+        """Check weights before validation starts (critical transition point)."""
+        self._check_weights(pl_module, context="before validation")
+
+    def _check_weights(self, pl_module, context: str):
+        """Check all model parameters for NaN/Inf values."""
+        for name, param in pl_module.named_parameters():
+            if param.requires_grad:
+                try:
+                    validate_tensor_for_nan_inf(param.data, name=f"{name} ({context})")
+                except ValueError as e:
+                    # Re-raise with more context about when corruption occurred
+                    raise ValueError(
+                        f"Model weights corrupted {context}. "
+                        f"This likely indicates NaN gradients propagated during training. "
+                        f"Consider enabling gradient clipping (gradient_clip_val=1.0). "
+                        f"Original error: {e}"
+                    )
