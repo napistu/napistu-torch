@@ -31,13 +31,17 @@ from napistu_torch.load.constants import (
     IGNORED_IF_CONSTANT_EDGE_ATTRIBUTES,
     IGNORED_IF_CONSTANT_VERTEX_ATTRIBUTES,
     IGNORED_VERTEX_ATTRIBUTES,
+    MERGE_RARE_STRATA_DEFS,
     SPLITTING_STRATEGIES,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
 )
 from napistu_torch.load.encoders import DEFAULT_ENCODERS
 from napistu_torch.load.encoding import EncodingManager
-from napistu_torch.load.stratification import create_composite_edge_strata
+from napistu_torch.load.stratification import (
+    create_composite_edge_strata,
+    merge_rare_strata,
+)
 from napistu_torch.ml.constants import TRAINING
 from napistu_torch.ml.splitting import create_split_masks, train_test_val_split
 from napistu_torch.napistu_data import NapistuData
@@ -253,6 +257,7 @@ def construct_unlabeled_napistu_data(
     splitting_strategy: str = SPLITTING_STRATEGIES.NO_MASK,
     name: Optional[str] = None,
     relation_strata_type: Optional[str] = None,
+    min_relation_count: Optional[int] = None,
     **kwargs,
 ) -> Union[NapistuData, Dict[str, NapistuData]]:
     """
@@ -276,6 +281,11 @@ def construct_unlabeled_napistu_data(
         If provided, creates relation labels based on a edge_strata (combinations of edge and from/to vertex attributes).
         Must be one of VALID_STRATIFY_BY values (e.g., STRATIFY_BY.NODE_SPECIES_TYPE).
         Creates relation_strata and relation_manager for relation-aware tasks.
+    min_relation_count : Optional[int], default=None
+        If provided, merge rare strata categories with fewer than min_strata_count edges
+        into a single "other relation" category. This helps prevent issues with rare relation types
+        that may not have sufficient samples for reliable AUC computation.
+        If None, no merging is performed.
     **kwargs:
         Additional keyword arguments to pass to napistu_graph_to_napistu_data.
 
@@ -305,6 +315,13 @@ def construct_unlabeled_napistu_data(
         edge_strata = create_composite_edge_strata(
             working_napistu_graph, relation_strata_type
         )
+        # Optionally merge rare strata categories
+        if min_relation_count is not None:
+            edge_strata = merge_rare_strata(
+                edge_strata,
+                min_relation_count,
+                other_category_name=MERGE_RARE_STRATA_DEFS.OTHER_RELATION,
+            )
         relation_type, relation_manager = create_relation_labels(edge_strata)
     else:
         relation_type = None

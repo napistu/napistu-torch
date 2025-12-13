@@ -93,6 +93,15 @@ class RelationWeightedAUC:
             - 'auc_{relation_name}': Per-relation AUC for each relation type
         """
 
+        # Check for NaN/Inf values in predictions
+        nan_inf_mask = np.isnan(y_pred) | np.isinf(y_pred)
+        if nan_inf_mask.any():
+            n_nan = np.isnan(y_pred).sum()
+            n_inf = np.isinf(y_pred).sum()
+            raise ValueError(
+                f"Found {n_nan} NaN and {n_inf} Inf values in predictions. "
+            )
+
         results = {}
 
         # Overall AUC (unweighted, all samples pooled)
@@ -101,6 +110,11 @@ class RelationWeightedAUC:
         # Per-relation AUCs and counts
         relation_type_np = relation_type.cpu().numpy()
         unique_relations = np.unique(relation_type_np)
+
+        # Check for pathological relations (missing classes) upfront
+        _log_pathological_labels(
+            y_true, relation_type_np, unique_relations, self.relation_manager
+        )
 
         per_relation_aucs, per_relation_counts, per_relation_results = (
             _compute_per_relation_aucs(
@@ -145,6 +159,8 @@ def _compute_per_relation_aucs(
     """
     Compute per-relation AUCs for each relation type.
 
+    Assumes all relations have been validated to have both classes present.
+
     Parameters
     ----------
     y_true : np.ndarray
@@ -178,7 +194,7 @@ def _compute_per_relation_aucs(
         rel_y_true = y_true[mask]
         rel_y_pred = y_pred[mask]
 
-        # Compute per-relation AUC
+        # Compute per-relation AUC (validation already done upfront)
         rel_auc = roc_auc_score(rel_y_true, rel_y_pred)
         per_relation_aucs.append(rel_auc)
         per_relation_counts.append(mask.sum())
@@ -197,3 +213,81 @@ def _compute_per_relation_aucs(
         ] = rel_auc
 
     return per_relation_aucs, per_relation_counts, per_relation_results
+
+
+def _log_pathological_labels(
+    y_true: np.ndarray,
+    relation_type_np: np.ndarray,
+    unique_relations: np.ndarray,
+    relation_manager: Optional[LabelingManager] = None,
+) -> None:
+    """
+    Check for relations missing expected classes and raise informative error.
+
+    Parameters
+    ----------
+    y_true : np.ndarray
+        True binary labels [num_samples]
+    relation_type_np : np.ndarray
+        Relation type indices [num_samples]
+    unique_relations : np.ndarray
+        Unique relation type indices
+    relation_manager : LabelingManager, optional
+        Manager for decoding relation type indices to human-readable names
+
+    Raises
+    ------
+    ValueError
+        If any relation type is missing both positive and negative samples
+    """
+    expected_labels = {0.0, 1.0}  # Binary classification expects both classes
+    pathological_relations = []
+
+    for rel_idx in unique_relations:
+        mask = relation_type_np == rel_idx
+        rel_y_true = y_true[mask]
+        present_labels_raw = np.unique(rel_y_true)
+        # Convert numpy types to native Python types for cleaner error messages
+        present_labels = {float(label) for label in present_labels_raw}
+        missing_labels = expected_labels - present_labels
+
+        if missing_labels:
+            if relation_manager is not None:
+                rel_name = decode_labels(torch.tensor([rel_idx]), relation_manager)[0]
+            else:
+                rel_name = str(rel_idx)
+
+            # Convert to native Python types
+            label_counts = {
+                float(label): int((rel_y_true == label).sum())
+                for label in present_labels_raw
+            }
+            pathological_relations.append(
+                {
+                    "name": rel_name,
+                    "index": int(rel_idx),
+                    "present_labels": present_labels,
+                    "missing_labels": missing_labels,
+                    "label_counts": label_counts,
+                    "total_samples": int(mask.sum()),
+                }
+            )
+
+    if pathological_relations:
+        # Build error message
+        error_parts = [
+            "Cannot compute AUC: some relation types are missing expected classes."
+        ]
+        for rel_info in pathological_relations:
+            error_parts.append(
+                f"  - Relation '{rel_info['name']}' (index {rel_info['index']}): "
+                f"missing labels {rel_info['missing_labels']}, "
+                f"present labels {rel_info['label_counts']} "
+                f"(total samples: {rel_info['total_samples']})"
+            )
+        error_parts.append(
+            "\nThis can happen when a relation type has insufficient samples in a "
+            "particular train/val/test split, even after merging rare strata. "
+            "Consider increasing min_relation_count to ensure that all classes are present in each split."
+        )
+        raise ValueError("\n".join(error_parts))

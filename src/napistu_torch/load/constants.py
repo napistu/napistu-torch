@@ -34,6 +34,11 @@ STRATIFY_BY_ARTIFACT_NAMES = {
     DEFAULT_ARTIFACTS_NAMES.EDGE_STRATA_BY_NODE_TYPE,
 }
 
+MERGE_RARE_STRATA_DEFS = SimpleNamespace(
+    OTHER="other",
+    OTHER_RELATION="other relation",
+)
+
 # transformation defs
 
 ENCODING_MANAGER = SimpleNamespace(

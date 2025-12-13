@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.metrics import average_precision_score, roc_auc_score
 
 from napistu_torch.constants import (
     NAPISTU_DATA,
@@ -214,7 +215,6 @@ class EdgePredictionTask(BaseTask):
 
         This runs in eval mode (no gradients).
         """
-        from sklearn.metrics import average_precision_score, roc_auc_score
 
         self.eval()
         with torch.no_grad():
@@ -723,14 +723,26 @@ class EdgePredictionTask(BaseTask):
         """
         Determine if we should use relations based on head support and data availability.
 
-        Sets self.using_relations to True if:
+        Sets self.using_relations to True if either of the following conditions are met:
         - Head supports relations (relation-aware head, only if head is a Decoder)
-        - Relations exist in data
+        - weight_loss_by_relation_frequency=True (for loss weighting)
 
         Parameters
         ----------
         data : NapistuData
             Graph data to check for relations
+
+        Returns
+        -------
+        None
+            Sets self.using_relations to True if either of the above conditions are met, False otherwise
+
+        Raises
+        ------
+        ValueError
+            If weight_loss_by_relation_frequency=True but no relation_type found in data.
+            If relation type not found in data for a relation-aware head.
+            If head is not a Decoder instance and is not relation-aware.
         """
         # Check if head is a Decoder and supports relations
         if isinstance(self.head, Decoder):
@@ -745,12 +757,30 @@ class EdgePredictionTask(BaseTask):
         relation_type_exists = (
             getattr(data, NAPISTU_DATA.RELATION_TYPE, None) is not None
         )
-        if head_supports_relations and not relation_type_exists:
-            raise ValueError(
-                "Relation type not found in data for a relation-aware head. Expected attribute 'relation_type'."
-            )
 
-        self.using_relations = head_supports_relations and relation_type_exists
+        # do we need relation_type for loss/evaluation?
+        if self.weight_loss_by_relation_frequency:
+            if not relation_type_exists:
+                raise ValueError(
+                    "weight_loss_by_relation_frequency=True but no relation_type found in data. "
+                    "Either disable relation-based weighting or provide relation_type in NapistuData."
+                )
+
+            self.using_relations = True
+            return None
+
+        # are we using a head which requires relation_type?
+        if head_supports_relations:
+            if not relation_type_exists:
+                raise ValueError(
+                    "Relation type not found in data for a relation-aware head. Expected attribute 'relation_type'."
+                )
+
+            self.using_relations = True
+            return None
+
+        self.using_relations = False
+        return None
 
     def _get_edge_weights(
         self, relation_type: Optional[torch.Tensor]
