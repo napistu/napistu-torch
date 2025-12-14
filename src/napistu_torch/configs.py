@@ -29,8 +29,10 @@ from napistu_torch.constants import (
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.ml.constants import METRIC_SUMMARIES, METRICS
 from napistu_torch.models.constants import (
+    EDGE_ENCODER_DEFS,
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
+    HEAD_DEFS,
     MODEL_DEFS,
     RELATION_AWARE_HEADS,
     VALID_ENCODERS,
@@ -64,10 +66,16 @@ class ModelConfig(BaseModel):
         default=128, gt=0, description="Hidden dimension for the encoder"
     )
     num_layers: int = Field(
-        default=3, ge=1, le=10, description="Number of layers for the encoder"
+        default=ENCODER_DEFS.DEFAULT_NUM_LAYERS,
+        ge=1,
+        le=10,
+        description="Number of layers for the encoder",
     )
     dropout: float = Field(
-        default=0.2, ge=0.0, lt=1.0, description="Dropout for the encoder"
+        default=ENCODER_DEFS.DEFAULT_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for the encoder",
     )
 
     # Head-specific fields (optional, with defaults)
@@ -92,32 +100,45 @@ class ModelConfig(BaseModel):
 
     # Head-specific fields (optional, with defaults)
     mlp_hidden_dim: Optional[int] = Field(
-        default=64, gt=0, description="Hidden dimension for MLP-based heads"
+        default=HEAD_DEFS.DEFAULT_MLP_HIDDEN_DIM,
+        gt=0,
+        description="Hidden dimension for MLP-based heads. Also used as attention_dim for AttentionHead.",
     )
     mlp_num_layers: Optional[int] = Field(
-        default=2, ge=1, description="Number of hidden layers for MLP-based heads"
+        default=HEAD_DEFS.DEFAULT_MLP_NUM_LAYERS,
+        ge=1,
+        description="Number of hidden layers for MLP-based heads",
     )
     mlp_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0, description="Dropout for MLP-based heads"
+        default=HEAD_DEFS.DEFAULT_MLP_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for MLP-based heads",
     )
-    bilinear_bias: Optional[bool] = True  # For bilinear head
     nc_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0, description="Dropout for node classification head"
+        default=HEAD_DEFS.DEFAULT_NC_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for node classification head",
     )
     rotate_margin: Optional[float] = Field(
-        default=9.0, gt=0.0, description="Margin for RotatE head"
+        default=HEAD_DEFS.DEFAULT_ROTATE_MARGIN,
+        gt=0.0,
+        description="Margin for RotatE head",
     )
     transe_margin: Optional[float] = Field(
-        default=1.0, gt=0.0, description="Margin for TransE head"
+        default=HEAD_DEFS.DEFAULT_TRANSE_MARGIN,
+        gt=0.0,
+        description="Margin for TransE head",
     )
     # Relation-aware MLP head parameters
     relation_emb_dim: Optional[int] = Field(
-        default=64,
+        default=HEAD_DEFS.DEFAULT_RELATION_EMB_DIM,
         gt=0,
-        description="Dimension of relation embeddings for relation-aware MLP heads",
+        description="Dimension of relation embeddings for relation-aware heads (MLP and attention variants)",
     )
     relation_attention_heads: Optional[int] = Field(
-        default=4,
+        default=HEAD_DEFS.DEFAULT_RELATION_ATTENTION_HEADS,
         gt=0,
         description="Number of attention heads for RelationAttentionMLP",
     )
@@ -126,12 +147,15 @@ class ModelConfig(BaseModel):
     use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
         MODEL_CONFIG.USE_EDGE_ENCODER
     ]  # Whether to use edge encoder
-    edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
+    edge_encoder_dim: Optional[int] = Field(
+        default=EDGE_ENCODER_DEFS.DEFAULT_HIDDEN_DIM, gt=0
+    )  # Edge encoder hidden dim
     edge_encoder_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0
+        default=EDGE_ENCODER_DEFS.DEFAULT_DROPOUT, ge=0.0, lt=1.0
     )  # Edge encoder dropout
     edge_encoder_init_bias: Optional[float] = Field(
-        default=None, description="Initial bias for edge encoder output layer"
+        default=EDGE_ENCODER_DEFS.DEFAULT_INIT_BIAS,
+        description="Initial bias for edge encoder output layer",
     )  # Edge encoder initial bias
 
     # Using a pretrained model
@@ -353,7 +377,7 @@ class TrainingConfig(BaseModel):
     gradient_clip_val: Optional[float] = Field(
         default=None,
         ge=0.0,
-        description="Gradient clipping value (max norm). If None, no clipping. Recommended: 1.0 for RotatE/Bilinear heads.",
+        description="Gradient clipping value (max norm). If None, no clipping. Recommended: 1.0 for brittle heads.",
         validate_default=False,  # Allow None default without validation
     )
 

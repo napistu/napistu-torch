@@ -326,6 +326,5 @@ class WeightMonitoringCallback(Callback):
                     raise ValueError(
                         f"Model weights corrupted {context}. "
                         f"This likely indicates NaN gradients propagated during training. "
-                        f"Consider enabling gradient clipping (gradient_clip_val=1.0). "
                         f"Original error: {e}"
                     )

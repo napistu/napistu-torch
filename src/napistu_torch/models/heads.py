@@ -13,64 +13,118 @@ import torch.nn.functional as F
 
 from napistu_torch.configs import ModelConfig
 from napistu_torch.constants import MODEL_CONFIG
+from napistu_torch.ml.constants import LOSSES
 from napistu_torch.models.constants import (
     EDGE_PREDICTION_HEADS,
+    HEAD_DEFS,
     HEAD_SPECIFIC_ARGS,
     HEADS,
     MODEL_DEFS,
     RELATION_AWARE_HEADS,
     VALID_HEADS,
 )
-from napistu_torch.utils.tensor_utils import validate_tensor_for_nan_inf
 
 
-class BilinearHead(nn.Module):
+class AttentionHead(nn.Module):
     """
-    Bilinear head for edge prediction.
+    Lightweight attention head for edge prediction.
 
-    Uses a bilinear transformation to compute edge scores:
-    score = src_emb^T * W * tgt_emb
+    Projects nodes to query/key spaces and computes scaled dot-product attention.
+    More expressive than dot product but much lighter than full MLP with attention.
 
-    More expressive than dot product but more efficient than MLP.
+    Architecture:
+    1. Project source nodes → query space
+    2. Project target nodes → key space
+    3. Compute scaled dot product: (W_q @ src)^T @ (W_k @ tgt) / sqrt(d)
 
     Parameters
     ----------
     embedding_dim : int
         Dimension of input node embeddings
-    bias : bool, optional
-        Whether to add bias term, by default True
+    attention_dim : int, optional
+        Dimension of attention space (lower = more compression), by default 64
+    init_as_identity : bool, optional
+        Initialize projections to approximate identity (dot product), by default False
+
+    Notes
+    -----
+    - Projects to lower dimension for efficiency and regularization
+    - Learns separate query/key transformations (more flexible than dot product)
+    - Scaled dot product prevents gradient vanishing in high dimensions
+    - Normalizes embeddings for numerical stability
+    - ~2 * embedding_dim * attention_dim parameters (e.g., ~16K for 128→64)
+
+    Comparison to other heads:
+    - vs DotProduct: Learns transformations (more expressive)
+    - vs MLP: Much fewer parameters, easier to interpret
+    - vs RelationAttention: No relation-specific modulation
+
+    Examples
+    --------
+    >>> head = AttentionHead(embedding_dim=128, attention_dim=64)
+    >>> scores = head(node_embeddings, edge_index)
+    >>> # scores ∈ ℝ^{num_edges}, approximately normalized by scaling
     """
 
+    loss_type = LOSSES.BCE
+
     def __init__(
-        self, embedding_dim: int, bias: bool = True, init_as_identity: bool = False
+        self,
+        embedding_dim: int,
+        attention_dim: int = 64,
+        init_as_identity: bool = False,
     ):
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.bilinear = nn.Bilinear(embedding_dim, embedding_dim, 1, bias=bias)
 
+        if attention_dim > embedding_dim:
+            raise ValueError(
+                f"attention_dim ({attention_dim}) should not exceed "
+                f"embedding_dim ({embedding_dim}) for regularization"
+            )
+
+        self.embedding_dim = embedding_dim
+        self.attention_dim = attention_dim
+
+        # Query and key projections (no bias for simplicity)
+        self.query_proj = nn.Linear(embedding_dim, attention_dim, bias=False)
+        self.key_proj = nn.Linear(embedding_dim, attention_dim, bias=False)
+
+        # Scaling factor for numerical stability (standard attention scaling)
+        self.scale = 1.0 / (attention_dim**0.5)
+
+        # Initialize weights
+        self._initialize_weights(init_as_identity)
+
+    def _initialize_weights(self, init_as_identity: bool):
+        """Initialize projection weights."""
         if init_as_identity:
+            # Initialize to approximate identity transformation
+            # For rectangular matrices, use pseudo-identity
             with torch.no_grad():
-                # Start with small random weights
-                nn.init.xavier_uniform_(self.bilinear.weight, gain=0.01)
-                # Add small diagonal component to bias toward dot product
-                for i in range(embedding_dim):
-                    self.bilinear.weight[0, i, i] += 0.1
+                # Query and Key start as identity-like (first attention_dim dims)
+                nn.init.eye_(self.query_proj.weight)
+                nn.init.eye_(self.key_proj.weight)
+
+                # Add small noise for symmetry breaking
+                self.query_proj.weight.add_(
+                    torch.randn_like(self.query_proj.weight) * 0.01
+                )
+                self.key_proj.weight.add_(torch.randn_like(self.key_proj.weight) * 0.01)
         else:
-            # Standard initialization
-            nn.init.xavier_uniform_(self.bilinear.weight)
-        if bias:
-            nn.init.zeros_(self.bilinear.bias)
+            # Standard Xavier initialization with small gain
+            nn.init.xavier_uniform_(self.query_proj.weight, gain=0.1)
+            nn.init.xavier_uniform_(self.key_proj.weight, gain=0.1)
 
     def forward(
         self, node_embeddings: torch.Tensor, edge_index: torch.Tensor
     ) -> torch.Tensor:
         """
-        Compute edge scores using bilinear transformation.
+        Compute attention-based edge scores.
 
         Parameters
         ----------
         node_embeddings : torch.Tensor
-            Node embeddings [num_nodes, embedding_dim]
+            Node embeddings from encoder [num_nodes, embedding_dim]
         edge_index : torch.Tensor
             Edge connectivity [2, num_edges]
 
@@ -78,33 +132,42 @@ class BilinearHead(nn.Module):
         -------
         torch.Tensor
             Edge scores [num_edges]
+
+        Notes
+        -----
+        Scores are computed as:
+            score = (W_q @ normalize(src))^T @ (W_k @ normalize(tgt)) / sqrt(d_attn)
+
+        Normalization ensures embeddings have bounded norms, preventing
+        score explosion with pretrained encoders.
         """
-        # Get source and target node embeddings
-        src_embeddings = node_embeddings[edge_index[0]]  # [num_edges, embedding_dim]
-        tgt_embeddings = node_embeddings[edge_index[1]]  # [num_edges, embedding_dim]
-        validate_tensor_for_nan_inf(src_embeddings, name="src_embeddings")
-        validate_tensor_for_nan_inf(tgt_embeddings, name="tgt_embeddings")
+        # Normalize embeddings to unit norm (critical for stability)
+        node_embeddings = F.normalize(node_embeddings, p=2, dim=1)
 
-        # Apply bilinear transformation
-        edge_scores = self.bilinear(src_embeddings, tgt_embeddings).squeeze(
-            -1
-        )  # [num_edges]
+        # Project all nodes to query and key spaces
+        # More efficient than projecting per edge
+        queries = self.query_proj(node_embeddings)  # [num_nodes, attention_dim]
+        keys = self.key_proj(node_embeddings)  # [num_nodes, attention_dim]
 
-        # Normalize by embedding dimension
-        edge_scores = edge_scores / float(self.embedding_dim)
+        # Get edge-specific queries and keys
+        src_queries = queries[edge_index[0]]  # [num_edges, attention_dim]
+        tgt_keys = keys[edge_index[1]]  # [num_edges, attention_dim]
 
-        # Smooth saturation with tanh, scaled to [-10, 10]
-        edge_scores = torch.tanh(edge_scores) * 10.0
-        validate_tensor_for_nan_inf(edge_scores, name="edge_scores_final")
+        # Scaled dot-product attention (per edge)
+        # Element-wise multiply then sum over attention dimension
+        scores = (src_queries * tgt_keys).sum(dim=1) * self.scale  # [num_edges]
 
-        return edge_scores
+        return scores
 
 
 class DistMultHead(nn.Module):
     """
-    DistMult decoder for relation-aware edge prediction.
+    DistMult-style relation scoring for graph neural networks.
 
-    Models relations as diagonal matrices: score = <h, r, t> = Σ(h_i * r_i * t_i)
+    Adapted from knowledge graph DistMult (Yang et al. 2015) to GNN setting
+    where nodes share embedding space instead of having separate entity embeddings.
+
+    Score = mean(h ⊙ r ⊙ t) where h,t ∈ same embedding space
 
     Parameters
     ----------
@@ -115,11 +178,15 @@ class DistMultHead(nn.Module):
 
     Notes
     -----
-    - Simpler than RotatE/TransE (bilinear scoring)
-    - WARNING: DistMult is SYMMETRIC (score(h,r,t) = score(t,r,h))
-    - Cannot distinguish directed relations (substrate→reaction vs reaction→substrate)
-    - Good for undirected or symmetric relations only
-    - Included for completeness but may not be ideal for Napistu
+    **Key Difference from Original DistMult:**
+    - Original: Separate embeddings per entity (h_aspirin, t_headache)
+    - This version: Shared node embedding space (all nodes use same encoder)
+
+    **Symmetry Warning:**
+    Like original DistMult, this is symmetric: score(h,r,t) = score(t,r,h)
+    Cannot distinguish directed relations without combining with asymmetric encoder
+    or relation-specific directionality in the GNN.
+
 
     References
     ----------
@@ -133,8 +200,13 @@ class DistMultHead(nn.Module):
     >>> scores = head(z, edge_index, relation_type)
     """
 
+    loss_type = LOSSES.BCE
+
     def __init__(
-        self, embedding_dim: int, num_relations: int, init_as_identity: bool = False
+        self,
+        embedding_dim: int,
+        num_relations: int,
+        init_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
@@ -194,6 +266,8 @@ class DotProductHead(nn.Module):
     This is the simplest and most efficient head for edge prediction tasks.
     """
 
+    loss_type = LOSSES.BCE
+
     def __init__(self):
         super().__init__()
 
@@ -243,6 +317,8 @@ class EdgeMLPHead(nn.Module):
     dropout : float, optional
         Dropout probability, by default 0.1
     """
+
+    loss_type = LOSSES.BCE
 
     def __init__(
         self,
@@ -343,6 +419,188 @@ class NodeClassificationHead(nn.Module):
         return logits
 
 
+class RelationAttentionHead(nn.Module):
+    """
+    Lightweight relation-aware multi-head attention for edge prediction.
+
+    Simplified version of RelationAttentionMLPHead:
+    - Directly projects nodes instead of edge MLP
+    - Multi-head attention with relation queries
+    - No residual connection or output MLP (lighter)
+    - Still captures relation-specific feature selection
+
+    Architecture:
+    1. Project nodes → attention space (replaces edge MLP)
+    2. Relation embeddings → queries (multi-head)
+    3. Node projections → keys, values (multi-head)
+    4. Attention → weighted combination → score
+
+    Parameters
+    ----------
+    embedding_dim : int
+        Dimension of input node embeddings
+    num_relations : int
+        Number of distinct relation types
+    relation_emb_dim : int, optional
+        Dimension of relation embeddings, by default 64
+    hidden_dim : int, optional
+        Hidden dimension (must be divisible by num_attention_heads), by default 128
+    num_attention_heads : int, optional
+        Number of attention heads, by default 4
+
+    Notes
+    -----
+    Comparison to RelationAttentionMLPHead:
+    - Much lighter: no edge MLP, no output MLP, no residual
+    - Same core idea: relation queries edge features via attention
+    - Parameters: ~50K vs ~100K (half the size)
+    - More interpretable: fewer non-linearities
+
+    Comparison to AttentionHead:
+    - Adds relation-specific attention (like RelationAttentionMLPHead)
+    - Multi-head for richer feature selection
+    - More parameters but more expressive
+    """
+
+    loss_type = LOSSES.BCE
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_relations: int,
+        relation_emb_dim: int = HEAD_DEFS.DEFAULT_RELATION_EMB_DIM,
+        hidden_dim: int = HEAD_DEFS.DEFAULT_MLP_HIDDEN_DIM,
+        num_attention_heads: int = HEAD_DEFS.DEFAULT_RELATION_ATTENTION_HEADS,
+    ):
+        super().__init__()
+
+        if hidden_dim % num_attention_heads != 0:
+            raise ValueError(
+                f"hidden_dim ({hidden_dim}) must be divisible by "
+                f"num_attention_heads ({num_attention_heads})"
+            )
+
+        self.embedding_dim = embedding_dim
+        self.num_relations = num_relations
+        self.relation_emb_dim = relation_emb_dim
+        self.hidden_dim = hidden_dim
+        self.num_attention_heads = num_attention_heads
+        self.head_dim = hidden_dim // num_attention_heads
+
+        # Relation embeddings
+        self.relation_emb = nn.Embedding(num_relations, relation_emb_dim)
+
+        # Project concatenated [src || tgt] to hidden space
+        # (This replaces the edge_mlp from RelationAttentionMLPHead)
+        self.edge_proj = nn.Linear(2 * embedding_dim, hidden_dim)
+
+        # Attention projections (like RelationAttentionMLPHead)
+        self.query_proj = nn.Linear(relation_emb_dim, hidden_dim)
+        self.key_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.value_proj = nn.Linear(hidden_dim, hidden_dim)
+
+        # Output projection (simpler than full MLP)
+        self.output_proj = nn.Linear(hidden_dim, 1)
+
+        # Initialize
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """
+        Initialize weights with sensible defaults.
+
+        Strategy:
+        - Relation embeddings: Small random (std=0.1) to allow learning
+        - Edge projection: Xavier with moderate gain to preserve info
+        - Attention Q/K/V: Standard Xavier to balance stability/expressiveness
+        - Output: Small gain to avoid initial saturation
+        """
+        # Relation embeddings: small but learnable
+        nn.init.normal_(self.relation_emb.weight, mean=0.0, std=0.1)
+
+        # Edge projection: preserve magnitude
+        nn.init.xavier_uniform_(self.edge_proj.weight, gain=1.0)
+
+        # Attention projections: standard
+        nn.init.xavier_uniform_(self.query_proj.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.key_proj.weight, gain=1.0)
+        nn.init.xavier_uniform_(self.value_proj.weight, gain=1.0)
+
+        # Output: small to avoid saturation
+        nn.init.xavier_uniform_(self.output_proj.weight, gain=0.1)
+
+        # Zero biases
+        nn.init.zeros_(self.edge_proj.bias)
+        nn.init.zeros_(self.output_proj.bias)
+
+    def forward(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+        relation_type: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute relation-aware multi-head attention scores.
+
+        Parameters
+        ----------
+        node_embeddings : torch.Tensor
+            Node embeddings [num_nodes, embedding_dim]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        relation_type : torch.Tensor
+            Relation type for each edge [num_edges]
+
+        Returns
+        -------
+        torch.Tensor
+            Edge scores [num_edges]
+        """
+        # Normalize embeddings
+        node_embeddings = F.normalize(node_embeddings, p=2, dim=1)
+
+        # Get source and target embeddings
+        src = node_embeddings[edge_index[0]]
+        tgt = node_embeddings[edge_index[1]]
+
+        # Project edge (src || tgt) to hidden space
+        edge_features = torch.cat([src, tgt], dim=1)
+        edge_hidden = self.edge_proj(edge_features)  # [num_edges, hidden_dim]
+
+        # Get relation embeddings
+        rel_emb = self.relation_emb(relation_type)  # [num_edges, relation_emb_dim]
+
+        # Multi-head attention
+        batch_size = edge_hidden.size(0)
+
+        # Project to Q, K, V and reshape for multi-head
+        Q = self.query_proj(rel_emb).view(
+            batch_size, self.num_attention_heads, self.head_dim
+        )  # [num_edges, num_heads, head_dim]
+        K = self.key_proj(edge_hidden).view(
+            batch_size, self.num_attention_heads, self.head_dim
+        )
+        V = self.value_proj(edge_hidden).view(
+            batch_size, self.num_attention_heads, self.head_dim
+        )
+
+        # Scaled dot-product attention (per edge, across heads)
+        scale = torch.sqrt(
+            torch.tensor(self.head_dim, dtype=torch.float32, device=Q.device)
+        )
+        attn_scores = (Q * K).sum(dim=-1) / scale  # [num_edges, num_heads]
+        attn_weights = torch.softmax(attn_scores, dim=-1)  # [num_edges, num_heads]
+
+        # Apply attention to values
+        attended = attn_weights.unsqueeze(-1) * V  # [num_edges, num_heads, head_dim]
+        attended = attended.view(batch_size, -1)  # [num_edges, hidden_dim]
+
+        # Output projection (no residual, simpler than full MLP)
+        score = self.output_proj(attended).squeeze(-1)  # [num_edges]
+
+        return score
+
+
 class RelationGatedMLPHead(nn.Module):
     """
     Relation-gated MLP head for edge prediction.
@@ -370,8 +628,6 @@ class RelationGatedMLPHead(nn.Module):
         Number of layers in output MLP, by default 2
     dropout : float, optional
         Dropout probability, by default 0.1
-    init_as_identity : bool, optional
-        Initialize relation gates near identity (all 1s), by default False
 
     Notes
     -----
@@ -391,6 +647,8 @@ class RelationGatedMLPHead(nn.Module):
     >>> scores = head(node_embeddings, edge_index, relation_type)
     """
 
+    loss_type = LOSSES.BCE
+
     def __init__(
         self,
         embedding_dim: int,
@@ -399,7 +657,6 @@ class RelationGatedMLPHead(nn.Module):
         hidden_dim: int = 128,
         num_layers: int = 2,
         dropout: float = 0.1,
-        init_as_identity: bool = False,
     ):
         super().__init__()
 
@@ -440,21 +697,7 @@ class RelationGatedMLPHead(nn.Module):
         self.output_mlp = nn.Sequential(*layers)
 
         # Initialize
-        self._initialize_weights(init_as_identity)
-
-    def _initialize_weights(self, init_as_identity: bool):
-        """Initialize weights, optionally starting near identity."""
-        if init_as_identity:
-            # Initialize relation embeddings to produce gate values near 1.0
-            # Tanh(0) = 0, but we want Tanh(x) ≈ 1, so init with positive bias
-            nn.init.normal_(self.relation_emb.weight, mean=0.0, std=0.01)
-            # Initialize gate network to map to positive values
-            with torch.no_grad():
-                # Bias the linear layer to output ~0.5, so Tanh(0.5) ≈ 0.46
-                self.relation_gate[0].bias.fill_(0.5)
-        else:
-            # Standard initialization
-            nn.init.xavier_uniform_(self.relation_emb.weight)
+        nn.init.xavier_uniform_(self.relation_emb.weight)
 
     def forward(
         self,
@@ -532,8 +775,6 @@ class RelationAttentionMLPHead(nn.Module):
         Dropout probability, by default 0.1
     num_attention_heads : int, optional
         Number of attention heads, by default 4
-    init_as_identity : bool, optional
-        Initialize to approximate identity (uniform attention), by default False
 
     Notes
     -----
@@ -555,6 +796,8 @@ class RelationAttentionMLPHead(nn.Module):
     >>> scores = head(node_embeddings, edge_index, relation_type)
     """
 
+    loss_type = LOSSES.BCE
+
     def __init__(
         self,
         embedding_dim: int,
@@ -564,7 +807,6 @@ class RelationAttentionMLPHead(nn.Module):
         num_layers: int = 2,
         dropout: float = 0.1,
         num_attention_heads: int = 4,
-        init_as_identity: bool = False,
     ):
         super().__init__()
 
@@ -612,22 +854,14 @@ class RelationAttentionMLPHead(nn.Module):
         self.output_mlp = nn.Sequential(*layers)
 
         # Initialize
-        self._initialize_weights(init_as_identity)
+        self._initialize_weights()
 
-    def _initialize_weights(self, init_as_identity: bool):
+    def _initialize_weights(self):
         """Initialize weights, optionally starting near identity."""
-        if init_as_identity:
-            # Initialize to approximate uniform attention
-            nn.init.normal_(self.relation_emb.weight, mean=0.0, std=0.01)
-            nn.init.xavier_uniform_(self.query_proj.weight, gain=0.01)
-            nn.init.xavier_uniform_(self.key_proj.weight, gain=0.01)
-            nn.init.xavier_uniform_(self.value_proj.weight, gain=1.0)
-        else:
-            # Standard initialization
-            nn.init.xavier_uniform_(self.relation_emb.weight)
-            nn.init.xavier_uniform_(self.query_proj.weight)
-            nn.init.xavier_uniform_(self.key_proj.weight)
-            nn.init.xavier_uniform_(self.value_proj.weight)
+        nn.init.xavier_uniform_(self.relation_emb.weight)
+        nn.init.xavier_uniform_(self.query_proj.weight)
+        nn.init.xavier_uniform_(self.key_proj.weight)
+        nn.init.xavier_uniform_(self.value_proj.weight)
 
     def forward(
         self,
@@ -704,78 +938,77 @@ class RotatEHead(nn.Module):
     """
     RotatE decoder for relation-aware edge prediction.
 
-    Models relations as rotations in complex space. Given node embeddings from
-    a GNN encoder, this head learns relation-specific transformations.
+    Models relations as rotations in complex space: h ⊙ r ≈ t
+    where ⊙ is complex multiplication (Hadamard product in re/im components).
 
-    Scoring function: score = -||h ∘ r - t|| where ∘ is complex multiplication
+    Scoring function: score = -||h ⊙ r - t||
 
     Parameters
     ----------
     embedding_dim : int
-        Dimension of node embeddings from GNN (must be even for complex space)
+        Dimension of node embeddings from GNN (must be even for complex embeddings)
     num_relations : int
-        Number of distinct relation types in the graph
+        Number of distinct relation types
     margin : float, optional
-        Margin for ranking loss, by default 9.0
+        Margin for ranking loss, by default 1.0
+    init_as_identity : bool, optional
+        Initialize relations as identity rotations (angle=0), by default False
 
     Notes
     -----
-    - Embedding dimension must be even (split into real/imaginary components)
-    - Relation embeddings represent rotation angles in complex space
-    - Naturally handles asymmetric relations: r(h→t) ≠ r(t→h)
-    - More expressive than TransE but more parameters
+    - Embeddings are split into real/imaginary parts: [embedding_dim/2, embedding_dim/2]
+    - Relations are phase angles that rotate head embeddings
+    - Handles symmetric relations (r₁ = -r₂) and composition (r₃ = r₁ + r₂)
+    - **Requires normalized embeddings** (||h|| = ||t|| = 1) for bounded distances
+    - Distance range with unit norm: [0, 2]
+    - Score range: [-2, 0]
 
     References
     ----------
-    Sun et al. "RotatE: Knowledge Graph Embedding by Relational Rotation in
-    Complex Space" ICLR 2019.
+    Sun et al. "RotatE: Knowledge Graph Embedding by Relational Rotation in Complex Space"
+    ICLR 2019.
 
     Examples
     --------
-    >>> # After GNN encoding
-    >>> z = gnn_encoder(x, edge_index, edge_attr)  # [num_nodes, 256]
-    >>>
-    >>> # Score edges with relation types
     >>> head = RotatEHead(embedding_dim=256, num_relations=4)
-    >>> scores = head(z, edge_index, relation_type)  # [num_edges]
+    >>> scores = head(z, edge_index, relation_type)
     """
+
+    loss_type = LOSSES.MARGIN
 
     def __init__(
         self,
         embedding_dim: int,
         num_relations: int,
-        margin: float = 9.0,
-        init_as_identity: bool = False,
+        margin: float = HEAD_DEFS.DEFAULT_ROTATE_MARGIN,
+        init_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
     ):
         super().__init__()
 
         if embedding_dim % 2 != 0:
             raise ValueError(
-                f"RotatE requires even embedding_dim for complex space, "
-                f"got {embedding_dim}"
+                "embedding_dim must be even for RotatE (complex embeddings)"
             )
 
         self.embedding_dim = embedding_dim
         self.num_relations = num_relations
         self.margin = margin
+        self.eps = 1e-8
 
-        # Relation embeddings
+        # Relation embeddings as phase angles
+        # Shape: [num_relations, embedding_dim/2]
         self.relation_emb = nn.Embedding(num_relations, embedding_dim // 2)
+
         if init_as_identity:
-            # Initialize to zero phase (no rotation)
+            # Initialize to zero phase (identity rotation)
             nn.init.zeros_(self.relation_emb.weight)
         else:
-            # Initialize with small random phases
-            nn.init.uniform_(self.relation_emb.weight, -0.1, 0.1)
-
-        # Learnable centering parameters (initialize to reasonable defaults)
-        self.log_temperature = nn.Parameter(
-            torch.tensor(0.0)
-        )  # Instead of direct temperature
-        self.bias = nn.Parameter(
-            torch.tensor(1.0)
-        )  # Expected distance for random pairs if unit norm embeddings
-        self.eps = 1e-8
+            # Initialize uniformly in [-π, π]
+            nn.init.uniform_(
+                self.relation_emb.weight,
+                a=-torch.pi,
+                b=torch.pi,
+            )
 
     def forward(
         self,
@@ -798,59 +1031,66 @@ class RotatEHead(nn.Module):
         Returns
         -------
         torch.Tensor
-            Edge scores [num_edges] (higher = more likely to exist)
+            Edge scores [num_edges] (higher = more likely, range [-2, 0])
         """
-
+        # CRITICAL: Normalize embeddings to unit norm (RotatE requirement)
         node_embeddings = F.normalize(node_embeddings, p=2, dim=1)
 
-        # Get head and tail embeddings
-        head = node_embeddings[edge_index[0]]  # [num_edges, embedding_dim]
-        tail = node_embeddings[edge_index[1]]  # [num_edges, embedding_dim]
-        validate_tensor_for_nan_inf(head, name="head_embeddings")
-        validate_tensor_for_nan_inf(tail, name="tail_embeddings")
+        # Split into real and imaginary parts
+        head_embeddings = node_embeddings[edge_index[0]]
+        tail_embeddings = node_embeddings[edge_index[1]]
 
-        # Get relation phases
-        phase_rel = self.relation_emb(relation_type)  # [num_edges, embedding_dim//2]
-        validate_tensor_for_nan_inf(phase_rel, name="phase_rel")
+        head_re, head_im = torch.chunk(head_embeddings, 2, dim=-1)
+        tail_re, tail_im = torch.chunk(tail_embeddings, 2, dim=-1)
 
-        # Split embeddings into real and imaginary components
-        re_head, im_head = torch.chunk(head, 2, dim=-1)
-        re_tail, im_tail = torch.chunk(tail, 2, dim=-1)
+        # Get relation phase angles
+        phase = self.relation_emb(relation_type)
 
-        # Normalize phases to [-π, π]
-        phase_rel = phase_rel / (self.margin / torch.pi)
-
-        # Convert phase to complex rotation
-        re_rel = torch.cos(phase_rel)
-        im_rel = torch.sin(phase_rel)
+        # Convert phase to rotation (cos + i*sin)
+        rel_re = torch.cos(phase)
+        rel_im = torch.sin(phase)
 
         # Complex multiplication: (h_re + i*h_im) * (r_re + i*r_im)
-        re_score = re_head * re_rel - im_head * im_rel
-        im_score = re_head * im_rel + im_head * re_rel
-        validate_tensor_for_nan_inf(re_score, name="re_score")
-        validate_tensor_for_nan_inf(im_score, name="im_score")
+        re_score = head_re * rel_re - head_im * rel_im
+        im_score = head_re * rel_im + head_im * rel_re
 
-        # Compute distance to tail in complex space
-        re_diff = re_score - re_tail
-        im_diff = im_score - im_tail
+        # Distance between rotated head and tail
+        re_diff = re_score - tail_re
+        im_diff = im_score - tail_im
 
-        # L2 distance: sqrt(re_diff**2 + im_diff**2)
-        # MEAN distance (dimension-agnostic)
-        distance = torch.sqrt(re_diff**2 + im_diff**2).mean(dim=-1)
-        validate_tensor_for_nan_inf(distance, name="distance")
+        # L2 distance with numerical stability
+        distance = torch.sqrt(re_diff**2 + im_diff**2 + self.eps).mean(dim=-1)
 
-        # CENTER around zero with learnable parameters
-        temp = self.temperature  # Uses property, gets [0.1, 10.0]
-        score = -(distance / (temp + self.eps)) + self.bias
-        score = score.clamp(-50, 50)  # Prevent BCE overflow
-        validate_tensor_for_nan_inf(score, name="score_final")
+        # Score = negative distance (range [-2, 0])
+        # Higher score = better edge
+        score = -distance
 
         return score
 
-    @property
-    def temperature(self):
-        """Temperature constrained to [0.1, 10.0] range."""
-        return torch.exp(self.log_temperature).clamp(0.1, 10.0)
+    def scores_to_probs(self, scores: torch.Tensor) -> torch.Tensor:
+        """
+        Convert RotatE scores (negative distances) to probabilities.
+
+        RotatE scores are negative L2 distances in range [-2, 0]
+        for normalized embeddings.
+
+        Map linearly to [0, 1]:
+        - distance = 0 (perfect match) → score = 0 → prob = 1.0
+        - distance = 2 (max distance) → score = -2 → prob = 0.0
+
+        Parameters
+        ----------
+        scores : torch.Tensor
+            Raw RotatE scores (negative distances)
+
+        Returns
+        -------
+        torch.Tensor
+            Probabilities in [0, 1]
+        """
+        # Linear mapping: prob = (score + 2) / 2
+        # Maps [-2, 0] → [0, 1]
+        return (scores + 2.0) / 2.0
 
 
 class TransEHead(nn.Module):
@@ -879,6 +1119,7 @@ class TransEHead(nn.Module):
     - Naturally handles asymmetric relations: h+r₁ vs h+r₂
     - May struggle with 1-to-N relations (e.g., one reaction → many products)
     - Good baseline before trying more complex heads
+    - **Requires normalized embeddings** (||h|| = ||t|| = 1) for bounded distances
 
     References
     ----------
@@ -891,37 +1132,30 @@ class TransEHead(nn.Module):
     >>> scores = head(z, edge_index, relation_type)
     """
 
+    loss_type = LOSSES.MARGIN
+
     def __init__(
         self,
         embedding_dim: int,
         num_relations: int,
-        margin: float = 1.0,
+        margin: float = HEAD_DEFS.DEFAULT_TRANSE_MARGIN,
         norm: int = 2,
-        init_as_identity: bool = False,
+        init_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
     ):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.num_relations = num_relations
         self.margin = margin
         self.norm = norm
+        self.eps = 1e-8
 
         self.relation_emb = nn.Embedding(num_relations, embedding_dim)
-
         if init_as_identity:
             # Initialize to zero: h + 0 - t = h - t
             nn.init.zeros_(self.relation_emb.weight)
         else:
             # Standard initialization
             nn.init.xavier_uniform_(self.relation_emb.weight)
-
-        # Learnable centering parameters (initialize to reasonable defaults)
-        self.log_temperature = nn.Parameter(
-            torch.tensor(0.0)
-        )  # Instead of direct temperature
-        self.bias = nn.Parameter(
-            torch.tensor(1.0)
-        )  # Expected distance for random pairs if unit norm embeddings
-        self.eps = 1e-8
 
     def forward(
         self,
@@ -946,6 +1180,10 @@ class TransEHead(nn.Module):
         torch.Tensor
             Edge scores [num_edges] (higher = more likely)
         """
+        # CRITICAL: Normalize embeddings to unit norm (TransE requirement)
+        # This ensures distances are bounded in [0, 2] for L2 norm
+        node_embeddings = F.normalize(node_embeddings, p=2, dim=1)
+
         head = node_embeddings[edge_index[0]]
         tail = node_embeddings[edge_index[1]]
         rel = self.relation_emb(relation_type)
@@ -953,27 +1191,55 @@ class TransEHead(nn.Module):
         # TransE scoring: h + r should be close to t
         diff = head + rel - tail
 
-        # Compute norm and normalize by sqrt(dim) for dimension-agnostic scaling
+        # Compute distance
         if self.norm == 1:
-            # L1 norm: just take mean of absolute values
+            # L1 norm with normalized embeddings
+            # Max L1 distance between unit vectors ≈ 2 (when opposite)
             distance = diff.abs().mean(dim=-1)
         else:
-            # L2 norm: ||diff|| / sqrt(dim) = sqrt(mean(diff²))
-            distance = torch.norm(diff, p=2, dim=-1) / torch.sqrt(
-                torch.tensor(float(self.embedding_dim))
-            )
+            # L2 norm with normalized embeddings
+            # Max L2 distance = sqrt(2) when vectors are orthogonal
+            distance = torch.sqrt((diff**2).sum(dim=-1) + self.eps)
 
-        # CENTER around zero with learnable parameters
-        temp = self.temperature  # Uses property, gets [0.1, 10.0]
-        score = -(distance / (temp + self.eps)) + self.bias
-        score = score.clamp(-50, 50)  # Prevent BCE overflow
+        # Center around zero with learnable parameters
+        score = -distance
 
         return score
 
-    @property
-    def temperature(self):
-        """Temperature constrained to [0.1, 10.0] range."""
-        return torch.exp(self.log_temperature).clamp(0.1, 10.0)
+    def scores_to_probs(self, scores: torch.Tensor) -> torch.Tensor:
+        """
+        Convert TransE scores (negative distances) to probabilities.
+
+        TransE scores are negative distances. With L2 norm and normalized embeddings:
+        - distance ∈ [0, sqrt(2)]
+        - score ∈ [-sqrt(2), 0]
+
+        Map linearly to [0, 1]:
+        - distance = 0 (perfect match) → score = 0 → prob = 1.0
+        - distance = sqrt(2) (max) → score = -1.414 → prob = 0.0
+
+        With L1 norm and normalized embeddings:
+        - distance ∈ [0, 2]
+        - score ∈ [-2, 0]
+
+        Map linearly to [0, 1]:
+        - distance = 0 (perfect match) → score = 0 → prob = 1.0
+        - distance = 2 (max) → score = -2 → prob = 0.0
+
+        Parameters
+        ----------
+        scores : torch.Tensor
+            Raw TransE scores (negative distances)
+
+        Returns
+        -------
+        torch.Tensor
+            Probabilities in [0, 1]
+        """
+        if self.norm == 1:
+            return 1.0 + scores / 2.0  # L1: max distance = 2
+        else:
+            return 1.0 + scores / 1.414  # L2: max distance = sqrt(2)
 
 
 class Decoder(nn.Module):
@@ -981,7 +1247,7 @@ class Decoder(nn.Module):
     Unified head decoder that can create different types of prediction heads.
 
     This class provides a single interface for creating various head types
-    (dot product, MLP, bilinear, node classification) with a from_config
+    (e.g., dot product, MLP, attention, node classification) with a from_config
     classmethod for easy integration with configuration systems.
 
     Parameters
@@ -989,7 +1255,7 @@ class Decoder(nn.Module):
     hidden_channels : int
         Dimension of input node embeddings (should match GNN encoder output)
     head_type : str
-        Type of head to create (dot_product, mlp, bilinear, node_classification)
+        Type of head to create (dot_product, mlp, attention, node_classification)
     num_relations : int, optional
         Number of relation types (required for relation-aware heads)
     num_classes : int, optional
@@ -1002,8 +1268,6 @@ class Decoder(nn.Module):
         Number of hidden layers for MLP head, by default 2
     mlp_dropout : float, optional
         Dropout probability for MLP head, by default 0.1
-    bilinear_bias : bool, optional
-        Whether to add bias term for bilinear head, by default True
     nc_dropout : float, optional
         Dropout probability for node classification head, by default 0.1
     rotate_margin : float, optional
@@ -1033,16 +1297,15 @@ class Decoder(nn.Module):
         head_type: str = HEADS.DOT_PRODUCT,
         num_relations: Optional[int] = None,
         num_classes: Optional[int] = None,
-        init_head_as_identity: bool = False,
-        mlp_hidden_dim: int = 64,
-        mlp_num_layers: int = 2,
-        mlp_dropout: float = 0.1,
-        bilinear_bias: bool = True,
-        nc_dropout: float = 0.1,
-        rotate_margin: float = 9.0,
-        transe_margin: float = 1.0,
-        relation_emb_dim: int = 64,
-        relation_attention_heads: int = 4,
+        init_head_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
+        mlp_hidden_dim: int = HEAD_DEFS.DEFAULT_MLP_HIDDEN_DIM,
+        mlp_num_layers: int = HEAD_DEFS.DEFAULT_MLP_NUM_LAYERS,
+        mlp_dropout: float = HEAD_DEFS.DEFAULT_MLP_DROPOUT,
+        nc_dropout: float = HEAD_DEFS.DEFAULT_NC_DROPOUT,
+        rotate_margin: float = HEAD_DEFS.DEFAULT_ROTATE_MARGIN,
+        transe_margin: float = HEAD_DEFS.DEFAULT_TRANSE_MARGIN,
+        relation_emb_dim: int = HEAD_DEFS.DEFAULT_RELATION_EMB_DIM,
+        relation_attention_heads: int = HEAD_DEFS.DEFAULT_RELATION_ATTENTION_HEADS,
     ):
         super().__init__()
 
@@ -1056,7 +1319,6 @@ class Decoder(nn.Module):
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: mlp_hidden_dim,
             HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS: mlp_num_layers,
             HEAD_SPECIFIC_ARGS.MLP_DROPOUT: mlp_dropout,
-            HEAD_SPECIFIC_ARGS.BILINEAR_BIAS: bilinear_bias,
             HEAD_SPECIFIC_ARGS.NC_DROPOUT: nc_dropout,
             HEAD_SPECIFIC_ARGS.ROTATE_MARGIN: rotate_margin,
             HEAD_SPECIFIC_ARGS.TRANSE_MARGIN: transe_margin,
@@ -1092,9 +1354,10 @@ class Decoder(nn.Module):
                 )
 
         # Create the appropriate head based on type
-        if head_type == HEADS.BILINEAR:
-            self.head = BilinearHead(
-                self.hidden_channels, bilinear_bias, init_head_as_identity
+
+        if head_type == HEADS.ATTENTION:
+            self.head = AttentionHead(
+                self.hidden_channels, mlp_hidden_dim, init_head_as_identity
             )
         elif head_type == HEADS.DISTMULT:
             self.head = DistMultHead(
@@ -1110,40 +1373,46 @@ class Decoder(nn.Module):
             self.head = NodeClassificationHead(
                 self.hidden_channels, num_classes, nc_dropout
             )
+        elif head_type == HEADS.RELATION_ATTENTION:
+            self.head = RelationAttentionHead(
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                relation_emb_dim=relation_emb_dim,
+                hidden_dim=mlp_hidden_dim,
+                num_attention_heads=relation_attention_heads,
+            )
         elif head_type == HEADS.RELATION_ATTENTION_MLP:
             self.head = RelationAttentionMLPHead(
-                self.hidden_channels,
-                num_relations,
-                relation_emb_dim,
-                mlp_hidden_dim,
-                mlp_num_layers,
-                mlp_dropout,
-                relation_attention_heads,
-                init_head_as_identity,
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                relation_emb_dim=relation_emb_dim,
+                hidden_dim=mlp_hidden_dim,
+                num_layers=mlp_num_layers,
+                dropout=mlp_dropout,
+                num_attention_heads=relation_attention_heads,
             )
         elif head_type == HEADS.RELATION_GATED_MLP:
             self.head = RelationGatedMLPHead(
-                self.hidden_channels,
-                num_relations,
-                relation_emb_dim,
-                mlp_hidden_dim,
-                mlp_num_layers,
-                mlp_dropout,
-                init_head_as_identity,
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                relation_emb_dim=relation_emb_dim,
+                hidden_dim=mlp_hidden_dim,
+                num_layers=mlp_num_layers,
+                dropout=mlp_dropout,
             )
         elif head_type == HEADS.ROTATE:
             self.head = RotatEHead(
-                self.hidden_channels,
-                num_relations,
-                rotate_margin,
-                init_head_as_identity,
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                margin=rotate_margin,
+                init_as_identity=init_head_as_identity,
             )
         elif head_type == HEADS.TRANSE:
             self.head = TransEHead(
-                self.hidden_channels,
-                num_relations,
-                transe_margin,
-                init_head_as_identity,
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                margin=transe_margin,
+                init_as_identity=init_head_as_identity,
             )
         else:
             raise ValueError(f"Unsupported head type: {head_type}")
@@ -1199,7 +1468,11 @@ class Decoder(nn.Module):
             ]
 
         # Head-specific parameters
-        if self.head_type == HEADS.MLP:
+        if self.head_type in {
+            HEADS.MLP,
+            HEADS.RELATION_GATED_MLP,
+            HEADS.RELATION_ATTENTION_MLP,
+        }:
             summary[HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM] = self._init_args[
                 HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM
             ]
@@ -1209,10 +1482,6 @@ class Decoder(nn.Module):
             summary[HEAD_SPECIFIC_ARGS.MLP_DROPOUT] = self._init_args[
                 HEAD_SPECIFIC_ARGS.MLP_DROPOUT
             ]
-        elif self.head_type == HEADS.BILINEAR:
-            summary[HEAD_SPECIFIC_ARGS.BILINEAR_BIAS] = self._init_args[
-                HEAD_SPECIFIC_ARGS.BILINEAR_BIAS
-            ]
         elif self.head_type == HEADS.ROTATE:
             summary[HEAD_SPECIFIC_ARGS.ROTATE_MARGIN] = self._init_args[
                 HEAD_SPECIFIC_ARGS.ROTATE_MARGIN
@@ -1221,11 +1490,15 @@ class Decoder(nn.Module):
             summary[HEAD_SPECIFIC_ARGS.TRANSE_MARGIN] = self._init_args[
                 HEAD_SPECIFIC_ARGS.TRANSE_MARGIN
             ]
-        if self.head_type in {HEADS.RELATION_GATED_MLP, HEADS.RELATION_ATTENTION_MLP}:
+        if self.head_type in {
+            HEADS.RELATION_GATED_MLP,
+            HEADS.RELATION_ATTENTION_MLP,
+            HEADS.RELATION_ATTENTION,
+        }:
             summary[HEAD_SPECIFIC_ARGS.RELATION_EMB_DIM] = self._init_args[
                 HEAD_SPECIFIC_ARGS.RELATION_EMB_DIM
             ]
-        if self.head_type == HEADS.RELATION_ATTENTION_MLP:
+        if self.head_type in {HEADS.RELATION_ATTENTION_MLP, HEADS.RELATION_ATTENTION}:
             summary[HEAD_SPECIFIC_ARGS.RELATION_ATTENTION_HEADS] = self._init_args[
                 HEAD_SPECIFIC_ARGS.RELATION_ATTENTION_HEADS
             ]
@@ -1243,6 +1516,35 @@ class Decoder(nn.Module):
             True if the head type is in RELATION_AWARE_HEADS, False otherwise
         """
         return self.head_type in RELATION_AWARE_HEADS
+
+    @property
+    def loss_type(self) -> str:
+        """
+        Get the loss type required by the underlying head.
+
+        Returns
+        -------
+        str
+            Loss type (e.g., LOSSES.BCE, LOSSES.MARGIN)
+        """
+        return type(self.head).loss_type
+
+    @property
+    def margin(self) -> float:
+        """
+        Get the margin value for heads that support margin loss (RotatE, TransE).
+
+        Returns
+        -------
+        float
+            Margin value for ranking loss
+
+        Raises
+        ------
+        AttributeError
+            If the underlying head does not have a margin attribute
+        """
+        return self.head.margin
 
     def forward(
         self,
@@ -1333,9 +1635,6 @@ class Decoder(nn.Module):
             ),
             HEAD_SPECIFIC_ARGS.MLP_DROPOUT: getattr(
                 config, HEAD_SPECIFIC_ARGS.MLP_DROPOUT
-            ),
-            HEAD_SPECIFIC_ARGS.BILINEAR_BIAS: getattr(
-                config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS
             ),
             HEAD_SPECIFIC_ARGS.NC_DROPOUT: getattr(
                 config, HEAD_SPECIFIC_ARGS.NC_DROPOUT

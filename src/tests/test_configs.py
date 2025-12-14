@@ -165,7 +165,6 @@ class TestModelConfig:
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_DROPOUT)
-        assert hasattr(config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.NC_DROPOUT)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.ROTATE_MARGIN)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.TRANSE_MARGIN)
@@ -175,7 +174,6 @@ class TestModelConfig:
             mlp_hidden_dim=128,
             mlp_num_layers=3,
             mlp_dropout=0.2,
-            bilinear_bias=False,
             nc_dropout=0.15,
             rotate_margin=12.0,
             transe_margin=2.0,
@@ -183,7 +181,6 @@ class TestModelConfig:
         assert config.mlp_hidden_dim == 128
         assert config.mlp_num_layers == 3
         assert config.mlp_dropout == 0.2
-        assert config.bilinear_bias is False
         assert config.nc_dropout == 0.15
         assert config.rotate_margin == 12.0
         assert config.transe_margin == 2.0
@@ -284,10 +281,13 @@ class TestModelConfig:
 
         # Test with different encoder and head combinations
         config = ModelConfig(
-            encoder=ENCODERS.GAT, head=HEADS.BILINEAR, hidden_channels=256, num_layers=5
+            encoder=ENCODERS.GAT,
+            head=HEADS.ATTENTION,
+            hidden_channels=256,
+            num_layers=5,
         )
         arch_str = config.get_architecture_string()
-        assert arch_str == "gat-bilinear_h256_l5"
+        assert arch_str == "gat-attention_h256_l5"
 
         # Test with default values (should use defaults for hidden_channels and num_layers)
         config = ModelConfig(encoder=ENCODERS.SAGE, head=HEADS.MLP)
@@ -927,9 +927,9 @@ class TestExperimentConfig:
         assert experiment_name == "gat-dot_product_h256_l5_node_classification"
 
         # Test with explicit head
-        config.model.head = HEADS.BILINEAR
+        config.model.head = HEADS.ATTENTION
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat-bilinear_h256_l5_node_classification"
+        assert experiment_name == "gat-attention_h256_l5_node_classification"
 
     @pytest.mark.skip_on_windows
     def test_anonymize(self, stubbed_data_config):

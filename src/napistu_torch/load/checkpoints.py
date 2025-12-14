@@ -526,7 +526,6 @@ class HeadMetadata(BaseModel):
     mlp_hidden_dim: Optional[int] = Field(None, ge=1)
     mlp_num_layers: Optional[int] = Field(None, ge=1)
     mlp_dropout: Optional[float] = Field(None, ge=0.0, le=1.0)
-    bilinear_bias: Optional[bool] = None
     nc_dropout: Optional[float] = Field(None, ge=0.0, le=1.0)
     rotate_margin: Optional[float] = Field(None, gt=0.0)
     transe_margin: Optional[float] = Field(None, gt=0.0)

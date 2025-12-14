@@ -52,7 +52,7 @@ def format_named_overrides(
     encoder : Optional[str]
         Model encoder (e.g., sage, gcn, gat, graph_conv)
     head : Optional[str]
-        Model head (e.g., node_classification, dot_product, mlp, bilinear, rotate, transe, distmult)
+        Model head (e.g., node_classification, dot_product, mlp, attention, rotate, transe, distmult)
     hidden_channels : Optional[int]
         Model hidden channels
     dropout : Optional[float]

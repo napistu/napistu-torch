@@ -284,7 +284,7 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
 @click.option(
     "--head",
     type=str,
-    help="The model head (e.g., node_classification, dot_product, mlp, bilinear, rotate, transe, distmult)",
+    help="The model head (e.g., node_classification, dot_product, mlp, attention, rotate, transe, distmult)",
 )
 @click.option("--hidden_channels", "hidden_channels", type=int, help="Hidden channels")
 @click.option("--dropout", type=float, help="Dropout rate")

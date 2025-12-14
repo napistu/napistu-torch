@@ -22,16 +22,23 @@ from napistu_torch.load.stratification import (
     validate_edge_strata_alignment,
 )
 from napistu_torch.ml.constants import (
+    LOSSES,
     METRICS,
     SCORE_DISTRIBUTION_STATS,
     SPLIT_TO_MASK,
     TRAINING,
 )
-from napistu_torch.ml.losses import compute_simple_bce_loss, compute_weighted_bce_loss
+from napistu_torch.ml.losses import (
+    compute_bce_loss,
+    compute_margin_loss,
+    compute_weighted_bce_loss,
+    compute_weighted_margin_loss,
+)
 from napistu_torch.ml.metrics import RelationWeightedAUC
 from napistu_torch.models.constants import (
     EDGE_WEIGHTING_TYPE,
     ENCODER_DEFS,
+    HEAD_DEFS,
 )
 from napistu_torch.models.heads import Decoder
 from napistu_torch.napistu_data import NapistuData
@@ -64,7 +71,7 @@ class EdgePredictionTask(BaseTask):
     encoder : nn.Module
         Graph encoder (SAGE, GCN, GAT, etc.)
     head : nn.Module
-        Edge decoder (DotProduct, MLP, Bilinear, etc.)
+        Edge decoder (DotProduct, MLP, Attention, etc.)
     neg_sampling_ratio : float
         Ratio of negative to positive samples
     edge_strata : pd.Series or pd.DataFrame, optional
@@ -160,12 +167,11 @@ class EdgePredictionTask(BaseTask):
 
     def compute_loss(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         """
-        Compute BCE loss for edge prediction.
+        Compute loss for edge prediction.
 
-        Steps:
-        1. Encode nodes using supervision edges
-        2. Score positive and negative edges
-        3. Compute binary cross-entropy loss
+        Loss type is determined by the head's loss_type attribute:
+        - "margin": Margin-based ranking loss (RotatE, TransE)
+        - "bce": Binary cross-entropy (default for most heads)
         """
         # Encode nodes with edge data
         z = self.encoder.encode(
@@ -175,33 +181,69 @@ class EdgePredictionTask(BaseTask):
         )
         validate_tensor_for_nan_inf(z, name="node_embeddings")
 
-        # Score positive and negative edges
+        # Score positive and negative edges (always get raw scores for loss)
         pos_relation_type = batch.get(EDGE_PREDICTION_BATCH.POS_RELATION_TYPE)
         neg_relation_type = batch.get(EDGE_PREDICTION_BATCH.NEG_RELATION_TYPE)
         pos_scores = self._score_edges(
-            z, batch[EDGE_PREDICTION_BATCH.POS_EDGES], relation_type=pos_relation_type
+            z,
+            batch[EDGE_PREDICTION_BATCH.POS_EDGES],
+            relation_type=pos_relation_type,
+            return_probs=False,  # Raw scores for loss
         )
         neg_scores = self._score_edges(
-            z, batch[EDGE_PREDICTION_BATCH.NEG_EDGES], relation_type=neg_relation_type
+            z,
+            batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
+            relation_type=neg_relation_type,
+            return_probs=False,  # Raw scores for loss
         )
 
-        # Get weights for positive and negative edges
-        pos_weights = self._get_edge_weights(pos_relation_type)
-        neg_weights = self._get_edge_weights(neg_relation_type)
+        # Determine loss type from head
+        loss_type = getattr(self.head, HEAD_DEFS.LOSS_TYPE)
 
-        if self.weight_loss_by_relation_frequency:
-            # Compute weighted BCE loss
-            loss = compute_weighted_bce_loss(
-                pos_scores=pos_scores,
-                neg_scores=neg_scores,
-                pos_weights=pos_weights,
-                neg_weights=neg_weights,
-            )
+        if loss_type == LOSSES.MARGIN:
+            # Margin loss for RotatE/TransE
+            margin = getattr(self.head, HEAD_DEFS.MARGIN)  # Get instance margin
+
+            if self.weight_loss_by_relation_frequency:
+                # Get weights for positive and negative edges (for relation weighting)
+                pos_weights = self._get_edge_weights(pos_relation_type)
+                neg_weights = self._get_edge_weights(neg_relation_type)
+
+                # Compute weighted margin loss
+                loss = compute_weighted_margin_loss(
+                    pos_scores=pos_scores,
+                    neg_scores=neg_scores,
+                    margin=margin,
+                    pos_weights=pos_weights,
+                    neg_weights=neg_weights,
+                )
+            else:
+                # Compute margin loss
+                loss = compute_margin_loss(pos_scores, neg_scores, margin)
+
+        elif loss_type == LOSSES.BCE:
+            # BCE for most heads
+            if self.weight_loss_by_relation_frequency:
+                # Get weights for positive and negative edges (for relation weighting)
+                pos_weights = self._get_edge_weights(pos_relation_type)
+                neg_weights = self._get_edge_weights(neg_relation_type)
+
+                # Compute weighted BCE loss
+                loss = compute_weighted_bce_loss(
+                    pos_scores=pos_scores,
+                    neg_scores=neg_scores,
+                    pos_weights=pos_weights,
+                    neg_weights=neg_weights,
+                )
+            else:
+                # Compute standard BCE loss
+                loss = compute_bce_loss(
+                    pos_scores=pos_scores,
+                    neg_scores=neg_scores,
+                )
         else:
-            # compute standard BCE loss
-            loss = compute_simple_bce_loss(
-                pos_scores=pos_scores,
-                neg_scores=neg_scores,
+            raise ValueError(
+                f"Unknown loss_type: {loss_type}. Must be {LOSSES.MARGIN} or {LOSSES.BCE}."
             )
 
         return loss
@@ -237,14 +279,14 @@ class EdgePredictionTask(BaseTask):
                 z,
                 batch[EDGE_PREDICTION_BATCH.POS_EDGES],
                 relation_type=pos_relation_type,
-                apply_sigmoid=True,
+                return_probs=True,
             )
             validate_tensor_for_nan_inf(pos_scores, name="pos_scores")
             neg_scores = self._score_edges(
                 z,
                 batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
                 relation_type=neg_relation_type,
-                apply_sigmoid=True,
+                return_probs=True,
             )
             validate_tensor_for_nan_inf(neg_scores, name="neg_scores")
 
@@ -342,13 +384,13 @@ class EdgePredictionTask(BaseTask):
                 z,
                 batch[EDGE_PREDICTION_BATCH.POS_EDGES],
                 relation_type=pos_relation_type,
-                apply_sigmoid=False,  # Raw scores
+                return_probs=False,  # Raw scores
             )
             neg_scores = self._score_edges(
                 z,
                 batch[EDGE_PREDICTION_BATCH.NEG_EDGES],
                 relation_type=neg_relation_type,
-                apply_sigmoid=False,
+                return_probs=False,
             )
 
             # Compute dot product baseline for comparison
@@ -486,7 +528,7 @@ class EdgePredictionTask(BaseTask):
 
             # Score the specified edges
             scores = self._score_edges(
-                z, edge_index, relation_type=relation_type, apply_sigmoid=True
+                z, edge_index, relation_type=relation_type, return_probs=True
             )
 
             return scores
@@ -876,7 +918,7 @@ class EdgePredictionTask(BaseTask):
 
         # Score all edges
         scores = self._score_edges(
-            z, data.edge_index, relation_type=relation_type, apply_sigmoid=True
+            z, data.edge_index, relation_type=relation_type, return_probs=True
         )
 
         return scores
@@ -886,7 +928,7 @@ class EdgePredictionTask(BaseTask):
         node_embeddings: torch.Tensor,
         edge_index: torch.Tensor,
         relation_type: Optional[torch.Tensor] = None,
-        apply_sigmoid: bool = False,
+        return_probs: bool = False,
     ) -> torch.Tensor:
         """
         Score edges using the head.
@@ -899,14 +941,16 @@ class EdgePredictionTask(BaseTask):
             Edge connectivity [2, num_edges]
         relation_type : torch.Tensor, optional
             Relation type for each edge [num_edges]. Only used if head supports relations.
-        apply_sigmoid : bool
-            Whether to apply sigmoid to the scores. Default is False.
+        return_probs : bool
+            Whether to convert scores to probabilities. Default is False.
+            Uses head's scores_to_probs() method if available, otherwise sigmoid.
 
         Returns
         -------
         torch.Tensor
-            Edge scores [num_edges]
+            Edge scores [num_edges] or probabilities [num_edges] if return_probs=True
         """
+        # Get raw scores from head
         if self.using_relations:
             if relation_type is None:
                 raise ValueError("relation_type is required for relation-aware heads")
@@ -916,9 +960,17 @@ class EdgePredictionTask(BaseTask):
 
         validate_tensor_for_nan_inf(scores, name="edge_scores")
 
-        if apply_sigmoid:
-            scores = torch.sigmoid(scores)
-            validate_tensor_for_nan_inf(scores, name="edge_scores")
+        # Convert to probabilities if requested
+        if return_probs:
+            if hasattr(self.head, HEAD_DEFS.SCORE_TO_PROBS):
+                # Use head's custom conversion
+                probs = getattr(self.head, HEAD_DEFS.SCORE_TO_PROBS)(scores)
+            else:
+                # Default: sigmoid (for BCE-based heads)
+                probs = torch.sigmoid(scores)
+
+            validate_tensor_for_nan_inf(probs, name="edge_probabilities")
+            return probs
 
         return scores
 

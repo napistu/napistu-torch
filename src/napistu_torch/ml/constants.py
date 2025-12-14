@@ -84,3 +84,10 @@ SCORE_DISTRIBUTION_STATS = SimpleNamespace(
     NEG_SATURATED_PCT="neg_saturated_pct",
     RANK_CORR_WITH_DOTPROD="rank_corr_with_dotprod",
 )
+
+LOSSES = SimpleNamespace(
+    BCE="bce",
+    MARGIN="margin",
+)
+
+VALID_LOSSES = list(LOSSES.__dict__.values())

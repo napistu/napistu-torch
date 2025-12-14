@@ -10,7 +10,6 @@ from napistu_torch.models.constants import (
     RELATION_AWARE_HEADS,
 )
 from napistu_torch.models.heads import (
-    BilinearHead,
     Decoder,
     DistMultHead,
     DotProductHead,
@@ -33,7 +32,7 @@ class TestRotatEHead:
 
     def test_odd_embedding_dim_raises(self):
         """Test that odd embedding_dim raises error."""
-        with pytest.raises(ValueError, match="even embedding_dim"):
+        with pytest.raises(ValueError, match="even"):
             RotatEHead(embedding_dim=255, num_relations=4)
 
     def test_forward(self):
@@ -254,32 +253,6 @@ class TestEdgeMLPHead:
         assert scores2.shape == (50,)
 
 
-class TestBilinearHead:
-    """Tests for Bilinear head."""
-
-    def test_initialization(self):
-        """Test Bilinear head initializes correctly."""
-        head = BilinearHead(embedding_dim=256, bias=True)
-        assert head.embedding_dim == 256
-
-    def test_initialization_no_bias(self):
-        """Test Bilinear head initializes without bias."""
-        head = BilinearHead(embedding_dim=256, bias=False)
-        assert head.embedding_dim == 256
-
-    def test_forward(self):
-        """Test forward pass produces correct output shape."""
-        head = BilinearHead(embedding_dim=256)
-
-        node_embeddings = torch.randn(100, 256)
-        edge_index = torch.randint(0, 100, (2, 50))
-
-        scores = head(node_embeddings, edge_index)
-
-        assert scores.shape == (50,)
-        assert not torch.isnan(scores).any()
-
-
 class TestNodeClassificationHead:
     """Tests for NodeClassification head."""
 
@@ -315,7 +288,7 @@ class TestDecoderWithEdgePrediction:
 
     def test_decoder_forward_without_edge_index_raises(self):
         """Test that forward without edge_index raises error for edge prediction heads."""
-        for head_type in [HEADS.DOT_PRODUCT, HEADS.MLP, HEADS.BILINEAR]:
+        for head_type in [HEADS.DOT_PRODUCT, HEADS.MLP]:
             decoder = Decoder(hidden_channels=256, head_type=head_type)
 
             node_embeddings = torch.randn(100, 256)
@@ -325,7 +298,7 @@ class TestDecoderWithEdgePrediction:
 
     def test_decoder_forward_with_edge_index(self):
         """Test that forward with edge_index works for edge prediction heads."""
-        for head_type in [HEADS.DOT_PRODUCT, HEADS.MLP, HEADS.BILINEAR]:
+        for head_type in [HEADS.DOT_PRODUCT, HEADS.MLP]:
             decoder = Decoder(hidden_channels=256, head_type=head_type)
 
             node_embeddings = torch.randn(100, 256)
@@ -445,18 +418,6 @@ class TestConfigIntegration:
         assert decoder.head_type == HEADS.MLP
         assert decoder.hidden_channels == 256
 
-    def test_from_config_bilinear(self):
-        """Test creating Bilinear head from config."""
-        config = ModelConfig(
-            encoder="gcn",
-            head="bilinear",
-            hidden_channels=256,
-            bilinear_bias=True,
-        )
-
-        decoder = Decoder.from_config(config)
-
-        assert decoder.head_type == HEADS.BILINEAR
         assert decoder.hidden_channels == 256
 
     def test_from_config_node_classification(self):
