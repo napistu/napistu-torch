@@ -35,3 +35,8 @@ METRIC_VALUE_TABLE = SimpleNamespace(
     METRIC="metric",
     VALUE="value",
 )
+
+CORRELATION_METHODS = SimpleNamespace(
+    SPEARMAN="spearman",
+    PEARSON="pearson",
+)
