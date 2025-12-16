@@ -1,4 +1,5 @@
 import logging
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
@@ -223,6 +224,35 @@ class ModelConfig(BaseModel):
                 )
         return self
 
+    @model_validator(mode="before")
+    @classmethod
+    def remove_deprecated_fields(cls, data):
+        """
+        Remove deprecated fields from data before validation and warn about them.
+
+        This allows old configs to load while maintaining strict validation (extra="forbid").
+        """
+        if isinstance(data, dict):
+            deprecated_fields = {
+                "bilinear_bias": "The 'bilinear_bias' field has been removed and is no longer used.",
+            }
+
+            # Create a copy to avoid modifying the original dict during iteration
+            data = dict(data)
+
+            for field_name, message in deprecated_fields.items():
+                if field_name in data:
+                    warnings.warn(
+                        f"Deprecated field '{field_name}' found in ModelConfig. {message} "
+                        "This field will be ignored. Please update your config file.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    # Remove the deprecated field
+                    del data[field_name]
+
+        return data
+
     @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
     def validate_power_of_2(cls, v):
@@ -296,7 +326,9 @@ class ModelConfig(BaseModel):
 
         return "\n".join(lines)
 
-    model_config = ConfigDict(extra="forbid")  # Catch typos
+    model_config = ConfigDict(
+        extra="forbid"
+    )  # Catch typos, deprecated fields removed by validator
 
 
 class DataConfig(BaseModel):

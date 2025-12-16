@@ -1,6 +1,7 @@
 """Tests for napistu_torch configs module."""
 
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -300,6 +301,25 @@ class TestModelConfig:
         with pytest.raises(ValidationError) as exc_info:
             ModelConfig(invalid_field="value")
         assert "Extra inputs are not permitted" in str(exc_info.value)
+
+    def test_deprecated_fields_removed(self):
+        """Test that deprecated fields are removed and warned about."""
+        # Test that bilinear_bias is removed and a warning is issued
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            config = ModelConfig(encoder="sage", head="dot_product", bilinear_bias=True)
+
+            # Verify the config was created successfully
+            assert config.encoder == "sage"
+            assert config.head == "dot_product"
+            # Verify bilinear_bias is not in the config
+            assert not hasattr(config, "bilinear_bias")
+
+            # Verify a deprecation warning was issued
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "bilinear_bias" in str(w[0].message)
+            assert "deprecated" in str(w[0].message).lower()
 
     def test_pretrained_model_validation(self):
         """Test validation for use_pretrained_model settings."""
