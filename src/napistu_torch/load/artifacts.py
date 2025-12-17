@@ -18,6 +18,7 @@ from collections import Counter
 from typing import Callable, List, Union
 
 import pandas as pd
+from napistu.constants import SBML_DFS
 from napistu.network.ng_core import NapistuGraph
 from napistu.sbml_dfs_core import SBML_dfs
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -481,14 +482,19 @@ def _create_edge_strata_by_node_type(napistu_graph: NapistuGraph) -> pd.DataFram
     ).to_frame(name=STRATIFICATION_DEFS.EDGE_STRATA)
 
 
+def _create_name_to_sid_map(napistu_graph: NapistuGraph) -> pd.DataFrame:
+    """
+    Create a map of vertex names to species ids.
+    """
+    return napistu_graph.get_vertex_series(SBML_DFS.S_ID).to_frame()
+
+
 def _create_species_identifiers(sbml_dfs: SBML_dfs) -> pd.DataFrame:
     """
     Create species identifiers.
     """
     return sbml_dfs.get_characteristic_species_ids(dogmatic=False)
 
-
-# artifact registry
 
 # Define artifacts as a list (single source of truth for names)
 DEFAULT_ARTIFACTS = [
@@ -539,6 +545,12 @@ DEFAULT_ARTIFACTS = [
         artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
         creation_func=_create_edge_strata_by_node_type,
         description="Pandas DataFrame containing edge strata by node type",
+    ),
+    ArtifactDefinition(
+        name=DEFAULT_ARTIFACTS_NAMES.NAME_TO_SID_MAP,
+        artifact_type=ARTIFACT_TYPES.PANDAS_DFS,
+        creation_func=_create_name_to_sid_map,
+        description="Pandas DataFrame containing a map of vertex names to species ids",
     ),
     ArtifactDefinition(
         name=DEFAULT_ARTIFACTS_NAMES.SPECIES_IDENTIFIERS,

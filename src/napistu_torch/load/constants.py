@@ -18,6 +18,7 @@ DEFAULT_ARTIFACTS_NAMES = SimpleNamespace(
     EDGE_STRATA_BY_EDGE_SBO_TERMS="edge_strata_by_edge_sbo_terms",
     EDGE_STRATA_BY_NODE_SPECIES_TYPE="edge_strata_by_node_species_type",
     EDGE_STRATA_BY_NODE_TYPE="edge_strata_by_node_type",
+    NAME_TO_SID_MAP="name_to_sid_map",
     SPECIES_IDENTIFIERS="species_identifiers",
 )
 

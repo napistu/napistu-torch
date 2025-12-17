@@ -8,6 +8,58 @@ import numpy as np
 from napistu_torch.ml.constants import METRIC_SUMMARIES
 
 
+def plot_auc_only(
+    summaries: Dict[str, Dict[str, Any]],
+    display_names: List[str],
+    figsize: Tuple[int, int] = (10, 6),
+    test_auc_attribute: str = METRIC_SUMMARIES.TEST_AUC,
+    val_auc_attribute: str = METRIC_SUMMARIES.VAL_AUC,
+    **kwargs,  # Pass through ylim, bar_width, etc.
+) -> Tuple[plt.Figure, plt.Axes]:
+    """
+    Plot only test/val AUC comparison.
+
+    Parameters
+    ----------
+    summaries : Dict[str, Dict[str, Any]]
+        Dictionary mapping model names to their summary metrics.
+        Each summary must contain 'test_auc' and 'val_auc'.
+    display_names : List[str]
+        Clean display names for models (must match order of summaries.keys())
+    figsize : Tuple[int, int]
+        Figure size as (width, height)
+    test_auc_attribute : str
+        Attribute name for test AUC in summaries
+    val_auc_attribute : str
+        Attribute name for validation AUC in summaries
+    **kwargs : dict
+        Additional keyword arguments to pass to _plot_test_val_auc
+
+    Returns
+    -------
+    Tuple[plt.Figure, plt.Axes]
+        Figure and axis objects
+
+    Examples
+    --------
+    >>> summaries = {
+    ...     'model1': {'test_auc': 0.75, 'val_auc': 0.74},
+    ...     'model2': {'test_auc': 0.78, 'val_auc': 0.77}
+    ... }
+    >>> display_names = ['Model 1', 'Model 2']
+    >>> fig, ax = plot_auc_only(summaries, display_names)
+    >>> plt.show()
+    """
+    test_aucs = _extract_metric(summaries, test_auc_attribute)
+    val_aucs = _extract_metric(summaries, val_auc_attribute)
+
+    fig, ax = plt.subplots(figsize=figsize)
+    _plot_test_val_auc(ax, display_names, test_aucs, val_aucs, **kwargs)
+    plt.tight_layout()
+
+    return fig, ax
+
+
 def plot_model_comparison(
     summaries: Dict[str, Dict[str, Any]],
     display_names: List[str],
@@ -27,6 +79,12 @@ def plot_model_comparison(
         Clean display names for models (must match order of summaries.keys())
     figsize : Tuple[int, int]
         Figure size as (width, height)
+    train_loss_attribute : str
+        Attribute name for train loss in summaries
+    test_auc_attribute : str
+        Attribute name for test AUC in summaries
+    val_auc_attribute : str
+        Attribute name for validation AUC in summaries
 
     Returns
     -------
@@ -43,27 +101,26 @@ def plot_model_comparison(
     >>> fig, (ax1, ax2) = plot_model_comparison(summaries, display_names)
     >>> plt.show()
     """
-    # Extract metrics from summaries
-    model_names = list(summaries.keys())
-    train_losses = [summaries[model].get(train_loss_attribute) for model in model_names]
-    test_aucs = [summaries[model].get(test_auc_attribute) for model in model_names]
-    val_aucs = [summaries[model].get(val_auc_attribute) for model in model_names]
+
+    train_losses = _extract_metric(summaries, train_loss_attribute)
+    test_aucs = _extract_metric(summaries, test_auc_attribute)
+    val_aucs = _extract_metric(summaries, val_auc_attribute)
 
     # Create figure with two subplots
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize)
 
     # Plot 1: Train Loss (with automatic ylim)
-    plot_train_loss(ax1, display_names, train_losses)
+    _plot_train_loss(ax1, display_names, train_losses)
 
     # Plot 2: Test and Val AUC (with automatic ylim)
-    plot_test_val_auc(ax2, display_names, test_aucs, val_aucs)
+    _plot_test_val_auc(ax2, display_names, test_aucs, val_aucs)
 
     plt.tight_layout()
 
     return fig, (ax1, ax2)
 
 
-def plot_train_loss(
+def _plot_train_loss(
     ax: plt.Axes,
     display_names: List[str],
     train_losses: List[float],
@@ -127,7 +184,7 @@ def plot_train_loss(
             )
 
 
-def plot_test_val_auc(
+def _plot_test_val_auc(
     ax: plt.Axes,
     display_names: List[str],
     test_aucs: List[float],
@@ -225,3 +282,13 @@ def plot_test_val_auc(
                 fontsize=8,
                 fontweight="bold",
             )
+
+
+# private functions
+
+
+def _extract_metric(
+    summaries: Dict[str, Dict[str, Any]], metric_key: str
+) -> List[Optional[float]]:
+    """Extract a metric from all model summaries."""
+    return [summaries[model].get(metric_key) for model in summaries.keys()]

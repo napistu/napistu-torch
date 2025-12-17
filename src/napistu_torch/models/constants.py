@@ -124,6 +124,59 @@ HEAD_DEFS = SimpleNamespace(
     SCORE_TO_PROBS="score_to_probs",
 )
 
+HEAD_DESCRIPTIONS = {
+    HEADS.DOT_PRODUCT: {
+        "label": "Dot product",
+        "category": "edge_prediction",
+        "description": "Simple dot product of source and target embeddings",
+    },
+    HEADS.MLP: {
+        "label": "MLP",
+        "category": "edge_prediction",
+        "description": "Multi-layer perceptron head that concatenates source and target embeddings, then applies 2-layer MLP with ReLU and dropout.",
+    },
+    HEADS.ATTENTION: {
+        "label": "Attention",
+        "category": "edge_prediction",
+        "description": "Attention head that projects nodes to query/key spaces and computes scaled dot-product attention. Learns separate transformations for source (query) and target (key) embeddings.",
+    },
+    HEADS.ROTATE: {
+        "label": "RotatE",
+        "category": "knowledge_graph_embedding",
+        "description": "RotatE: Knowledge Graph Embedding by Relational Rotation in Complex Space",
+    },
+    HEADS.TRANSE: {
+        "label": "TransE",
+        "category": "knowledge_graph_embedding",
+        "desciption": "TransE: Translating Embeddings for Modeling Multi-relational Data",
+    },
+    HEADS.DISTMULT: {
+        "label": "DistMult",
+        "category": "knowledge_graph_embedding",
+        "desciption": "DistMult: Embedding Entities and Relations for Learning and Inference in Knowledge Bases",
+    },
+    HEADS.RELATION_ATTENTION: {
+        "label": "Relation-aware attention head",
+        "category": "relation_prediction",
+        "description": "Relation-aware multi-head attention head. Uses relation embeddings as queries to attend to edge features (concatenated source/target).",
+    },
+    HEADS.RELATION_ATTENTION_MLP: {
+        "label": "Relation-aware attention head with MLP",
+        "category": "relation_prediction",
+        "description": "Processes edge features through MLP, then uses relation embeddings as queries in multi-head attention to select relevant features. Includes residual connection and output MLP for final prediction.",
+    },
+    HEADS.RELATION_GATED_MLP: {
+        "label": "Relation-gated MLP head",
+        "category": "relation_prediction",
+        "description": "Edge features are processed through MLP, then modulated by relation-specific gates (element-wise multiplication), and passed through output MLP.",
+    },
+    HEADS.NODE_CLASSIFICATION: {
+        "label": "Node classification head",
+        "category": "node_classification",
+        "description": "Node classification head that projects nodes to a hidden space and applies a single-layer MLP with ReLU and dropout.",
+    },
+}
+
 EDGE_ENCODER_ARGS = SimpleNamespace(
     HIDDEN_DIM="hidden_dim",
     DROPOUT="dropout",
