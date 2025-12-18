@@ -104,12 +104,18 @@ def plot_heatmap(
     vmax: float | None = None,
     center: float | None = None,
     cbar_label: str | None = None,
+    cbar: bool = True,
     mask_upper_triangle: bool = False,
     square: bool = False,
     annot: bool = True,
     cluster: str = HEATMAP_AXIS.NONE,
     cluster_method: str = CLUSTERING_LINKS.AVERAGE,
     cluster_metric: str = CLUSTERING_DISTANCE_METRICS.EUCLIDEAN,
+    label_size: float | None = None,
+    axis_title_size: float | None = None,
+    title_size: float | None = None,
+    annot_size: float | None = None,
+    ax=None,
 ):
     """
     Plot a heatmap with flexible labeling, masking, and clustering options.
@@ -129,7 +135,7 @@ def plot_heatmap(
     ylabel : str, optional
         Y-axis label
     figsize : tuple
-        Figure size
+        Figure size (only used if ax is None)
     cmap : str
         Colormap name
     fmt : str
@@ -142,6 +148,8 @@ def plot_heatmap(
         Value to center the colormap at
     cbar_label : str, optional
         Label for colorbar
+    cbar : bool
+        If True, show colorbar. If False, hide colorbar.
     mask_upper_triangle : bool
         If True, mask upper triangle (for symmetric matrices)
     square : bool
@@ -155,6 +163,16 @@ def plot_heatmap(
         Linkage method for clustering ('average', 'complete', 'ward', etc.)
     cluster_metric : str
         Distance metric for clustering ('euclidean', 'correlation', 'cosine', etc.)
+    label_size : float, optional
+        Font size for axis labels (xlabel, ylabel)
+    axis_title_size : float, optional
+        Font size for tick labels (xticklabels, yticklabels)
+    title_size : float, optional
+        Font size for plot title
+    annot_size : float, optional
+        Font size for cell annotations
+    ax : matplotlib.axes.Axes, optional
+        Axis to plot on. If None, creates a new figure.
 
     Returns
     -------
@@ -194,8 +212,15 @@ def plot_heatmap(
     if mask_upper_triangle:
         mask = np.triu(np.ones_like(data_plot, dtype=bool), k=1)
 
-    # Create figure
-    fig = plt.figure(figsize=figsize)
+    # Track whether we created the figure
+    created_fig = ax is None
+
+    # Create figure or use provided axis
+    if created_fig:
+        fig = plt.figure(figsize=figsize)
+        ax = plt.gca()
+    else:
+        fig = ax.get_figure()
 
     # Build kwargs for heatmap
     heatmap_kwargs = {
@@ -205,6 +230,7 @@ def plot_heatmap(
         HEATMAP_KWARGS.SQUARE: square,
         HEATMAP_KWARGS.XTICKLABELS: column_labels_plot,
         HEATMAP_KWARGS.YTICKLABELS: row_labels_plot,
+        HEATMAP_KWARGS.CBAR: cbar,
     }
 
     # Add optional parameters
@@ -218,18 +244,42 @@ def plot_heatmap(
         heatmap_kwargs[HEATMAP_KWARGS.VMAX] = vmax
     if vmin is not None:
         heatmap_kwargs[HEATMAP_KWARGS.VMIN] = vmin
+    if annot_size is not None:
+        heatmap_kwargs[HEATMAP_KWARGS.ANNOT_KWS] = {"size": annot_size}
 
-    # Plot heatmap
-    sns.heatmap(data_plot, **heatmap_kwargs)
+    # Plot heatmap on the specified axis
+    sns.heatmap(data_plot, ax=ax, **heatmap_kwargs)
 
-    # Add labels and title
-    if xlabel:
-        plt.xlabel(xlabel)
-    if ylabel:
-        plt.ylabel(ylabel)
+    # Rotate x-axis tick labels to vertical
+    xtick_kwargs = {"rotation": 90, "ha": "right"}
+    if axis_title_size is not None:
+        xtick_kwargs["fontsize"] = axis_title_size
+    ax.set_xticklabels(ax.get_xticklabels(), **xtick_kwargs)
+
+    # Set y-axis tick labels to horizontal (explicitly set rotation to 0)
+    ytick_kwargs = {"rotation": 0, "ha": "right"}
+    if axis_title_size is not None:
+        ytick_kwargs["fontsize"] = axis_title_size
+    ax.set_yticklabels(ax.get_yticklabels(), **ytick_kwargs)
+
+    # Add labels and title to the axis
+    # Explicitly set to empty string if None to suppress default labels
+    if xlabel is not None:
+        ax.set_xlabel(xlabel, fontsize=label_size)
+    else:
+        ax.set_xlabel("", fontsize=label_size)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel, fontsize=label_size)
+    else:
+        ax.set_ylabel("", fontsize=label_size)
     if title:
-        plt.title(title, fontsize=15, fontweight="bold", pad=20, loc="left")
+        title_fontsize = title_size if title_size is not None else 15
+        ax.set_title(
+            title, fontsize=title_fontsize, fontweight="bold", pad=20, loc="left"
+        )
 
-    plt.tight_layout()
+    # Only call tight_layout if we created the figure
+    if created_fig:
+        plt.tight_layout()
 
     return fig

@@ -36,7 +36,9 @@ VALID_CLUSTERING_LINKS = list[str](CLUSTERING_LINKS.__dict__.values())
 
 HEATMAP_KWARGS = SimpleNamespace(
     ANNOT="annot",
+    ANNOT_KWS="annot_kws",
     CBAR_KWS="cbar_kws",
+    CBAR="cbar",
     CMAP="cmap",
     CENTER="center",
     FMT="fmt",

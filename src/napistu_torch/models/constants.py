@@ -148,12 +148,12 @@ HEAD_DESCRIPTIONS = {
     HEADS.TRANSE: {
         "label": "TransE",
         "category": "knowledge_graph_embedding",
-        "desciption": "TransE: Translating Embeddings for Modeling Multi-relational Data",
+        "description": "TransE: Translating Embeddings for Modeling Multi-relational Data",
     },
     HEADS.DISTMULT: {
         "label": "DistMult",
         "category": "knowledge_graph_embedding",
-        "desciption": "DistMult: Embedding Entities and Relations for Learning and Inference in Knowledge Bases",
+        "description": "DistMult: Embedding Entities and Relations for Learning and Inference in Knowledge Bases",
     },
     HEADS.RELATION_ATTENTION: {
         "label": "Relation-aware attention head",

@@ -239,6 +239,38 @@ def compute_cosine_distances_torch(
         return result
 
 
+def compute_effective_dimensionality(vectors: torch.Tensor) -> np.ndarray:
+    """
+    Compute effective dimensionality (inverse participation ratio) for each vector.
+
+    Measures how many dimensions a vector "uses".
+    - If all components equal: eff_dim ≈ n (fully distributed)
+    - If one component dominates: eff_dim ≈ 1 (maximally sparse)
+
+    Formula: (sum of squares)^2 / (sum of fourth powers)
+
+    Parameters
+    ----------
+    vectors : torch.Tensor
+        Shape [num_vectors, embedding_dim]
+
+    Returns
+    -------
+    np.ndarray
+        Effective dimensionality for each vector
+    """
+    vec_sq = vectors**2
+    sum_sq = vec_sq.sum(dim=1)
+    sum_fourth = (vec_sq**2).sum(dim=1)
+
+    # Avoid division by zero
+    eff_dim = torch.where(
+        sum_fourth > 0, sum_sq**2 / sum_fourth, torch.zeros_like(sum_sq)
+    )
+
+    return eff_dim.numpy()
+
+
 def compute_spearman_correlation_torch(
     x: Union[np.ndarray, torch.Tensor],
     y: Union[np.ndarray, torch.Tensor],
