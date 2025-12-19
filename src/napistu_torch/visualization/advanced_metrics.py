@@ -4,11 +4,12 @@ from typing import List, Optional, Tuple
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 
 from napistu_torch.utils.labeling_utils import format_metric_label
+from napistu_torch.utils.optional import import_seaborn, require_seaborn
 
 
+@require_seaborn
 def plot_combined_grouped_barplot(
     df: pd.DataFrame,
     figsize: Tuple[int, int] = (16, 10),
@@ -88,6 +89,10 @@ def plot_combined_grouped_barplot(
 
     fig, axes = plt.subplots(1, len(value_vars), figsize=figsize)
 
+    # Ensure axes is always iterable (plt.subplots returns single Axes when ncols=1)
+    if len(value_vars) == 1:
+        axes = [axes]
+
     for ax, metric in zip(axes, value_vars):
         plot_grouped_barplot(
             df=df,
@@ -110,6 +115,7 @@ def plot_combined_grouped_barplot(
     return fig, axes
 
 
+@require_seaborn
 def plot_grouped_barplot(
     df: pd.DataFrame,
     category: str,
@@ -178,6 +184,7 @@ def plot_grouped_barplot(
     >>> })
     >>> plot_grouped_bars(df, 'relation_type', 'val_auc', 'experiment', orientation='horizontal')
     """
+    sns = import_seaborn()
 
     # Filter out None values
     plot_df = df[df[value].notna()].copy()

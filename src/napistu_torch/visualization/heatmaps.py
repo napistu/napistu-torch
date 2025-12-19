@@ -2,10 +2,10 @@
 
 import matplotlib.pyplot as plt
 import numpy as np
-import seaborn as sns
 from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import pdist
 
+from napistu_torch.utils.optional import import_seaborn, require_seaborn
 from napistu_torch.visualization.constants import (
     CLUSTERING_DISTANCE_METRICS,
     CLUSTERING_LINKS,
@@ -90,6 +90,7 @@ def hierarchical_cluster(
     return row_order, col_order, row_linkage, col_linkage
 
 
+@require_seaborn
 def plot_heatmap(
     data: np.ndarray,
     row_labels: list,
@@ -179,6 +180,8 @@ def plot_heatmap(
     fig : matplotlib.figure.Figure
         The figure object
     """
+    sns = import_seaborn()
+
     # Convert labels to lists to handle dict_values and other non-list types
     row_labels_list = list[str](row_labels)
 

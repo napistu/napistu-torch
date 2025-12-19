@@ -1,6 +1,6 @@
 """Evaluation functions for relation prediction and relation-stratified loss."""
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,7 @@ from napistu_torch.utils.tensor_utils import (
 
 
 def calculate_relation_type_confusion_and_correlation(
-    model: LightningModule, napistu_data: NapistuData, normalize: str = "true"
+    model: LightningModule, napistu_data: NapistuData, normalize: Optional[str] = "true"
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """ "
     Calculate the confusion matrix for the relation types in the test set.
@@ -30,6 +30,14 @@ def calculate_relation_type_confusion_and_correlation(
         The NapistuData instance to evaluate on.
     normalize: str
         The normalization method to use for the confusion matrix. Defaults to 'true'.
+        Normalization mode for confusion matrix:
+        - 'true': normalize over true labels (rows sum to 1)
+          Shows recall-like metrics: proportion of each true class predicted as each class
+        - 'pred': normalize over predicted labels (columns sum to 1)
+          Shows precision-like metrics: proportion of each predicted class from each true class
+        - 'all': normalize over all samples (entire matrix sums to 1)
+          Shows overall proportion of samples in each true/pred combination
+        - None: no normalization, returns raw counts
 
     Returns
     -------
@@ -73,6 +81,7 @@ def compare_relation_type_predictions_to_perturbseq_truth(
     distinct_harmonizome_perturbseq_interactions: pd.DataFrame,
     perturbseq_order: list[str],
     relation_type_order: list[str],
+    normalize: Optional[str] = "true",
 ) -> tuple[pd.DataFrame, float]:
     """
     Compare the relation-type predictions of a model to the ground-truth PerturbSeq data.
@@ -95,6 +104,8 @@ def compare_relation_type_predictions_to_perturbseq_truth(
         The order of the perturbseq relation_types.
     relation_type_order: list[str]
         The order of the relation_types.
+    normalize: str
+        The normalization method to use for the counts matrix. One of 'true', 'pred', or None. Defaults to 'true'.
 
     Returns
     -------
@@ -142,11 +153,25 @@ def compare_relation_type_predictions_to_perturbseq_truth(
         .reindex(relation_type_order)
     )
 
-    normalized_predictions_w_realized_regulation_counts = (
-        predictions_w_realized_regulation_counts
-        # take the argmax over the predicted_direction columns
-        .apply(lambda row: row / row.sum(), axis=1)
-    )
+    if normalize is not None:
+        if normalize == "true":
+            normalized_predictions_w_realized_regulation_counts = (
+                predictions_w_realized_regulation_counts.apply(
+                    lambda col: col / col.sum(), axis=0
+                )
+            )
+        elif normalize == "pred":
+            normalized_predictions_w_realized_regulation_counts = (
+                predictions_w_realized_regulation_counts.apply(
+                    lambda row: row / row.sum(), axis=1
+                )
+            )
+        else:
+            raise ValueError(f"Invalid normalization method: {normalize}")
+    else:
+        normalized_predictions_w_realized_regulation_counts = (
+            predictions_w_realized_regulation_counts
+        )
 
     chi2_stat, _, _, _ = chi2_contingency(
         predictions_w_realized_regulation_counts.values

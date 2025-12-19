@@ -41,3 +41,34 @@ def require_lightning(func: _F) -> _F:
         return func(*args, **kwargs)
 
     return cast(_F, wrapper)
+
+
+def is_seaborn_available() -> bool:
+    """Return True if seaborn can be imported."""
+
+    return importlib.util.find_spec(OPTIONAL_DEFS.SEABORN_PACKAGE) is not None
+
+
+def import_seaborn():
+    """Import and return seaborn, raising an informative error if missing."""
+
+    try:
+        return importlib.import_module(OPTIONAL_DEFS.SEABORN_PACKAGE)
+    except (
+        ModuleNotFoundError
+    ) as exc:  # pragma: no cover - executed when dependency missing
+        raise ImportError(
+            "This functionality requires `seaborn`. "
+            f"Install with `pip install napistu-torch[{OPTIONAL_DEFS.SEABORN_EXTRA}]`."
+        ) from exc
+
+
+def require_seaborn(func: _F) -> _F:
+    """Decorator ensuring seaborn is available before calling *func*."""
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any):
+        import_seaborn()
+        return func(*args, **kwargs)
+
+    return cast(_F, wrapper)
