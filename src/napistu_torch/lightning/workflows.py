@@ -873,7 +873,7 @@ def _load_pretrained_weights(
             encoder_state_dict[encoder_key] = value
         elif key.startswith("task.head."):
             # Remove "task.head." prefix - head expects keys without prefix
-            # e.g., "task.head.bilinear.weight" -> "bilinear.weight"
+            # e.g., "task.head.attention.weight" -> "attention.weight"
             head_key = key.replace("task.head.", "")
             head_state_dict[head_key] = value
 

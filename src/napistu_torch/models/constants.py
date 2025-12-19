@@ -44,6 +44,9 @@ ENCODER_DEFS = SimpleNamespace(
     # derived encoder attributes
     EDGE_WEIGHTING_TYPE="edge_weighting_type",
     EDGE_WEIGHTING_VALUE="edge_weighting_value",
+    # defaults
+    DEFAULT_NUM_LAYERS=3,
+    DEFAULT_DROPOUT=0.1,
 )
 
 # select the relevant arguments and convert from the {encoder}_{arg} convention back to just arg
@@ -65,21 +68,31 @@ HEADS = SimpleNamespace(
     # standard symmetric edge prediction heads
     DOT_PRODUCT="dot_product",
     # expressive edge prediction heads
+    ATTENTION="attention",
     MLP="mlp",
-    BILINEAR="bilinear",
     # relation prediction heads
     ROTATE="rotate",
     TRANSE="transe",
     DISTMULT="distmult",
+    RELATION_ATTENTION="relation_attention",
+    RELATION_GATED_MLP="relation_gated_mlp",
+    RELATION_ATTENTION_MLP="relation_attention_mlp",
 )
 
 VALID_HEADS = list(HEADS.__dict__.values())
 
-RELATION_AWARE_HEADS = {HEADS.ROTATE, HEADS.TRANSE, HEADS.DISTMULT}
+RELATION_AWARE_HEADS = {
+    HEADS.ROTATE,
+    HEADS.TRANSE,
+    HEADS.DISTMULT,
+    HEADS.RELATION_ATTENTION,
+    HEADS.RELATION_GATED_MLP,
+    HEADS.RELATION_ATTENTION_MLP,
+}
 EDGE_PREDICTION_HEADS = {
     HEADS.DOT_PRODUCT,
     HEADS.MLP,
-    HEADS.BILINEAR,
+    HEADS.ATTENTION,
 } | RELATION_AWARE_HEADS
 
 # Head-specific parameter names
@@ -88,11 +101,81 @@ HEAD_SPECIFIC_ARGS = SimpleNamespace(
     MLP_HIDDEN_DIM="mlp_hidden_dim",
     MLP_NUM_LAYERS="mlp_num_layers",
     MLP_DROPOUT="mlp_dropout",
-    BILINEAR_BIAS="bilinear_bias",
     NC_DROPOUT="nc_dropout",
     ROTATE_MARGIN="rotate_margin",
     TRANSE_MARGIN="transe_margin",
+    RELATION_EMB_DIM="relation_emb_dim",
+    RELATION_ATTENTION_HEADS="relation_attention_heads",
 )
+
+HEAD_DEFS = SimpleNamespace(
+    DEFAULT_MLP_HIDDEN_DIM=128,
+    DEFAULT_MLP_NUM_LAYERS=2,
+    DEFAULT_MLP_DROPOUT=0.1,
+    DEFAULT_NC_DROPOUT=0.1,
+    DEFAULT_ROTATE_MARGIN=0.1,
+    DEFAULT_TRANSE_MARGIN=0.1,
+    DEFAULT_RELATION_EMB_DIM=64,
+    DEFAULT_RELATION_ATTENTION_HEADS=4,
+    DEFAULT_INIT_HEAD_AS_IDENTITY=False,
+    # attributes
+    LOSS_TYPE="loss_type",
+    MARGIN="margin",
+    SCORE_TO_PROBS="score_to_probs",
+)
+
+HEAD_DESCRIPTIONS = {
+    HEADS.DOT_PRODUCT: {
+        "label": "Dot product",
+        "category": "edge_prediction",
+        "description": "Simple dot product of source and target embeddings",
+    },
+    HEADS.MLP: {
+        "label": "MLP",
+        "category": "edge_prediction",
+        "description": "Multi-layer perceptron head that concatenates source and target embeddings, then applies 2-layer MLP with ReLU and dropout.",
+    },
+    HEADS.ATTENTION: {
+        "label": "Attention",
+        "category": "edge_prediction",
+        "description": "Attention head that projects nodes to query/key spaces and computes scaled dot-product attention. Learns separate transformations for source (query) and target (key) embeddings.",
+    },
+    HEADS.ROTATE: {
+        "label": "RotatE",
+        "category": "knowledge_graph_embedding",
+        "description": "RotatE: Knowledge Graph Embedding by Relational Rotation in Complex Space",
+    },
+    HEADS.TRANSE: {
+        "label": "TransE",
+        "category": "knowledge_graph_embedding",
+        "description": "TransE: Translating Embeddings for Modeling Multi-relational Data",
+    },
+    HEADS.DISTMULT: {
+        "label": "DistMult",
+        "category": "knowledge_graph_embedding",
+        "description": "DistMult: Embedding Entities and Relations for Learning and Inference in Knowledge Bases",
+    },
+    HEADS.RELATION_ATTENTION: {
+        "label": "Relation-aware attention head",
+        "category": "relation_prediction",
+        "description": "Relation-aware multi-head attention head. Uses relation embeddings as queries to attend to edge features (concatenated source/target).",
+    },
+    HEADS.RELATION_ATTENTION_MLP: {
+        "label": "Relation-aware attention head with MLP",
+        "category": "relation_prediction",
+        "description": "Processes edge features through MLP, then uses relation embeddings as queries in multi-head attention to select relevant features. Includes residual connection and output MLP for final prediction.",
+    },
+    HEADS.RELATION_GATED_MLP: {
+        "label": "Relation-gated MLP head",
+        "category": "relation_prediction",
+        "description": "Edge features are processed through MLP, then modulated by relation-specific gates (element-wise multiplication), and passed through output MLP.",
+    },
+    HEADS.NODE_CLASSIFICATION: {
+        "label": "Node classification head",
+        "category": "node_classification",
+        "description": "Node classification head that projects nodes to a hidden space and applies a single-layer MLP with ReLU and dropout.",
+    },
+}
 
 EDGE_ENCODER_ARGS = SimpleNamespace(
     HIDDEN_DIM="hidden_dim",
@@ -102,6 +185,12 @@ EDGE_ENCODER_ARGS = SimpleNamespace(
     EDGE_ENCODER_DIM="edge_encoder_dim",
     EDGE_ENCODER_DROPOUT="edge_encoder_dropout",
     EDGE_ENCODER_INIT_BIAS="edge_encoder_init_bias",
+)
+
+EDGE_ENCODER_DEFS = SimpleNamespace(
+    DEFAULT_HIDDEN_DIM=32,
+    DEFAULT_DROPOUT=0.1,
+    DEFAULT_INIT_BIAS=None,
 )
 
 EDGE_ENCODER_ARGS_TO_MODEL_CONFIG_NAMES = {

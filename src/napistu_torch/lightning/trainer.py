@@ -22,6 +22,7 @@ from napistu_torch.lightning.callbacks import (
     ExperimentTimingCallback,
     ScoreDistributionMonitoringCallback,
     SetHyperparametersCallback,
+    WeightMonitoringCallback,
 )
 from napistu_torch.lightning.constants import (
     TRAINER_MODES,
@@ -111,6 +112,8 @@ class NapistuTrainer:
             accelerator=self.config.training.accelerator,
             devices=self.config.training.devices,
             precision=self.config.training.precision,
+            # Gradient clipping
+            gradient_clip_val=self.config.training.gradient_clip_val,
             # Logging and callbacks
             logger=wandb_logger,
             callbacks=all_callbacks,
@@ -202,6 +205,10 @@ class NapistuTrainer:
                     log_every_n_epochs=self.config.training.embedding_norm_monitoring_log_every_n_epochs
                 )
             )
+
+        # Weight monitoring (check for NaN/Inf in weights)
+        if self.config.training.weight_monitoring:
+            callbacks.append(WeightMonitoringCallback())
 
         # Learning rate monitoring (always useful)
         callbacks.append(LearningRateMonitor(logging_interval="epoch"))

@@ -1,6 +1,7 @@
 """Tests for napistu_torch configs module."""
 
 import tempfile
+import warnings
 from pathlib import Path
 
 import pytest
@@ -165,7 +166,6 @@ class TestModelConfig:
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_NUM_LAYERS)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.MLP_DROPOUT)
-        assert hasattr(config, HEAD_SPECIFIC_ARGS.BILINEAR_BIAS)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.NC_DROPOUT)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.ROTATE_MARGIN)
         assert hasattr(config, HEAD_SPECIFIC_ARGS.TRANSE_MARGIN)
@@ -175,7 +175,6 @@ class TestModelConfig:
             mlp_hidden_dim=128,
             mlp_num_layers=3,
             mlp_dropout=0.2,
-            bilinear_bias=False,
             nc_dropout=0.15,
             rotate_margin=12.0,
             transe_margin=2.0,
@@ -183,7 +182,6 @@ class TestModelConfig:
         assert config.mlp_hidden_dim == 128
         assert config.mlp_num_layers == 3
         assert config.mlp_dropout == 0.2
-        assert config.bilinear_bias is False
         assert config.nc_dropout == 0.15
         assert config.rotate_margin == 12.0
         assert config.transe_margin == 2.0
@@ -284,10 +282,13 @@ class TestModelConfig:
 
         # Test with different encoder and head combinations
         config = ModelConfig(
-            encoder=ENCODERS.GAT, head=HEADS.BILINEAR, hidden_channels=256, num_layers=5
+            encoder=ENCODERS.GAT,
+            head=HEADS.ATTENTION,
+            hidden_channels=256,
+            num_layers=5,
         )
         arch_str = config.get_architecture_string()
-        assert arch_str == "gat-bilinear_h256_l5"
+        assert arch_str == "gat-attention_h256_l5"
 
         # Test with default values (should use defaults for hidden_channels and num_layers)
         config = ModelConfig(encoder=ENCODERS.SAGE, head=HEADS.MLP)
@@ -300,6 +301,25 @@ class TestModelConfig:
         with pytest.raises(ValidationError) as exc_info:
             ModelConfig(invalid_field="value")
         assert "Extra inputs are not permitted" in str(exc_info.value)
+
+    def test_deprecated_fields_removed(self):
+        """Test that deprecated fields are removed and warned about."""
+        # Test that bilinear_bias is removed and a warning is issued
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            config = ModelConfig(encoder="sage", head="dot_product", bilinear_bias=True)
+
+            # Verify the config was created successfully
+            assert config.encoder == "sage"
+            assert config.head == "dot_product"
+            # Verify bilinear_bias is not in the config
+            assert not hasattr(config, "bilinear_bias")
+
+            # Verify a deprecation warning was issued
+            assert len(w) == 1
+            assert issubclass(w[0].category, DeprecationWarning)
+            assert "bilinear_bias" in str(w[0].message)
+            assert "deprecated" in str(w[0].message).lower()
 
     def test_pretrained_model_validation(self):
         """Test validation for use_pretrained_model settings."""
@@ -927,9 +947,9 @@ class TestExperimentConfig:
         assert experiment_name == "gat-dot_product_h256_l5_node_classification"
 
         # Test with explicit head
-        config.model.head = HEADS.BILINEAR
+        config.model.head = HEADS.ATTENTION
         experiment_name = config.get_experiment_name()
-        assert experiment_name == "gat-bilinear_h256_l5_node_classification"
+        assert experiment_name == "gat-attention_h256_l5_node_classification"
 
     @pytest.mark.skip_on_windows
     def test_anonymize(self, stubbed_data_config):

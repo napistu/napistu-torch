@@ -1,4 +1,5 @@
 import logging
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Literal, Optional
@@ -29,8 +30,10 @@ from napistu_torch.constants import (
 from napistu_torch.load.artifacts import ensure_stratify_by_artifact_name
 from napistu_torch.ml.constants import METRIC_SUMMARIES, METRICS
 from napistu_torch.models.constants import (
+    EDGE_ENCODER_DEFS,
     ENCODER_DEFS,
     ENCODERS_SUPPORTING_EDGE_WEIGHTING,
+    HEAD_DEFS,
     MODEL_DEFS,
     RELATION_AWARE_HEADS,
     VALID_ENCODERS,
@@ -56,20 +59,40 @@ class ModelConfig(BaseModel):
         Return a formatted string representation of the model architecture.
     """
 
-    encoder: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER])
-    hidden_channels: int = Field(default=128, gt=0)
-    num_layers: int = Field(default=3, ge=1, le=10)
-    dropout: float = Field(default=0.2, ge=0.0, lt=1.0)
+    encoder: str = Field(
+        default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.ENCODER],
+        description="Type of encoder to use",
+    )
+    hidden_channels: int = Field(
+        default=128, gt=0, description="Hidden dimension for the encoder"
+    )
+    num_layers: int = Field(
+        default=ENCODER_DEFS.DEFAULT_NUM_LAYERS,
+        ge=1,
+        le=10,
+        description="Number of layers for the encoder",
+    )
+    dropout: float = Field(
+        default=ENCODER_DEFS.DEFAULT_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for the encoder",
+    )
 
     # Head-specific fields (optional, with defaults)
-    head: str = Field(default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD])
+    head: str = Field(
+        default=MODEL_CONFIG_DEFAULTS[MODEL_CONFIG.HEAD],
+        description="Type of head to use",
+    )
     init_head_as_identity: Optional[bool] = Field(
         default=False,
         description="Whether to initialize the head to approximate an identity transformation",
     )
 
     # Model-specific fields (optional, with defaults)
-    gat_heads: Optional[int] = Field(default=4, gt=0)  # For GAT
+    gat_heads: Optional[int] = Field(
+        default=4, gt=0, description="Number of heads for GAT"
+    )  # For GAT
     gat_concat: Optional[bool] = True  # For GAT
     graph_conv_aggregator: Optional[str] = (
         ENCODER_DEFS.GRAPH_CONV_DEFAULT_AGGREGATOR
@@ -77,26 +100,63 @@ class ModelConfig(BaseModel):
     sage_aggregator: Optional[str] = ENCODER_DEFS.SAGE_DEFAULT_AGGREGATOR  # For SAGE
 
     # Head-specific fields (optional, with defaults)
-    mlp_hidden_dim: Optional[int] = 64  # For MLP head
-    mlp_num_layers: Optional[int] = Field(default=2, ge=1)  # For MLP head
-    mlp_dropout: Optional[float] = Field(default=0.1, ge=0.0, lt=1.0)  # For MLP head
-    bilinear_bias: Optional[bool] = True  # For bilinear head
+    mlp_hidden_dim: Optional[int] = Field(
+        default=HEAD_DEFS.DEFAULT_MLP_HIDDEN_DIM,
+        gt=0,
+        description="Hidden dimension for MLP-based heads. Also used as attention_dim for AttentionHead.",
+    )
+    mlp_num_layers: Optional[int] = Field(
+        default=HEAD_DEFS.DEFAULT_MLP_NUM_LAYERS,
+        ge=1,
+        description="Number of hidden layers for MLP-based heads",
+    )
+    mlp_dropout: Optional[float] = Field(
+        default=HEAD_DEFS.DEFAULT_MLP_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for MLP-based heads",
+    )
     nc_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0
-    )  # For node classification head
-    rotate_margin: Optional[float] = Field(default=9.0, gt=0.0)  # For RotatE head
-    transe_margin: Optional[float] = Field(default=1.0, gt=0.0)  # For TransE head
+        default=HEAD_DEFS.DEFAULT_NC_DROPOUT,
+        ge=0.0,
+        lt=1.0,
+        description="Dropout for node classification head",
+    )
+    rotate_margin: Optional[float] = Field(
+        default=HEAD_DEFS.DEFAULT_ROTATE_MARGIN,
+        gt=0.0,
+        description="Margin for RotatE head",
+    )
+    transe_margin: Optional[float] = Field(
+        default=HEAD_DEFS.DEFAULT_TRANSE_MARGIN,
+        gt=0.0,
+        description="Margin for TransE head",
+    )
+    # Relation-aware MLP head parameters
+    relation_emb_dim: Optional[int] = Field(
+        default=HEAD_DEFS.DEFAULT_RELATION_EMB_DIM,
+        gt=0,
+        description="Dimension of relation embeddings for relation-aware heads (MLP and attention variants)",
+    )
+    relation_attention_heads: Optional[int] = Field(
+        default=HEAD_DEFS.DEFAULT_RELATION_ATTENTION_HEADS,
+        gt=0,
+        description="Number of attention heads for RelationAttentionMLP",
+    )
 
     # Edge encoder fields (optional, with defaults)
     use_edge_encoder: Optional[bool] = MODEL_CONFIG_DEFAULTS[
         MODEL_CONFIG.USE_EDGE_ENCODER
     ]  # Whether to use edge encoder
-    edge_encoder_dim: Optional[int] = Field(default=32, gt=0)  # Edge encoder hidden dim
+    edge_encoder_dim: Optional[int] = Field(
+        default=EDGE_ENCODER_DEFS.DEFAULT_HIDDEN_DIM, gt=0
+    )  # Edge encoder hidden dim
     edge_encoder_dropout: Optional[float] = Field(
-        default=0.1, ge=0.0, lt=1.0
+        default=EDGE_ENCODER_DEFS.DEFAULT_DROPOUT, ge=0.0, lt=1.0
     )  # Edge encoder dropout
     edge_encoder_init_bias: Optional[float] = Field(
-        default=None, description="Initial bias for edge encoder output layer"
+        default=EDGE_ENCODER_DEFS.DEFAULT_INIT_BIAS,
+        description="Initial bias for edge encoder output layer",
     )  # Edge encoder initial bias
 
     # Using a pretrained model
@@ -163,6 +223,35 @@ class ModelConfig(BaseModel):
                     f"Valid: {VALID_PRETRAINED_COMPONENT_SOURCES}"
                 )
         return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def remove_deprecated_fields(cls, data):
+        """
+        Remove deprecated fields from data before validation and warn about them.
+
+        This allows old configs to load while maintaining strict validation (extra="forbid").
+        """
+        if isinstance(data, dict):
+            deprecated_fields = {
+                "bilinear_bias": "The 'bilinear_bias' field has been removed and is no longer used.",
+            }
+
+            # Create a copy to avoid modifying the original dict during iteration
+            data = dict(data)
+
+            for field_name, message in deprecated_fields.items():
+                if field_name in data:
+                    warnings.warn(
+                        f"Deprecated field '{field_name}' found in ModelConfig. {message} "
+                        "This field will be ignored. Please update your config file.",
+                        DeprecationWarning,
+                        stacklevel=2,
+                    )
+                    # Remove the deprecated field
+                    del data[field_name]
+
+        return data
 
     @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
@@ -237,7 +326,9 @@ class ModelConfig(BaseModel):
 
         return "\n".join(lines)
 
-    model_config = ConfigDict(extra="forbid")  # Catch typos
+    model_config = ConfigDict(
+        extra="forbid"
+    )  # Catch typos, deprecated fields removed by validator
 
 
 class DataConfig(BaseModel):
@@ -315,6 +406,12 @@ class TrainingConfig(BaseModel):
     weight_decay: float = Field(default=0.0, ge=0.0)
     optimizer: str = Field(default=OPTIMIZERS.ADAM)
     scheduler: Optional[str] = None
+    gradient_clip_val: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        description="Gradient clipping value (max norm). If None, no clipping. Recommended: 1.0 for brittle heads.",
+        validate_default=False,  # Allow None default without validation
+    )
 
     epochs: int = Field(default=200, gt=0)
     batches_per_epoch: int = Field(default=1, gt=0)
@@ -360,6 +457,10 @@ class TrainingConfig(BaseModel):
     )
     embedding_norm_monitoring_log_every_n_epochs: int = Field(
         default=10, ge=1, description="Log embedding norm statistics every N epochs"
+    )
+    weight_monitoring: bool = Field(
+        default=True,
+        description="Enable weight monitoring callback to detect NaN/Inf in model weights",
     )
 
     def get_checkpoint_dir(self, output_dir: Path) -> Path:

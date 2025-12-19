@@ -275,7 +275,7 @@ class TestCheckpoint:
     def test_get_head_config(self, napistu_data):
         """Test get_head_config returns head metadata as dict."""
         head_metadata = HeadMetadata(
-            head=HEADS.BILINEAR,
+            head=HEADS.ATTENTION,
             hidden_channels=128,
         )
         checkpoint_dict = create_minimal_checkpoint_dict(
@@ -286,7 +286,7 @@ class TestCheckpoint:
 
         head_config = checkpoint.get_head_config()
         assert isinstance(head_config, dict)
-        assert head_config[MODEL_DEFS.HEAD] == HEADS.BILINEAR
+        assert head_config[MODEL_DEFS.HEAD] == HEADS.ATTENTION
         assert head_config[MODEL_DEFS.HIDDEN_CHANNELS] == 128
 
     def test_get_data_summary(self, napistu_data):
