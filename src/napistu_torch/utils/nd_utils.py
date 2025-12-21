@@ -1,10 +1,70 @@
 """Utilities for NapistuData objects."""
 
-from typing import Any, Dict
+from hashlib import sha256
+from typing import Any, Dict, Optional
 
 import pandas as pd
+from torch import Tensor
 
 from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_SUMMARIES, PYG
+
+
+def add_optional_attr(summary_dict: Dict[str, Any], attr_name: str, value: Any) -> None:
+    """Add an attribute to NapistuData summary if it is not None."""
+    if value is not None:
+        summary_dict[attr_name] = value
+
+
+def compute_mask_hashes(
+    train_mask: Optional[Tensor] = None,
+    val_mask: Optional[Tensor] = None,
+    test_mask: Optional[Tensor] = None,
+) -> Dict[str, Optional[str]]:
+    """
+    Compute deterministic hashes of train/val/test masks.
+
+    Uses SHA256 hash of the mask tensor bytes for reproducible comparison.
+    Returns None for missing masks.
+
+    Parameters
+    ----------
+    train_mask : Optional[torch.Tensor]
+        Training mask tensor
+    val_mask : Optional[torch.Tensor]
+        Validation mask tensor
+    test_mask : Optional[torch.Tensor]
+        Test mask tensor
+
+    Returns
+    -------
+    Dict[str, Optional[str]]
+        Dictionary with keys 'train_mask_hash', 'val_mask_hash', 'test_mask_hash'
+        Values are SHA256 hex strings or None if mask not provided
+
+    Examples
+    --------
+    >>> hashes = compute_mask_hashes(train_mask=data.train_mask)
+    >>> print(hashes['train_mask_hash'][:16])  # First 16 chars
+    'a1b2c3d4e5f6g7h8'
+    """
+    hash_dict = {}
+
+    masks = {
+        NAPISTU_DATA.TRAIN_MASK: train_mask,
+        NAPISTU_DATA.VAL_MASK: val_mask,
+        NAPISTU_DATA.TEST_MASK: test_mask,
+    }
+
+    for mask_name, mask in masks.items():
+        if mask is not None:
+            # Convert to numpy for consistent byte representation
+            mask_bytes = mask.cpu().numpy().tobytes()
+            hash_hex = sha256(mask_bytes).hexdigest()
+            hash_dict[f"{mask_name}_hash"] = hash_hex
+        else:
+            hash_dict[f"{mask_name}_hash"] = None
+
+    return hash_dict
 
 
 def format_summary(data: Dict[str, Any]) -> pd.DataFrame:
@@ -14,7 +74,7 @@ def format_summary(data: Dict[str, Any]) -> pd.DataFrame:
     Parameters
     ----------
     data : Dict[str, Any]
-        Summary dictionary from NapistuData.get_summary()
+        Summary dictionary from NapistuData.get_summary("detailed")
 
     Returns
     -------

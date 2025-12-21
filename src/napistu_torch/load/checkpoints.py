@@ -11,13 +11,13 @@ from typing import Any, Dict, List, Optional, Union
 import torch
 from pydantic import BaseModel, Field, field_validator
 
-from napistu_torch.configs import ModelConfig
+from napistu_torch.configs import ModelConfig, TrainingConfig
 from napistu_torch.constants import (
     MODEL_COMPONENTS,
     MODEL_CONFIG,
-    NAPISTU_DATA_SUMMARIES,
-    PYG,
+    NAPISTU_DATA_SUMMARY_TYPES,
 )
+from napistu_torch.data.compare_napistu_data import validate_same_data
 from napistu_torch.load.constants import (
     CHECKPOINT_HYPERPARAMETERS,
     CHECKPOINT_STRUCTURE,
@@ -134,9 +134,14 @@ class Checkpoint:
         checkpoint_summary = self.get_data_summary()
 
         # Get current data summary (simplified, matching checkpoint format)
-        current_summary = napistu_data.get_summary(simplify=True)
+        current_summary = napistu_data.get_summary(
+            NAPISTU_DATA_SUMMARY_TYPES.VALIDATION
+        )
 
-        _validate_same_data(checkpoint_summary, current_summary)
+        validate_same_data(
+            current_summary=current_summary,
+            reference_summary=checkpoint_summary,
+        )
 
     def get_edge_encoder_config(self) -> Dict[str, Any]:
         """
@@ -447,6 +452,34 @@ class DataMetadata(BaseModel):
         None, ge=0, description="Number of test edges"
     )
 
+    # Optional, feature metadata
+    vertex_feature_names: Optional[List[str]] = Field(
+        None, description="Ordered list of vertex feature names"
+    )
+    edge_feature_names: Optional[List[str]] = Field(
+        None, description="Ordered list of edge feature names"
+    )
+    vertex_feature_name_aliases: Optional[Dict[str, str]] = Field(
+        None, description="Mapping from aliased to canonical vertex feature names"
+    )
+    edge_feature_name_aliases: Optional[Dict[str, str]] = Field(
+        None, description="Mapping from aliased to canonical edge feature names"
+    )
+    relation_type_labels: Optional[List[str]] = Field(
+        None, description="Ordered list of relation type labels"
+    )
+
+    # Optional, mask hashes for detecting train/val/test split changes
+    train_mask_hash: Optional[str] = Field(
+        None, description="Hash of training mask for split verification"
+    )
+    val_mask_hash: Optional[str] = Field(
+        None, description="Hash of validation mask for split verification"
+    )
+    test_mask_hash: Optional[str] = Field(
+        None, description="Hash of test mask for split verification"
+    )
+
     model_config = {"extra": "forbid"}
 
 
@@ -558,7 +591,9 @@ class CheckpointHyperparameters(BaseModel):
     This validates the checkpoint['hyper_parameters'] structure.
     """
 
-    config: Any = Field(..., description="Training configuration (ExperimentConfig)")
+    config: Dict[str, Any] = Field(
+        ..., description="Training configuration as dictionary"
+    )
     model: ModelMetadata = Field(..., description="Model architecture metadata")
     data: DataMetadata = Field(..., description="Training data metadata")
     environment: Optional[EnvironmentInfo] = Field(
@@ -574,7 +609,7 @@ class CheckpointHyperparameters(BaseModel):
         cls,
         task: Any,
         napistu_data: NapistuData,
-        training_config: Optional[Any] = None,
+        training_config: Optional[TrainingConfig] = None,
         capture_environment: bool = True,
         extra_packages: Optional[list[str]] = None,
     ) -> Dict[str, Any]:
@@ -591,7 +626,7 @@ class CheckpointHyperparameters(BaseModel):
             Task object with get_summary() method that returns model metadata
         napistu_data : NapistuData
             NapistuData object to extract data metadata from
-        training_config : Optional[Any], optional
+        training_config : Optional[TrainingConfig], optional
             Training configuration object (usually set by Lightning's
             save_hyperparameters()), by default None
         capture_environment : bool, optional
@@ -629,7 +664,7 @@ class CheckpointHyperparameters(BaseModel):
             )
 
         model_metadata = task.get_summary()
-        data_metadata = napistu_data.get_summary(simplify=True)
+        data_metadata = napistu_data.get_summary(NAPISTU_DATA_SUMMARY_TYPES.VALIDATION)
 
         # Build hyperparameters dict
         hparams = {
@@ -644,7 +679,12 @@ class CheckpointHyperparameters(BaseModel):
 
         # Add config if provided (will be added by Lightning's save_hyperparameters)
         if training_config is not None:
-            hparams[CHECKPOINT_HYPERPARAMETERS.CONFIG] = training_config
+            if not isinstance(training_config, TrainingConfig):
+                raise ValueError(
+                    f"training_config must be a TrainingConfig, got {type(training_config)}"
+                )
+            # Convert TrainingConfig (Pydantic model) to dict
+            hparams[CHECKPOINT_HYPERPARAMETERS.CONFIG] = training_config.model_dump()
 
         # Validate the structure
         if training_config is not None:
@@ -685,73 +725,3 @@ class CheckpointStructure(BaseModel):
         if not v:
             raise ValueError("state_dict cannot be empty")
         return v
-
-
-# private functions
-
-
-def _validate_same_data(
-    checkpoint_summary: Dict[str, Any],
-    current_summary: Dict[str, Any],
-    allow_missing_keys: List[str] = [
-        PYG.NUM_EDGE_FEATURES,
-        NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS,
-        NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_CLASSES,
-    ],
-) -> None:
-    """
-    Validate that the data summary from the checkpoint and the current NapistuData are the same.
-
-    Parameters
-    ----------
-    checkpoint_summary : Dict[str, Any]
-        Data summary from checkpoint
-    current_summary : Dict[str, Any]
-        Data summary from current NapistuData
-    allow_missing_keys : List[str], optional
-        Keys that are allowed to be missing in either the current or checkpoint summary.
-        If included in the current and checkpoint summary, values are still expected to match.
-        By default: [MODEL_DEFS.NUM_RELATIONS, MODEL_DEFS.EDGE_IN_CHANNELS, MODEL_DEFS.NUM_CLASSES]
-
-    Raises
-    ------
-    ValueError
-        If summaries don't match exactly
-    """
-    # Check for missing keys
-    checkpoint_keys = set(checkpoint_summary.keys())
-    current_keys = set(current_summary.keys())
-    allow_missing_keys_set = set(allow_missing_keys)
-
-    key_union = checkpoint_keys | current_keys
-    key_intersection = checkpoint_keys & current_keys
-    key_difference = key_union - key_intersection
-    key_difference_without_allow_missing = key_difference - allow_missing_keys_set
-
-    if key_difference_without_allow_missing:
-        missing_in_checkpoint = key_difference_without_allow_missing & checkpoint_keys
-        missing_in_current = key_difference_without_allow_missing & current_keys
-
-        msg_parts = ["Data summary mismatch:"]
-        if missing_in_checkpoint:
-            msg_parts.append(
-                f"  Missing in checkpoint data: {sorted(missing_in_checkpoint)}"
-            )
-        if missing_in_current:
-            msg_parts.append(f"  Missing in current data: {sorted(missing_in_current)}")
-
-        raise ValueError("\n".join(msg_parts))
-
-    # Check for value mismatches among defined keys
-    mismatches = []
-    for key in key_intersection:
-        ckpt_val = checkpoint_summary[key]
-        curr_val = current_summary[key]
-
-        if ckpt_val != curr_val:
-            mismatches.append(f"  {key}: checkpoint={ckpt_val}, current={curr_val}")
-
-    if mismatches:
-        raise ValueError("Data summary values don't match:\n" + "\n".join(mismatches))
-
-    logger.info("✓ Data validation passed")

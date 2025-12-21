@@ -26,7 +26,9 @@ from napistu_torch.constants import (
     NAPISTU_DATA,
     NAPISTU_DATA_DEFAULT_NAME,
     NAPISTU_DATA_SUMMARIES,
+    NAPISTU_DATA_SUMMARY_TYPES,
     PYG,
+    VALID_NAPISTU_DATA_SUMMARY_TYPES,
 )
 from napistu_torch.labels.apply import decode_labels
 from napistu_torch.labels.labeling_manager import LabelingManager
@@ -44,7 +46,11 @@ from napistu_torch.load.encoding import (
 )
 from napistu_torch.load.encoding_manager import EncodingManager
 from napistu_torch.ml.constants import DEVICE
-from napistu_torch.utils.nd_utils import format_summary
+from napistu_torch.utils.nd_utils import (
+    add_optional_attr,
+    compute_mask_hashes,
+    format_summary,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +114,7 @@ class NapistuData(Data):
         Get edge weights as a 1D tensor
     get_feature_by_name(feature_name)
         Get a feature by name from the NapistuData object
-    get_summary()
+    get_summary(summary_type="basic")
         Get a summary of the NapistuData object
     get_vertex_feature_names()
         Get the names of vertex features
@@ -566,22 +572,35 @@ class NapistuData(Data):
 
         return num_relations
 
-    def get_summary(self, simplify: bool = False) -> Dict[str, Any]:
+    def get_summary(
+        self, summary_type: str = NAPISTU_DATA_SUMMARY_TYPES.BASIC
+    ) -> Dict[str, Any]:
         """
         Get a summary of the NapistuData object.
 
         Parameters
         ----------
-        simplify : bool, default=False
-            If True, return a simplified summary with only essential information.
+        summary_type : str, default="basic"
+            Type of summary to return:
+            - "basic": Core structural attributes only (num_nodes, num_edges, etc.)
+            - "validation": Basic + feature metadata for compatibility validation
+            (includes feature names, aliases, relation labels, mask hashes)
+            - "detailed": Validation + boolean flags for attribute presence
+            (for backward compatibility and debugging)
+            - "all": All available information
 
         Returns
         -------
         Dict[str, Any]
             Dictionary containing summary information about the data object
-        """
 
-        # core attributes
+        """
+        if summary_type not in VALID_NAPISTU_DATA_SUMMARY_TYPES:
+            raise ValueError(
+                f"Invalid summary_type '{summary_type}'. Must be one of {VALID_NAPISTU_DATA_SUMMARY_TYPES}"
+            )
+
+        # BASIC: Core structural attributes
         summary_dict = {
             NAPISTU_DATA.NAME: self.name,
             PYG.NUM_NODES: self.num_nodes,
@@ -590,85 +609,112 @@ class NapistuData(Data):
             PYG.NUM_EDGE_FEATURES: self.num_edge_features,
         }
 
-        if (
-            hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY)
-            and getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY) is not None
-        ):
-            summary_dict[NAPISTU_DATA.SPLITTING_STRATEGY] = getattr(
-                self, NAPISTU_DATA.SPLITTING_STRATEGY
-            )
-        if (
-            hasattr(self, NAPISTU_DATA.RELATION_TYPE)
-            and getattr(self, NAPISTU_DATA.RELATION_TYPE) is not None
-        ):
+        # Optional basic attributes
+        add_optional_attr(
+            summary_dict,
+            NAPISTU_DATA.SPLITTING_STRATEGY,
+            getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY, None),
+        )
+
+        relation_type = getattr(self, NAPISTU_DATA.RELATION_TYPE, None)
+        if relation_type is not None:
             summary_dict[NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS] = int(
-                getattr(self, NAPISTU_DATA.RELATION_TYPE).unique().numel()
-            )
-        if (
-            hasattr(self, NAPISTU_DATA.TRAIN_MASK)
-            and getattr(self, NAPISTU_DATA.TRAIN_MASK) is not None
-        ):
-            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TRAIN_EDGES] = int(
-                getattr(self, NAPISTU_DATA.TRAIN_MASK).sum()
-            )
-        if (
-            hasattr(self, NAPISTU_DATA.VAL_MASK)
-            and getattr(self, NAPISTU_DATA.VAL_MASK) is not None
-        ):
-            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_VAL_EDGES] = int(
-                getattr(self, NAPISTU_DATA.VAL_MASK).sum()
-            )
-        if (
-            hasattr(self, NAPISTU_DATA.TEST_MASK)
-            and getattr(self, NAPISTU_DATA.TEST_MASK) is not None
-        ):
-            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TEST_EDGES] = int(
-                getattr(self, NAPISTU_DATA.TEST_MASK).sum()
+                relation_type.unique().numel()
             )
 
-        if simplify:
+        train_mask = getattr(self, NAPISTU_DATA.TRAIN_MASK, None)
+        if train_mask is not None:
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TRAIN_EDGES] = int(train_mask.sum())
+
+        val_mask = getattr(self, NAPISTU_DATA.VAL_MASK, None)
+        if val_mask is not None:
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_VAL_EDGES] = int(val_mask.sum())
+
+        test_mask = getattr(self, NAPISTU_DATA.TEST_MASK, None)
+        if test_mask is not None:
+            summary_dict[NAPISTU_DATA_SUMMARIES.NUM_TEST_EDGES] = int(test_mask.sum())
+
+        # Return early for basic summary
+        if summary_type == NAPISTU_DATA_SUMMARY_TYPES.BASIC:
             return summary_dict
 
-        # Feature names (optional but useful)
-        vertex_feature_names = self.get_vertex_feature_names()
-        if vertex_feature_names is not None:
-            summary_dict[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
+        # summaries included for all types besides basic
+        vertex_feature_names = getattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAMES, None)
+        add_optional_attr(
+            summary_dict, NAPISTU_DATA.VERTEX_FEATURE_NAMES, vertex_feature_names
+        )
 
-        edge_feature_names = self.get_edge_feature_names()
-        if edge_feature_names is not None:
-            summary_dict[NAPISTU_DATA.EDGE_FEATURE_NAMES] = edge_feature_names
+        edge_feature_names = getattr(self, NAPISTU_DATA.EDGE_FEATURE_NAMES, None)
+        add_optional_attr(
+            summary_dict, NAPISTU_DATA.EDGE_FEATURE_NAMES, edge_feature_names
+        )
 
-        # Boolean flags for backward compatibility
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_VERTEX_FEATURE_NAMES] = (
-            vertex_feature_names is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_FEATURE_NAMES] = (
-            edge_feature_names is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_WEIGHTS] = (
-            hasattr(self, PYG.EDGE_WEIGHT)
-            and getattr(self, PYG.EDGE_WEIGHT) is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_VERTEX_NAMES] = (
-            hasattr(self, NAPISTU_DATA.NG_VERTEX_NAMES)
-            and getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES) is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_EDGE_NAMES] = (
-            hasattr(self, NAPISTU_DATA.NG_EDGE_NAMES)
-            and getattr(self, NAPISTU_DATA.NG_EDGE_NAMES) is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_SPLITTING_STRATEGY] = (
-            hasattr(self, NAPISTU_DATA.SPLITTING_STRATEGY)
-            and getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY) is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_LABELING_MANAGER] = (
-            hasattr(self, NAPISTU_DATA.LABELING_MANAGER)
-            and getattr(self, NAPISTU_DATA.LABELING_MANAGER) is not None
-        )
-        summary_dict[NAPISTU_DATA_SUMMARIES.HAS_RELATION_MANAGER] = (
-            hasattr(self, NAPISTU_DATA.RELATION_MANAGER)
-            and getattr(self, NAPISTU_DATA.RELATION_MANAGER) is not None
-        )
+        relation_manager = getattr(self, NAPISTU_DATA.RELATION_MANAGER, None)
+
+        if summary_type in [
+            NAPISTU_DATA_SUMMARY_TYPES.VALIDATION,
+            NAPISTU_DATA_SUMMARY_TYPES.ALL,
+        ]:
+
+            add_optional_attr(
+                summary_dict,
+                NAPISTU_DATA.VERTEX_FEATURE_NAME_ALIASES,
+                getattr(self, NAPISTU_DATA.VERTEX_FEATURE_NAME_ALIASES, None),
+            )
+
+            add_optional_attr(
+                summary_dict,
+                NAPISTU_DATA.EDGE_FEATURE_NAME_ALIASES,
+                getattr(self, NAPISTU_DATA.EDGE_FEATURE_NAME_ALIASES, None),
+            )
+
+            if relation_manager is not None:
+                # Convert label_names dict to list (sorted by index)
+                label_names_dict = relation_manager.label_names
+                if label_names_dict is not None:
+                    # Sort by keys and extract values to create ordered list
+                    relation_labels = [
+                        label_names_dict[i] for i in sorted(label_names_dict.keys())
+                    ]
+                    summary_dict[NAPISTU_DATA.RELATION_TYPE_LABELS] = relation_labels
+
+            # Mask hashes for split validation
+            mask_hashes = compute_mask_hashes(
+                train_mask=getattr(self, NAPISTU_DATA.TRAIN_MASK, None),
+                val_mask=getattr(self, NAPISTU_DATA.VAL_MASK, None),
+                test_mask=getattr(self, NAPISTU_DATA.TEST_MASK, None),
+            )
+            summary_dict.update(mask_hashes)
+
+        if summary_type in [
+            NAPISTU_DATA_SUMMARY_TYPES.DETAILED,
+            NAPISTU_DATA_SUMMARY_TYPES.ALL,
+        ]:
+
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_VERTEX_FEATURE_NAMES] = (
+                vertex_feature_names is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_FEATURE_NAMES] = (
+                edge_feature_names is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_EDGE_WEIGHTS] = (
+                getattr(self, PYG.EDGE_WEIGHT, None) is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_VERTEX_NAMES] = (
+                getattr(self, NAPISTU_DATA.NG_VERTEX_NAMES, None) is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_NG_EDGE_NAMES] = (
+                getattr(self, NAPISTU_DATA.NG_EDGE_NAMES, None) is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_SPLITTING_STRATEGY] = (
+                getattr(self, NAPISTU_DATA.SPLITTING_STRATEGY, None) is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_LABELING_MANAGER] = (
+                getattr(self, NAPISTU_DATA.LABELING_MANAGER, None) is not None
+            )
+            summary_dict[NAPISTU_DATA_SUMMARIES.HAS_RELATION_MANAGER] = (
+                relation_manager is not None
+            )
 
         return summary_dict
 
@@ -843,7 +889,7 @@ class NapistuData(Data):
         """
         Display a summary of the NapistuData object.
         """
-        summary = self.get_summary()
+        summary = self.get_summary(NAPISTU_DATA_SUMMARY_TYPES.DETAILED)
         summary_table = format_summary(summary)
         show(summary_table)
 
@@ -1098,6 +1144,8 @@ class NapistuData(Data):
             decoded_values = decoded.flatten()
 
         return pd.Series(decoded_values, name=attribute)
+
+    # private methods
 
     def _validate_vertex_encoding(
         self,
@@ -1499,6 +1547,6 @@ class NapistuData(Data):
 
     def __repr__(self) -> str:
         """String representation of the NapistuData object."""
-        summary = self.get_summary()
+        summary = self.get_summary(NAPISTU_DATA_SUMMARY_TYPES.DETAILED)
         summary_table = format_summary(summary)
         return summary_table.to_string(index=False)

@@ -199,7 +199,7 @@ class SetHyperparametersCallback(Callback):
 
     Extracts metadata from:
     - task.get_summary() → Model architecture (encoder, head, edge_encoder)
-    - napistu_data.get_summary(simplify=True) → Data statistics
+    - napistu_data.get_summary("validation") → Data statistics
     - pl_module.config → Training configuration
 
     The metadata is validated using Pydantic models before saving to ensure
