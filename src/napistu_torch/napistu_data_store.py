@@ -126,21 +126,42 @@ class NapistuDataStore:
         # Load registry
         self.registry = self._load_registry()
 
+        # Set read_only attribute (default to False for backward compatibility)
+        self.read_only = self.registry.get(NAPISTU_DATA_STORE.READ_ONLY, False)
+
         # set attributes based on values in the registry
         napistu_raw = self.registry[NAPISTU_DATA_STORE.NAPISTU_RAW]
-        self.sbml_dfs_path = _resolve_path(
-            napistu_raw[NAPISTU_DATA_STORE.SBML_DFS], self.store_dir
-        )
-        self.napistu_graph_path = _resolve_path(
-            napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH], self.store_dir
-        )
+        sbml_dfs_path_str = napistu_raw[NAPISTU_DATA_STORE.SBML_DFS]
+        napistu_graph_path_str = napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH]
+
+        # Handle None paths (read_only stores)
+        if self.read_only:
+            self.sbml_dfs_path = None
+        else:
+            if sbml_dfs_path_str is None:
+                raise FileNotFoundError(
+                    "SBML_dfs file is not set but read_only is False"
+                )
+            self.sbml_dfs_path = _resolve_path(sbml_dfs_path_str, self.store_dir)
+
+        if self.read_only:
+            self.napistu_graph_path = None
+        else:
+            if napistu_graph_path_str is None:
+                raise FileNotFoundError(
+                    "NapistuGraph file is not set but read_only is False"
+                )
+            self.napistu_graph_path = _resolve_path(
+                napistu_graph_path_str, self.store_dir
+            )
 
     @classmethod
     def create(
         cls,
         store_dir: Union[str, Path],
-        sbml_dfs_path: Union[str, Path],
-        napistu_graph_path: Union[str, Path],
+        read_only: bool = False,
+        sbml_dfs_path: Optional[Union[str, Path]] = None,
+        napistu_graph_path: Optional[Union[str, Path]] = None,
         copy_to_store: bool = False,
         overwrite: bool = False,
     ) -> "NapistuDataStore":
@@ -151,13 +172,17 @@ class NapistuDataStore:
         ----------
         store_dir : Union[str, Path]
             Root directory for this store
-        sbml_dfs_path : Union[str, Path]
-            Path to the SBML_dfs pickle file
-        napistu_graph_path : Union[str, Path]
-            Path to the NapistuGraph pickle file
+        read_only: bool, default=False
+            If True, the store will be read-only which means that no new artifacts
+            can be created. If True, sbml_dfs_path and napistu_graph_path will be ignored.
+        sbml_dfs_path : Optional[Union[str, Path]], default=None
+            Path to the SBML_dfs pickle file. Ignored if read_only is True.
+        napistu_graph_path : Optional[Union[str, Path]], default=None
+            Path to the NapistuGraph pickle file. Ignored if read_only is True.
         copy_to_store : bool, default=False
             If True, copy the files into the store directory and store relative paths.
             If False, store absolute paths to the original files.
+            Ignored if read_only is True.
         overwrite : bool, default=False
             If True, remove existing store_dir if it exists before creating new store.
             If False, raise FileExistsError if store_dir already exists.
@@ -172,7 +197,7 @@ class NapistuDataStore:
         FileExistsError
             If a registry.json already exists at store_dir and overwrite=False
         FileNotFoundError
-            If the specified napistu files don't exist
+            If the specified napistu files don't exist (only when read_only=False)
 
         Examples
         --------
@@ -185,8 +210,6 @@ class NapistuDataStore:
         ... )
         """
         store_dir = Path(store_dir)
-        sbml_dfs_path = Path(sbml_dfs_path)
-        napistu_graph_path = Path(napistu_graph_path)
         registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
 
         # Handle overwrite logic
@@ -194,7 +217,27 @@ class NapistuDataStore:
             logger.warning(f"Overwriting existing store at {store_dir}")
             shutil.rmtree(store_dir)
 
-        _validate_create_inputs(registry_path, sbml_dfs_path, napistu_graph_path)
+        # Skip path validation and copying when read_only is True
+        if not read_only:
+            sbml_dfs_path = Path(sbml_dfs_path) if sbml_dfs_path is not None else None
+            napistu_graph_path = (
+                Path(napistu_graph_path) if napistu_graph_path is not None else None
+            )
+            _validate_create_inputs(registry_path, sbml_dfs_path, napistu_graph_path)
+
+        else:
+            if sbml_dfs_path is not None:
+                logger.warning(
+                    f"sbml_dfs_path {sbml_dfs_path} will be ignored becasue read_only is True"
+                )
+            if napistu_graph_path is not None:
+                logger.warning(
+                    f"napistu_graph_path {napistu_graph_path} will be ignored becasue read_only is True"
+                )
+
+            # In read_only mode, paths are ignored
+            sbml_dfs_path = None
+            napistu_graph_path = None
 
         # create directories
         store_dir.mkdir(parents=True, exist_ok=True)
@@ -204,13 +247,14 @@ class NapistuDataStore:
         vertex_tensors_dir.mkdir(exist_ok=True)
         pandas_dfs_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS
         pandas_dfs_dir.mkdir(exist_ok=True)
-        if copy_to_store:
+
+        # Only create napistu_raw directory and copy files if not read_only
+        if not read_only and copy_to_store:
             napistu_raw_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_RAW
             napistu_raw_dir.mkdir(exist_ok=True)
 
-        # copy sbml_dfs and napistu_graph to store if requested
-        if copy_to_store:
-
+        # copy sbml_dfs and napistu_graph to store if requested (and not read_only)
+        if not read_only and copy_to_store:
             # Copy files to store
             cached_sbml_path = napistu_raw_dir / sbml_dfs_path.name
             cached_ng_path = napistu_raw_dir / napistu_graph_path.name
@@ -231,7 +275,7 @@ class NapistuDataStore:
                 NAPISTU_DATA_STORE.SBML_DFS: str(sbml_relative),
                 NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(ng_relative),
             }
-        else:
+        elif not read_only:
             # Store normalized absolute paths to original files
             napistu_entry = {
                 NAPISTU_DATA_STORE.SBML_DFS: str(
@@ -241,9 +285,16 @@ class NapistuDataStore:
                     _resolve_path(napistu_graph_path, store_dir)
                 ),
             }
+        else:
+            # read_only mode: store None for paths
+            napistu_entry = {
+                NAPISTU_DATA_STORE.SBML_DFS: None,
+                NAPISTU_DATA_STORE.NAPISTU_GRAPH: None,
+            }
 
         # Create initial registry
         registry = {
+            NAPISTU_DATA_STORE.READ_ONLY: read_only,
             NAPISTU_DATA_STORE.NAPISTU_RAW: napistu_entry,
             NAPISTU_DATA_STORE.NAPISTU_DATA: {},
             NAPISTU_DATA_STORE.VERTEX_TENSORS: {},
@@ -298,6 +349,13 @@ class NapistuDataStore:
         >>> store.ensure_artifacts(["my_custom_artifact"])  # Just verifies existence
         """
 
+        # Check if store is read_only
+        if self.read_only:
+            raise ValueError(
+                "Cannot create artifacts: store is read_only. "
+                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph."
+            )
+
         # validate artifact registry
         validate_artifact_registry(artifact_registry)
 
@@ -318,6 +376,13 @@ class NapistuDataStore:
         if not to_create:
             logger.info("All requested artifacts already exist in store")
             return
+
+        if self.read_only:
+            raise ValueError(
+                "Cannot create artifacts: store is read_only. "
+                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph. "
+                f"{len(to_create)} artifacts are unavailable: {to_create}"
+            )
 
         logger.info(f"Need to create {len(to_create)} artifacts: {to_create}")
 
@@ -663,6 +728,11 @@ class NapistuDataStore:
 
     def load_napistu_graph(self) -> NapistuGraph:
         """Load the NapistuGraph from disk."""
+        if self.read_only:
+            raise ValueError(
+                "Cannot load NapistuGraph: store is read_only and "
+                "no napistu_graph_path was provided."
+            )
         if self.napistu_graph_path.is_file():
             return NapistuGraph.from_pickle(self.napistu_graph_path)
         else:
@@ -672,6 +742,11 @@ class NapistuDataStore:
 
     def load_sbml_dfs(self) -> SBML_dfs:
         """Load the SBML_dfs from disk."""
+        if self.read_only:
+            raise ValueError(
+                "Cannot load SBML_dfs: store is read_only and "
+                "no sbml_dfs_path was provided."
+            )
         if self.sbml_dfs_path.is_file():
             return SBML_dfs.from_pickle(self.sbml_dfs_path)
         else:
@@ -1114,6 +1189,11 @@ def _validate_create_inputs(
             f"Registry already exists at {registry_path}. "
             f"Use NapistuDataStore(store_dir) to load it."
         )
+
+    if sbml_dfs_path is None:
+        raise FileNotFoundError("sbml_dfs_path is required but was not provided")
+    if napistu_graph_path is None:
+        raise FileNotFoundError("napistu_graph_path is required but was not provided")
 
     if not sbml_dfs_path.is_file():
         raise FileNotFoundError(f"SBML_dfs file not found: {sbml_dfs_path}")
