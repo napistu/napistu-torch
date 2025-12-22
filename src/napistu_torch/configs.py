@@ -336,8 +336,8 @@ class DataConfig(BaseModel):
 
     # config for defining the NapistuDataStore
     store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
-    sbml_dfs_path: Path = Field()
-    napistu_graph_path: Path = Field()
+    sbml_dfs_path: Optional[Path] = Field(default=None)
+    napistu_graph_path: Optional[Path] = Field(default=None)
     copy_to_store: bool = Field(default=False)
     overwrite: bool = Field(default=False)
 
@@ -350,6 +350,26 @@ class DataConfig(BaseModel):
         default_factory=list,
         description="List of additional artifact names that must exist in the store.",
     )
+
+    @model_validator(mode="after")
+    def validate_paths(self):
+        """Validate that both paths are either both None or both defined."""
+        sbml_none = self.sbml_dfs_path is None
+        graph_none = self.napistu_graph_path is None
+
+        if sbml_none != graph_none:
+            # One is None and the other is not
+            if sbml_none:
+                raise ValueError(
+                    "sbml_dfs_path is None but napistu_graph_path is provided. "
+                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
+                )
+            else:
+                raise ValueError(
+                    "napistu_graph_path is None but sbml_dfs_path is provided. "
+                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
+                )
+        return self
 
     model_config = ConfigDict(extra="forbid")
 
@@ -692,6 +712,15 @@ class ExperimentConfig(BaseModel):
                 DATA_CONFIG.NAPISTU_GRAPH_PATH,
                 EXPERIMENT_CONFIG.OUTPUT_DIR,
             ]:
+                # Handle None/empty strings for optional paths (sbml_dfs_path, napistu_graph_path)
+                if obj is None or obj == "" or obj.lower() == "none":
+                    if key in [
+                        DATA_CONFIG.SBML_DFS_PATH,
+                        DATA_CONFIG.NAPISTU_GRAPH_PATH,
+                    ]:
+                        return None
+                    # For required paths, keep as-is (will be validated by Pydantic)
+                    return obj
                 path = Path(obj)
                 # Resolve relative paths to absolute paths relative to config file directory
                 # These paths should always be resolved to absolute paths

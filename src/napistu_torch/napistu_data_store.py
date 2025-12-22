@@ -349,13 +349,6 @@ class NapistuDataStore:
         >>> store.ensure_artifacts(["my_custom_artifact"])  # Just verifies existence
         """
 
-        # Check if store is read_only
-        if self.read_only:
-            raise ValueError(
-                "Cannot create artifacts: store is read_only. "
-                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph."
-            )
-
         # validate artifact registry
         validate_artifact_registry(artifact_registry)
 
@@ -376,6 +369,14 @@ class NapistuDataStore:
         if not to_create:
             logger.info("All requested artifacts already exist in store")
             return
+
+        # Check if store is read_only (only if we need to create artifacts)
+        if self.read_only:
+            raise ValueError(
+                "Cannot create artifacts: store is read_only. "
+                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph. "
+                f"{len(to_create)} artifacts are unavailable: {to_create}"
+            )
 
         if self.read_only:
             raise ValueError(
@@ -496,15 +497,17 @@ class NapistuDataStore:
         Flow:
         1. If store exists and not config.overwrite: load existing store
         2. If store doesn't exist or config.overwrite: create new store
-        - Uses sbml_dfs_path and napistu_graph_path from config
-        - Copies to store if config.copy_to_store is True
+        - If sbml_dfs_path and napistu_graph_path are provided: creates regular store
+        - If sbml_dfs_path or napistu_graph_path are None: creates read-only store
+        - Copies to store if config.copy_to_store is True (only for regular stores)
         3. Ensure napistu_data_name, other_artifacts, and task artifacts exist (always, regardless of store creation)
+        - Note: ensure_artifacts will fail for read-only stores if artifacts don't already exist
 
         Parameters
         ----------
         config : DataConfig
             Configuration with store location, artifact paths, and requirements.
-            Must include sbml_dfs_path and napistu_graph_path.
+            If sbml_dfs_path and napistu_graph_path are None, a read-only store will be created.
         task_config : Optional[TaskConfig], default=None
             Optional task configuration. If provided, artifacts required by the task
             will be added to the required artifacts list.
@@ -521,12 +524,14 @@ class NapistuDataStore:
         ------
         FileNotFoundError
             If sbml_dfs_path or napistu_graph_path don't exist when creating new store
+            (only when paths are provided, not for read-only stores)
 
         Examples
         --------
         >>> from napistu_torch.configs import DataConfig
         >>> from pathlib import Path
         >>>
+        >>> # Create a regular store with paths
         >>> config = DataConfig(
         ...     store_dir=Path(".store/ecoli"),
         ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
@@ -536,6 +541,15 @@ class NapistuDataStore:
         ...     other_artifacts=["unlabeled"]
         ... )
         >>> store = NapistuDataStore.from_config(config)
+        >>>
+        >>> # Create a read-only store (paths are None)
+        >>> read_only_config = DataConfig(
+        ...     store_dir=Path(".store/ecoli_readonly"),
+        ...     sbml_dfs_path=None,
+        ...     napistu_graph_path=None,
+        ...     napistu_data_name="edge_prediction"
+        ... )
+        >>> read_only_store = NapistuDataStore.from_config(read_only_config)
         """
         store_dir = config.store_dir
         registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
@@ -549,26 +563,44 @@ class NapistuDataStore:
             # Store doesn't exist or we're overwriting - create new store
             logger.info(f"Creating new store at {store_dir}")
 
-            # Validate that paths exist
-            if not config.sbml_dfs_path.is_file():
-                raise FileNotFoundError(
-                    f"SBML_dfs file not found: {config.sbml_dfs_path}. "
-                    "Please provide a valid path in config.sbml_dfs_path"
+            # Check if paths are provided (for read-only mode)
+            if (config.sbml_dfs_path is None) and (config.napistu_graph_path is None):
+                # Create read-only store
+                logger.info("Creating read-only store (no paths provided)")
+                store = cls.create(
+                    store_dir=store_dir,
+                    read_only=True,
+                    overwrite=config.overwrite,
                 )
-            if not config.napistu_graph_path.is_file():
-                raise FileNotFoundError(
-                    f"NapistuGraph file not found: {config.napistu_graph_path}. "
-                    "Please provide a valid path in config.napistu_graph_path"
-                )
+            else:
+                # Validate that paths exist
+                if config.sbml_dfs_path is None:
+                    raise FileNotFoundError(
+                        "sbml_dfs_path is required but was not provided. Set to None to create a read-only store."
+                    )
+                if not config.sbml_dfs_path.is_file():
+                    raise FileNotFoundError(
+                        f"SBML_dfs file not found: {config.sbml_dfs_path}. "
+                        "Please provide a valid path in config.sbml_dfs_path"
+                    )
+                if config.napistu_graph_path is None:
+                    raise FileNotFoundError(
+                        "napistu_graph_path is required but was not provided. Set to None to create a read-only store."
+                    )
+                if not config.napistu_graph_path.is_file():
+                    raise FileNotFoundError(
+                        f"NapistuGraph file not found: {config.napistu_graph_path}. "
+                        "Please provide a valid path in config.napistu_graph_path"
+                    )
 
-            # Create store
-            store = cls.create(
-                store_dir=store_dir,
-                sbml_dfs_path=config.sbml_dfs_path,
-                napistu_graph_path=config.napistu_graph_path,
-                copy_to_store=config.copy_to_store,
-                overwrite=config.overwrite,
-            )
+                # Create store with paths
+                store = cls.create(
+                    store_dir=store_dir,
+                    sbml_dfs_path=config.sbml_dfs_path,
+                    napistu_graph_path=config.napistu_graph_path,
+                    copy_to_store=config.copy_to_store,
+                    overwrite=config.overwrite,
+                )
 
         # Conditionally ensure required artifacts exist
         if ensure_artifacts:
