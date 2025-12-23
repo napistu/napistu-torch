@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import logging
-import shutil
+from json import load as json_load
 from pathlib import Path
+from shutil import copy2
 from typing import Any, Dict, Optional, Union
 
-import torch
+from torch import load as torch_load
 from tqdm import tqdm
 
 try:
@@ -340,16 +341,14 @@ class HFDatasetLoader(HFClient):
             )
 
             # Read and parse registry
-            import json
-
             with open(registry_path, "r") as f:
-                self._registry = json.load(f)
+                self._registry = json_load(f)
 
             # Copy registry to store directory
             store_registry_path = (
                 self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
             )
-            shutil.copy2(registry_path, store_registry_path)
+            copy2(registry_path, store_registry_path)
 
             logger.info(f"✓ Downloaded registry.json to {store_registry_path}")
 
@@ -419,7 +418,7 @@ class HFDatasetLoader(HFClient):
                     )
 
                     # Copy to store directory (hf_hub_download may cache elsewhere)
-                    shutil.copy2(downloaded_path, local_path)
+                    copy2(downloaded_path, local_path)
                     logger.debug(f"✓ Downloaded {path_in_repo}")
 
                 except Exception as e:
@@ -785,7 +784,7 @@ class HFModelLoader(HFClient):
             self._download_checkpoint()
 
         if raw_checkpoint:
-            return torch.load(
+            return torch_load(
                 self._checkpoint_path, weights_only=False, map_location=DEVICE.CPU
             )
         else:
