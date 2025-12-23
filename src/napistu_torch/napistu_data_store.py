@@ -62,6 +62,8 @@ class NapistuDataStore:
         Check which artifacts are missing from the store.
     from_config(config)
         Create or load a NapistuDataStore from a DataConfig.
+    from_huggingface(repo_id, store_dir, revision=None, token=None)
+        Download and create a NapistuDataStore from HuggingFace Hub.
     list_napistu_datas()
         List all NapistuData names in the store
     list_vertex_tensors()
@@ -620,6 +622,68 @@ class NapistuDataStore:
                 store.ensure_artifacts(required_artifacts, overwrite=config.overwrite)
 
         return store
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        repo_id: str,
+        store_dir: Union[str, Path],
+        revision: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> "NapistuDataStore":
+        """
+        Download and create a NapistuDataStore from HuggingFace Hub.
+
+        This is a convenience method that uses HFDatasetLoader to download a store
+        from HuggingFace Hub and create a local NapistuDataStore instance.
+
+        Parameters
+        ----------
+        repo_id : str
+            HuggingFace repository in format "username/repo-name"
+        store_dir : Union[str, Path]
+            Local directory where the store will be created
+        revision : Optional[str]
+            Git revision (branch, tag, or commit hash). Defaults to "main"
+        token : Optional[str]
+            HuggingFace access token for private repositories
+
+        Returns
+        -------
+        NapistuDataStore
+            Loaded store ready to use
+
+        Examples
+        --------
+        >>> from napistu_torch.napistu_data_store import NapistuDataStore
+        >>> from pathlib import Path
+        >>>
+        >>> # Load store from HuggingFace Hub
+        >>> store = NapistuDataStore.from_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     store_dir=Path("./local_store")
+        ... )
+        >>>
+        >>> # Load from specific revision
+        >>> store = NapistuDataStore.from_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     store_dir=Path("./local_store"),
+        ...     revision="v1.0"
+        ... )
+        >>>
+        >>> # Use the store
+        >>> napistu_data = store.load_napistu_data("edge_prediction")
+        """
+        from napistu_torch.ml.hugging_face import HFDatasetLoader
+
+        loader = HFDatasetLoader(
+            repo_id=repo_id,
+            store_dir=store_dir,
+            revision=revision,
+            token=token,
+        )
+        store_dir_path = loader.load_store()
+        return cls(store_dir_path)
 
     def list_artifacts(self, artifact_type: Optional[str] = None) -> list[str]:
         """

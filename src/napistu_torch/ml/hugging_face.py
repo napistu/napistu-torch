@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
 import torch
+from tqdm import tqdm
 
 try:
     from huggingface_hub import HfApi, create_repo, hf_hub_download
@@ -179,6 +181,255 @@ class HFClient:
             )
             logger.info(f"Updating existing repository: {repo_id}")
             return repo_url
+
+
+class HFDatasetLoader(HFClient):
+    """
+    Load NapistuDataStore from HuggingFace Hub.
+
+    This class handles downloading a complete NapistuDataStore (registry.json and
+    all artifacts) from a HuggingFace dataset repository and creating a local store.
+
+    Parameters
+    ----------
+    repo_id : str
+        HuggingFace repository in format "username/repo-name"
+    store_dir : Path
+        Local directory where the store will be created
+    revision : Optional[str]
+        Git revision (branch, tag, or commit hash). Defaults to "main"
+    token : Optional[str]
+        HuggingFace access token for private repositories
+
+    Public Methods
+    --------------
+    load_store()
+        Download and create a NapistuDataStore from HuggingFace Hub.
+        Returns the path to the store directory.
+
+    Private Methods
+    ---------------
+    _list_repo_files()
+        List all files in the repository
+    _download_registry()
+        Download registry.json from HuggingFace Hub
+    _download_artifacts()
+        Download all artifact files based on registry
+    _create_store_structure()
+        Create the local store directory structure
+
+    Examples
+    --------
+    >>> from napistu_torch.ml.hugging_face import HFDatasetLoader
+    >>> from pathlib import Path
+    >>>
+    >>> # Load store from HuggingFace Hub
+    >>> loader = HFDatasetLoader(
+    ...     repo_id="username/my-dataset",
+    ...     store_dir=Path("./local_store")
+    ... )
+    >>> store = loader.load_store()
+    >>>
+    >>> # Load from specific revision
+    >>> loader = HFDatasetLoader(
+    ...     repo_id="username/my-dataset",
+    ...     store_dir=Path("./local_store"),
+    ...     revision="v1.0"
+    ... )
+    >>> store = loader.load_store()
+    """
+
+    def __init__(
+        self,
+        repo_id: str,
+        store_dir: Path,
+        revision: Optional[str] = None,
+        token: Optional[str] = None,
+    ):
+        super().__init__(token=token)
+        self.repo_id = repo_id
+        self.store_dir = Path(store_dir)
+        self.revision = revision or "main"
+
+        # Validate repo_id format
+        self._validate_repo_id(repo_id)
+
+        # Check if repo exists
+        if not self._check_repo_exists(repo_id, repo_type=HUGGING_FACE_REPOS.DATASET):
+            raise ValueError(
+                f"Repository '{repo_id}' not found on HuggingFace Hub. "
+                f"Please check the repository name and ensure you have access."
+            )
+
+        # Cache for downloaded registry
+        self._registry: Optional[Dict] = None
+
+    def load_store(self) -> Path:
+        """
+        Download and create a NapistuDataStore from HuggingFace Hub.
+
+        Downloads registry.json and all artifact files, creates the local store
+        directory structure, and returns the path to the store directory.
+
+        Returns
+        -------
+        Path
+            Path to the store directory (ready to be loaded with NapistuDataStore)
+
+        Raises
+        ------
+        ValueError
+            If repository doesn't exist or registry is invalid
+        FileNotFoundError
+            If required files are missing from the repository
+        """
+        logger.info(
+            f"Loading NapistuDataStore from {self.repo_id} (revision: {self.revision})..."
+        )
+
+        # Create store directory structure
+        self._create_store_structure()
+
+        # Download registry first to know what artifacts to download
+        registry = self._download_registry()
+
+        # Download all artifacts
+        self._download_artifacts(registry)
+
+        # Return the store directory path
+        return self.store_dir
+
+    # Private methods
+
+    def _create_store_structure(self) -> None:
+        """Create the local store directory structure."""
+        # Create main store directory
+        self.store_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create subdirectories for artifacts
+        (self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_DATA).mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.VERTEX_TENSORS).mkdir(
+            parents=True, exist_ok=True
+        )
+        (self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS).mkdir(
+            parents=True, exist_ok=True
+        )
+
+    def _download_registry(self) -> Dict:
+        """
+        Download registry.json from HuggingFace Hub.
+
+        Returns
+        -------
+        Dict
+            Registry dictionary
+        """
+        if self._registry is None:
+            logger.info("Downloading registry.json...")
+
+            registry_path = Path(
+                hf_hub_download(
+                    repo_id=self.repo_id,
+                    filename="registry.json",
+                    revision=self.revision,
+                    repo_type=HUGGING_FACE_REPOS.DATASET,
+                    token=self._token,
+                )
+            )
+
+            # Read and parse registry
+            import json
+
+            with open(registry_path, "r") as f:
+                self._registry = json.load(f)
+
+            # Copy registry to store directory
+            store_registry_path = (
+                self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
+            )
+            shutil.copy2(registry_path, store_registry_path)
+
+            logger.info(f"✓ Downloaded registry.json to {store_registry_path}")
+
+        return self._registry
+
+    def _download_artifacts(self, registry: Dict) -> None:
+        """
+        Download all artifact files based on registry.
+
+        Parameters
+        ----------
+        registry : Dict
+            Registry dictionary containing artifact metadata
+        """
+        # Collect all files to download
+        files_to_download = []
+
+        # Define artifact types to process
+        artifact_types = [
+            (
+                NAPISTU_DATA_STORE.NAPISTU_DATA,
+                NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_DATA,
+            ),
+            (
+                NAPISTU_DATA_STORE.VERTEX_TENSORS,
+                NAPISTU_DATA_STORE_STRUCTURE.VERTEX_TENSORS,
+            ),
+            (
+                NAPISTU_DATA_STORE.PANDAS_DFS,
+                NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS,
+            ),
+        ]
+
+        # Collect files from all artifact types
+        for registry_key, directory_name in artifact_types:
+            artifact_registry = registry.get(registry_key, {})
+            for artifact_name, entry in artifact_registry.items():
+                filename = entry[NAPISTU_DATA_STORE.FILENAME]
+                files_to_download.append(
+                    (
+                        f"{directory_name}/{filename}",
+                        self.store_dir / directory_name / filename,
+                    )
+                )
+
+        # Download files with progress bar (tqdm is only for visual feedback, not speed)
+        if files_to_download:
+            logger.info(f"Downloading {len(files_to_download)} artifact files...")
+
+            iterator = tqdm(files_to_download, desc="Downloading artifacts")
+
+            for path_in_repo, local_path in iterator:
+                # Skip if file already exists
+                if local_path.exists():
+                    logger.debug(f"Skipping {path_in_repo} (already exists)")
+                    continue
+
+                try:
+                    downloaded_path = Path(
+                        hf_hub_download(
+                            repo_id=self.repo_id,
+                            filename=path_in_repo,
+                            revision=self.revision,
+                            repo_type=HUGGING_FACE_REPOS.DATASET,
+                            token=self._token,
+                        )
+                    )
+
+                    # Copy to store directory (hf_hub_download may cache elsewhere)
+                    shutil.copy2(downloaded_path, local_path)
+                    logger.debug(f"✓ Downloaded {path_in_repo}")
+
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to download {path_in_repo}: {e}. Continuing..."
+                    )
+
+            logger.info(f"✓ Downloaded {len(files_to_download)} artifact files")
+        else:
+            logger.info("No artifacts found in registry")
 
 
 class HFDatasetPublisher(HFClient):
