@@ -524,6 +524,14 @@ class HFDatasetPublisher(HFClient):
         self._validate_repo_id(repo_id)
         revision = revision or "main"
 
+        # Validate that store has at least one NapistuData artifact
+        napistu_data_list = store.list_napistu_datas()
+        if len(napistu_data_list) == 0:
+            raise ValueError(
+                "Cannot publish store: Store must contain at least one NapistuData artifact. "
+                "Publishing currently requires one or more NapistuData objects."
+            )
+
         # Get or create repository URL
         repo_url = self._get_repo_url(
             repo_id, repo_type=HUGGING_FACE_REPOS.DATASET, overwrite=overwrite
@@ -1279,9 +1287,20 @@ def generate_dataset_card(
     str
         Dataset card as markdown string
     """
-    napistu_data_count = len(store.list_napistu_datas())
+    napistu_data_list = store.list_napistu_datas()
+    napistu_data_count = len(napistu_data_list)
     vertex_tensor_count = len(store.list_vertex_tensors())
     pandas_df_count = len(store.list_pandas_dfs())
+
+    # Validate that at least one NapistuData artifact exists
+    if napistu_data_count == 0:
+        raise ValueError(
+            "Cannot generate dataset card: Store must contain at least one NapistuData artifact. "
+            "Publishing currently requires one or more NapistuData objects."
+        )
+
+    # Get the first NapistuData artifact name for use in examples
+    first_napistu_data_name = napistu_data_list[0]
 
     # Build tags
     tags = DEFAULT_HUGGING_FACE_TAGS + [
@@ -1316,7 +1335,7 @@ def generate_dataset_card(
 ### Load Raw Data from GCS (Optional)
 
 If you need to create new artifacts, you can convert this read-only store to a non-read-only store
-by loading the raw data from GCS and enabling artifact creation:
+by loading the raw data from GCS and passing the paths directly to `from_huggingface`:
 
 ```python
 from napistu_torch.napistu_data_store import NapistuDataStore
@@ -1340,50 +1359,16 @@ with tempfile.TemporaryDirectory() as temp_data_dir:
         version={version_str},
     )
     
-    # Load store from HuggingFace Hub
-    store = NapistuDataStore.from_huggingface(
-        repo_id="{repo_id}",
-        store_dir=Path("./local_store"){revision_snippet}
-    )
-    
-    # Convert to non-read-only by enabling artifact creation
-    store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
-    
-    # Now you can create new artifacts
-    store.ensure_artifacts(["new_artifact_name"])
-```
-
-Alternatively, you can use `from_huggingface` with paths directly:
-
-```python
-from napistu_torch.napistu_data_store import NapistuDataStore
-from napistu.gcs.downloads import load_public_napistu_asset
-from napistu.gcs.constants import GCS_SUBASSET_NAMES
-from pathlib import Path
-import tempfile
-
-# Download raw data from GCS
-with tempfile.TemporaryDirectory() as temp_data_dir:
-    sbml_dfs_path = load_public_napistu_asset(
-        "{asset_name}",
-        temp_data_dir,
-        subasset=GCS_SUBASSET_NAMES.SBML_DFS,
-        version={version_str},
-    )
-    napistu_graph_path = load_public_napistu_asset(
-        "{asset_name}",
-        temp_data_dir,
-        subasset=GCS_SUBASSET_NAMES.NAPISTU_GRAPH,
-        version={version_str},
-    )
-    
-    # Load and convert in one step
+    # Load and convert to non-read-only in one step
     store = NapistuDataStore.from_huggingface(
         repo_id="{repo_id}",
         store_dir=Path("./local_store"){revision_snippet},
         sbml_dfs_path=sbml_dfs_path,
         napistu_graph_path=napistu_graph_path,
     )
+    
+    # Now you can create new artifacts
+    store.ensure_artifacts(["new_artifact_name"])
 ```
 """
 
@@ -1398,22 +1383,15 @@ license: mit
 
 This dataset contains a complete NapistuDataStore with all artifacts published as a read-only store.
 {source_section}
-## Store Contents
-
-- **NapistuData artifacts**: {napistu_data_count}
-- **VertexTensor artifacts**: {vertex_tensor_count}
-- **pandas DataFrame artifacts**: {pandas_df_count}
-- **Total artifacts**: {napistu_data_count + vertex_tensor_count + pandas_df_count}
-
 ## Artifacts
 
-### NapistuData
+### NapistuData ({napistu_data_count})
 {chr(10).join(f"- `{name}`" for name in store.list_napistu_datas()) if store.list_napistu_datas() else "- None"}
 
-### VertexTensors
+### VertexTensors ({vertex_tensor_count})
 {chr(10).join(f"- `{name}`" for name in store.list_vertex_tensors()) if store.list_vertex_tensors() else "- None"}
 
-### pandas DataFrames
+### pandas DataFrames ({pandas_df_count})
 {chr(10).join(f"- `{name}`" for name in store.list_pandas_dfs()) if store.list_pandas_dfs() else "- None"}
 
 ## Usage
@@ -1433,7 +1411,7 @@ store = NapistuDataStore.from_huggingface(
 )
 
 # Use the store (read-only)
-napistu_data = store.load_napistu_data("edge_prediction")
+napistu_data = store.load_napistu_data("{first_napistu_data_name}")
 ```
 
 ### Configure DataConfig
@@ -1448,20 +1426,38 @@ from pathlib import Path
 config = DataConfig(
     store_dir=Path("./local_store"),
     hf_repo_id="{repo_id}",{revision_config_snippet}
-    napistu_data_name="edge_prediction",
+    napistu_data_name="{first_napistu_data_name}",
 )
 
 # Use with NapistuDataStore.from_config()
 from napistu_torch.napistu_data_store import NapistuDataStore
 store = NapistuDataStore.from_config(config)
 ```
+
+To make the store writable (non-read-only), provide paths to the raw data files:
+
+```python
+from napistu_torch.configs import DataConfig
+from pathlib import Path
+
+# Configure DataConfig to load from HuggingFace Hub and enable artifact creation
+config = DataConfig(
+    store_dir=Path("./local_store"),
+    hf_repo_id="{repo_id}",{revision_config_snippet}
+    sbml_dfs_path=Path("/path/to/sbml_dfs.pkl"),
+    napistu_graph_path=Path("/path/to/napistu_graph.pkl"),
+    napistu_data_name="{first_napistu_data_name}",
+)
+
+# Use with NapistuDataStore.from_config()
+# This will load from HF and convert to non-read-only automatically
+from napistu_torch.napistu_data_store import NapistuDataStore
+store = NapistuDataStore.from_config(config)
+
+# Now you can create new artifacts
+store.ensure_artifacts(["new_artifact_name"])
+```
 {gcs_section}
-## Note
-
-This is a read-only store. The `sbml_dfs_path` and `napistu_graph_path` are set to None,
-so you cannot create new artifacts that require the raw SBML_dfs or NapistuGraph files.
-You can still load and use all existing artifacts.
-
 ## Citation
 
 If you use this dataset, please cite:
