@@ -1169,6 +1169,7 @@ For detailed experiment and training settings see this repository's `config.json
 ## Links
 
 {wandb_link}
+- 🌐 [Napistu](https://napistu.com)
 - 💻 [GitHub Repository](https://github.com/napistu/Napistu-Torch)
 - 📖 [Read the Docs](https://napistu-torch.readthedocs.io/en/latest)
 - 📚 [Napistu Wiki](https://github.com/napistu/napistu/wiki)
@@ -1321,9 +1322,9 @@ def generate_dataset_card(
     if revision is not None:
         revision_snippet = f',\n    revision="{revision}"'
 
-    revision_config_snippet = ""
+    revision_config_yaml_snippet = ""
     if revision is not None:
-        revision_config_snippet = f'\n    hf_revision="{revision}",'
+        revision_config_yaml_snippet = f'\n  hf_revision: "{revision}"'
 
     # Build GCS section if asset details are provided
     gcs_section = ""
@@ -1388,10 +1389,10 @@ This dataset contains a complete NapistuDataStore with all artifacts published a
 ### NapistuData ({napistu_data_count})
 {chr(10).join(f"- `{name}`" for name in store.list_napistu_datas()) if store.list_napistu_datas() else "- None"}
 
-### VertexTensors ({vertex_tensor_count})
+### VertexTensor ({vertex_tensor_count})
 {chr(10).join(f"- `{name}`" for name in store.list_vertex_tensors()) if store.list_vertex_tensors() else "- None"}
 
-### pandas DataFrames ({pandas_df_count})
+### Pandas DataFrame ({pandas_df_count})
 {chr(10).join(f"- `{name}`" for name in store.list_pandas_dfs()) if store.list_pandas_dfs() else "- None"}
 
 ## Usage
@@ -1416,48 +1417,32 @@ napistu_data = store.load_napistu_data("{first_napistu_data_name}")
 
 ### Configure DataConfig
 
-You can also use this dataset in your `DataConfig` for PyTorch Lightning experiments:
+You can also use this dataset in your `DataConfig` YAML for PyTorch Lightning experiments:
 
-```python
-from napistu_torch.configs import DataConfig
-from pathlib import Path
-
-# Configure DataConfig to load from HuggingFace Hub
-config = DataConfig(
-    store_dir=Path("./local_store"),
-    hf_repo_id="{repo_id}",{revision_config_snippet}
-    napistu_data_name="{first_napistu_data_name}",
-)
-
-# Use with NapistuDataStore.from_config()
-from napistu_torch.napistu_data_store import NapistuDataStore
-store = NapistuDataStore.from_config(config)
+```yaml
+data:
+  store_dir: "./local_store"
+  hf_repo_id: "{repo_id}"{revision_config_yaml_snippet}
+  napistu_data_name: "{first_napistu_data_name}"
 ```
 
 To make the store writable (non-read-only), provide paths to the raw data files:
 
-```python
-from napistu_torch.configs import DataConfig
-from pathlib import Path
-
-# Configure DataConfig to load from HuggingFace Hub and enable artifact creation
-config = DataConfig(
-    store_dir=Path("./local_store"),
-    hf_repo_id="{repo_id}",{revision_config_snippet}
-    sbml_dfs_path=Path("/path/to/sbml_dfs.pkl"),
-    napistu_graph_path=Path("/path/to/napistu_graph.pkl"),
-    napistu_data_name="{first_napistu_data_name}",
-)
-
-# Use with NapistuDataStore.from_config()
-# This will load from HF and convert to non-read-only automatically
-from napistu_torch.napistu_data_store import NapistuDataStore
-store = NapistuDataStore.from_config(config)
-
-# Now you can create new artifacts
-store.ensure_artifacts(["new_artifact_name"])
+```yaml
+data:
+  store_dir: "./local_store"
+  hf_repo_id: "{repo_id}"{revision_config_yaml_snippet}
+  sbml_dfs_path: "/path/to/sbml_dfs.pkl"
+  napistu_graph_path: "/path/to/napistu_graph.pkl"
+  napistu_data_name: "{first_napistu_data_name}"
 ```
 {gcs_section}
+## Links
+
+- 🌐 [Napistu](https://napistu.com)
+- 💻 [GitHub Repository](https://github.com/napistu/Napistu-Torch)
+- 📚 [Napistu Wiki](https://github.com/napistu/napistu/wiki)
+
 ## Citation
 
 If you use this dataset, please cite:
