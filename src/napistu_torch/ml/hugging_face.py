@@ -28,6 +28,7 @@ from napistu_torch.constants import (
 )
 from napistu_torch.load.checkpoints import Checkpoint
 from napistu_torch.ml.constants import (
+    DEFAULT_HUGGING_FACE_TAGS,
     DEVICE,
     HUGGING_FACE_REPOS,
     VALID_HUGGING_FACE_REPOS,
@@ -1077,11 +1078,7 @@ def generate_model_card(
     is_relation_aware = head in RELATION_AWARE_HEADS
 
     # Build tags
-    tags = [
-        "graph-neural-networks",
-        "biological-networks",
-        "napistu",
-        "pytorch",
+    tags = DEFAULT_HUGGING_FACE_TAGS + [
         encoder,
         head,
         task,
@@ -1256,10 +1253,7 @@ def generate_dataset_card(store: NapistuDataStore) -> str:
     pandas_df_count = len(store.list_pandas_dfs())
 
     # Build tags
-    tags = [
-        "napistu",
-        "biological-networks",
-        "graph-neural-networks",
+    tags = DEFAULT_HUGGING_FACE_TAGS + [
         "napistu-data-store",
     ]
 

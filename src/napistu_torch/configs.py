@@ -47,6 +47,70 @@ from napistu_torch.tasks.constants import (
 logger = logging.getLogger(__name__)
 
 
+# components of the ExperimentConfig
+
+
+class DataConfig(BaseModel):
+    """Data loading and splitting configuration. These parameters are used to setup the NapistuDataStore object and construct the NapistuData object."""
+
+    # config for defining the NapistuDataStore
+    store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
+    sbml_dfs_path: Optional[Path] = Field(default=None)
+    napistu_graph_path: Optional[Path] = Field(default=None)
+    copy_to_store: bool = Field(default=False)
+
+    # HuggingFace Hub configuration for remote stores
+    hf_repo_id: Optional[str] = Field(
+        default=None,
+        description="HuggingFace repository ID (e.g., 'username/repo-name') to load store from if it doesn't exist locally",
+    )
+    hf_revision: Optional[str] = Field(
+        default=None,
+        description="Git revision (branch, tag, or commit hash) for HuggingFace repository. Defaults to 'main' if hf_repo_id is provided.",
+    )
+
+    # named artifacts which are needed for the experiment
+    napistu_data_name: str = Field(
+        default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.NAPISTU_DATA_NAME],
+        description="Name of the NapistuData artifact to use for training.",
+    )
+    other_artifacts: List[str] = Field(
+        default_factory=list,
+        description="List of additional artifact names that must exist in the store.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def remove_deprecated_fields(cls, data):
+        """Remove deprecated fields from data before validation and warn about them."""
+        deprecated_fields = {
+            "overwrite": "The 'overwrite' field has been removed and is no longer used.",
+        }
+        return _remove_deprecated_fields(data, deprecated_fields, "DataConfig")
+
+    @model_validator(mode="after")
+    def validate_paths(self):
+        """Validate that both paths are either both None or both defined."""
+        sbml_none = self.sbml_dfs_path is None
+        graph_none = self.napistu_graph_path is None
+
+        if sbml_none != graph_none:
+            # One is None and the other is not
+            if sbml_none:
+                raise ValueError(
+                    "sbml_dfs_path is None but napistu_graph_path is provided. "
+                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
+                )
+            else:
+                raise ValueError(
+                    "napistu_graph_path is None but sbml_dfs_path is provided. "
+                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
+                )
+        return self
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class ModelConfig(BaseModel):
     """
     Model architecture configuration.
@@ -227,31 +291,11 @@ class ModelConfig(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def remove_deprecated_fields(cls, data):
-        """
-        Remove deprecated fields from data before validation and warn about them.
-
-        This allows old configs to load while maintaining strict validation (extra="forbid").
-        """
-        if isinstance(data, dict):
-            deprecated_fields = {
-                "bilinear_bias": "The 'bilinear_bias' field has been removed and is no longer used.",
-            }
-
-            # Create a copy to avoid modifying the original dict during iteration
-            data = dict(data)
-
-            for field_name, message in deprecated_fields.items():
-                if field_name in data:
-                    warnings.warn(
-                        f"Deprecated field '{field_name}' found in ModelConfig. {message} "
-                        "This field will be ignored. Please update your config file.",
-                        DeprecationWarning,
-                        stacklevel=2,
-                    )
-                    # Remove the deprecated field
-                    del data[field_name]
-
-        return data
+        """Remove deprecated fields from data before validation and warn about them."""
+        deprecated_fields = {
+            "bilinear_bias": "The 'bilinear_bias' field has been removed and is no longer used.",
+        }
+        return _remove_deprecated_fields(data, deprecated_fields, "ModelConfig")
 
     @field_validator(MODEL_DEFS.HIDDEN_CHANNELS)
     @classmethod
@@ -329,49 +373,6 @@ class ModelConfig(BaseModel):
     model_config = ConfigDict(
         extra="forbid"
     )  # Catch typos, deprecated fields removed by validator
-
-
-class DataConfig(BaseModel):
-    """Data loading and splitting configuration. These parameters are used to setup the NapistuDataStore object and construct the NapistuData object."""
-
-    # config for defining the NapistuDataStore
-    store_dir: Path = Field(default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.STORE_DIR])
-    sbml_dfs_path: Optional[Path] = Field(default=None)
-    napistu_graph_path: Optional[Path] = Field(default=None)
-    copy_to_store: bool = Field(default=False)
-    overwrite: bool = Field(default=False)
-
-    # named artifacts which are needed for the experiment
-    napistu_data_name: str = Field(
-        default=DATA_CONFIG_DEFAULTS[DATA_CONFIG.NAPISTU_DATA_NAME],
-        description="Name of the NapistuData artifact to use for training.",
-    )
-    other_artifacts: List[str] = Field(
-        default_factory=list,
-        description="List of additional artifact names that must exist in the store.",
-    )
-
-    @model_validator(mode="after")
-    def validate_paths(self):
-        """Validate that both paths are either both None or both defined."""
-        sbml_none = self.sbml_dfs_path is None
-        graph_none = self.napistu_graph_path is None
-
-        if sbml_none != graph_none:
-            # One is None and the other is not
-            if sbml_none:
-                raise ValueError(
-                    "sbml_dfs_path is None but napistu_graph_path is provided. "
-                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
-                )
-            else:
-                raise ValueError(
-                    "napistu_graph_path is None but sbml_dfs_path is provided. "
-                    "Both paths must be either None (for read-only store) or both defined (for regular store)."
-                )
-        return self
-
-    model_config = ConfigDict(extra="forbid")
 
 
 class TaskConfig(BaseModel):
@@ -558,6 +559,9 @@ class WandBConfig(BaseModel):
         return output_dir / self.wandb_subdir
 
     model_config = ConfigDict(extra="forbid")
+
+
+# Meta-configs
 
 
 class ExperimentConfig(BaseModel):
@@ -1091,6 +1095,46 @@ def task_config_to_artifact_names(task_config: TaskConfig) -> List[str]:
 
 
 # Private functions for working with configs
+
+
+def _remove_deprecated_fields(
+    data, deprecated_fields: dict[str, str], config_class_name: str
+):
+    """
+    Remove deprecated fields from data before validation and warn about them.
+
+    This allows old configs to load while maintaining strict validation (extra="forbid").
+
+    Parameters
+    ----------
+    data : dict or Any
+        The data dictionary to process
+    deprecated_fields : dict[str, str]
+        Dictionary mapping deprecated field names to their deprecation messages
+    config_class_name : str
+        Name of the config class (for warning messages)
+
+    Returns
+    -------
+    dict or Any
+        The data with deprecated fields removed
+    """
+    if isinstance(data, dict):
+        # Create a copy to avoid modifying the original dict during iteration
+        data = dict(data)
+
+        for field_name, message in deprecated_fields.items():
+            if field_name in data:
+                warnings.warn(
+                    f"Deprecated field '{field_name}' found in {config_class_name}. {message} "
+                    "This field will be ignored. Please update your config file.",
+                    DeprecationWarning,
+                    stacklevel=2,
+                )
+                # Remove the deprecated field
+                del data[field_name]
+
+    return data
 
 
 def _task_config_to_artifact_names_edge_prediction(
