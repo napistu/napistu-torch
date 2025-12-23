@@ -230,16 +230,17 @@ def prepare_config(
         )
         raise click.Abort()
 
-    # Check that required data paths exist
-    if not config.data.sbml_dfs_path.exists():
-        print(f"ERROR: SBML_dfs file not found: {config.data.sbml_dfs_path}")
-        raise click.Abort()
-
-    if not config.data.napistu_graph_path.exists():
-        print(f"ERROR: NapistuGraph file not found: {config.data.napistu_graph_path}")
-        raise click.Abort()
-
-    messages.append("All data paths validated")
+    if config.data.hf_repo_id is not None:
+        messages.append("Loading store from HuggingFace Hub")
+    elif (
+        config.data.sbml_dfs_path is not None
+        and config.data.napistu_graph_path is not None
+    ):
+        messages.append("All data paths validated")
+    else:
+        raise ValueError(
+            "Data config is not valid: either hf_repo_id or both sbml_dfs_path and napistu_graph_path must be provided"
+        )
 
     return config, messages
 
