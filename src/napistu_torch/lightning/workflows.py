@@ -31,7 +31,7 @@ from napistu_torch.lightning.full_graph_datamodule import FullGraphDataModule
 from napistu_torch.lightning.tasks import EdgePredictionLightning
 from napistu_torch.lightning.trainer import NapistuTrainer
 from napistu_torch.load.checkpoints import Checkpoint
-from napistu_torch.ml.hugging_face import HuggingFaceLoader
+from napistu_torch.ml.hugging_face import HFModelLoader
 from napistu_torch.ml.wandb import (
     get_wandb_run_id_and_url,
     prepare_wandb_config,
@@ -802,7 +802,7 @@ def _load_pretrained_checkpoint(
                 f"Loading pretrained checkpoint from HuggingFace: {pretrained_model_path} "
                 f"(revision: {pretrained_model_revision})"
             )
-        hf_loader = HuggingFaceLoader(
+        hf_loader = HFModelLoader(
             repo_id=pretrained_model_path, revision=pretrained_model_revision
         )
         checkpoint = hf_loader.load_checkpoint(raw_checkpoint=False)

@@ -91,3 +91,12 @@ LOSSES = SimpleNamespace(
 )
 
 VALID_LOSSES = list(LOSSES.__dict__.values())
+
+# hugging face
+
+HUGGING_FACE_REPOS = SimpleNamespace(
+    MODEL="model",
+    DATASET="dataset",
+)
+
+VALID_HUGGING_FACE_REPOS = list(HUGGING_FACE_REPOS.__dict__.values())

@@ -431,7 +431,7 @@ class EvaluationManager:
         >>> # Update same repo
         >>> url = manager.publish_to_huggingface("shackett/napistu-sage-octopus", overwrite=True)
         """
-        from napistu_torch.ml.hugging_face import HuggingFacePublisher
+        from napistu_torch.ml.hugging_face import HFModelPublisher
 
         # Use best checkpoint if not specified
         if checkpoint_path is None:
@@ -446,7 +446,7 @@ class EvaluationManager:
             commit_message = self.get_summary_string()
 
         # Initialize publisher
-        publisher = HuggingFacePublisher(token=token)
+        publisher = HFModelPublisher(token=token)
 
         # Publish
         return publisher.publish_model(

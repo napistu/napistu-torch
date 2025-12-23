@@ -78,6 +78,8 @@ class NapistuDataStore:
         Load a VertexTensor from the store
     load_pandas_df(name)
         Load a pandas DataFrame from the store
+    publish_store_to_huggingface(repo_id, revision=None, overwrite=False, commit_message=None, token=None)
+        Publish entire store to HuggingFace Hub as a read-only dataset
     save_napistu_data(napistu_data, name=None, overwrite=False)
         Save a NapistuData object to the store
     save_vertex_tensor(vertex_tensor, name=None, overwrite=False)
@@ -864,6 +866,58 @@ class NapistuDataStore:
         # Load and return
         logger.info(f"Loading pandas DataFrame from {filepath}")
         return pd.read_parquet(filepath)
+
+    def publish_store_to_huggingface(
+        self,
+        repo_id: str,
+        revision: Optional[str] = None,
+        overwrite: bool = False,
+        commit_message: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> str:
+        """
+        Publish this entire store to HuggingFace Hub.
+
+        This is a convenience method that uses HFDatasetPublisher to publish
+        all artifacts from this store to HuggingFace Hub as a dataset repository.
+        The published store will be read-only (sbml_dfs_path and napistu_graph_path
+        set to None).
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID in format "username/repo-name"
+        revision : Optional[str]
+            Git revision (branch, tag, or commit hash). Defaults to "main"
+        overwrite : bool
+            Explicitly confirm overwriting existing dataset (default: False)
+        commit_message : Optional[str]
+            Custom commit message (default: auto-generated)
+        token : Optional[str]
+            HuggingFace API token (default: uses `huggingface-cli login` token)
+
+        Returns
+        -------
+        str
+            URL to the published dataset on HuggingFace Hub
+
+        Examples
+        --------
+        >>> store = NapistuDataStore("path/to/store")
+        >>> url = store.publish_store_to_huggingface(
+        ...     repo_id="username/my-dataset"
+        ... )
+        """
+        from napistu_torch.ml.hugging_face import HFDatasetPublisher
+
+        publisher = HFDatasetPublisher(token=token)
+        return publisher.publish_store(
+            repo_id=repo_id,
+            store=self,
+            revision=revision,
+            overwrite=overwrite,
+            commit_message=commit_message,
+        )
 
     def save_napistu_data(
         self,
