@@ -469,6 +469,8 @@ class HFDatasetPublisher(HFClient):
         revision: Optional[str] = None,
         overwrite: bool = False,
         commit_message: Optional[str] = None,
+        asset_name: Optional[str] = None,
+        asset_version: Optional[str] = None,
     ) -> str:
         """
         Publish entire NapistuDataStore to HuggingFace Hub.
@@ -489,6 +491,10 @@ class HFDatasetPublisher(HFClient):
             Explicitly confirm overwriting existing dataset (default: False)
         commit_message : Optional[str]
             Custom commit message (default: auto-generated)
+        asset_name : Optional[str]
+            Name of the GCS asset used to create the store (for documentation)
+        asset_version : Optional[str]
+            Version of the GCS asset used to create the store (for documentation)
 
         Returns
         -------
@@ -507,7 +513,12 @@ class HFDatasetPublisher(HFClient):
         >>>
         >>> store = NapistuDataStore("path/to/store")
         >>> publisher = HFDatasetPublisher()
-        >>> url = publisher.publish_store("username/my-dataset", store)
+        >>> url = publisher.publish_store(
+        ...     "username/my-dataset",
+        ...     store,
+        ...     asset_name="human_consensus",
+        ...     asset_version="v1.0"
+        ... )
         """
         # Validate inputs
         self._validate_repo_id(repo_id)
@@ -532,7 +543,13 @@ class HFDatasetPublisher(HFClient):
         self._upload_registry(repo_id, registry, commit_message)
 
         # Generate and upload dataset card
-        dataset_card = generate_dataset_card(store)
+        dataset_card = generate_dataset_card(
+            store,
+            repo_id=repo_id,
+            revision=revision,
+            asset_name=asset_name,
+            asset_version=asset_version,
+        )
         logger.info("Uploading dataset card (README.md)...")
         self._upload_dataset_card(repo_id, dataset_card, commit_message)
 
@@ -1234,7 +1251,13 @@ MIT License - See [LICENSE](https://github.com/napistu/Napistu-Torch/blob/main/L
     return card
 
 
-def generate_dataset_card(store: NapistuDataStore) -> str:
+def generate_dataset_card(
+    store: NapistuDataStore,
+    repo_id: str,
+    revision: Optional[str] = None,
+    asset_name: Optional[str] = None,
+    asset_version: Optional[str] = None,
+) -> str:
     """
     Generate a dataset card (README.md) for a NapistuDataStore.
 
@@ -1242,6 +1265,14 @@ def generate_dataset_card(store: NapistuDataStore) -> str:
     ----------
     store : NapistuDataStore
         Store to generate card for
+    repo_id : str
+        HuggingFace repository ID (for usage examples)
+    revision : Optional[str]
+        Git revision (branch, tag, or commit hash) for usage examples
+    asset_name : Optional[str]
+        Name of the GCS asset used to create the store (for documentation)
+    asset_version : Optional[str]
+        Version of the GCS asset used to create the store (for documentation)
 
     Returns
     -------
@@ -1257,6 +1288,105 @@ def generate_dataset_card(store: NapistuDataStore) -> str:
         "napistu-data-store",
     ]
 
+    # Build source information section if asset details are provided
+    source_section = ""
+    if asset_name is not None:
+        source_section = "\n## Source Data\n\n"
+        source_section += f"This store was created from GCS asset: **{asset_name}**"
+        if asset_version is not None:
+            source_section += f" (version: **{asset_version}**)"
+        source_section += "\n"
+
+    # Build revision snippets for code examples
+    revision_snippet = ""
+    if revision is not None:
+        revision_snippet = f',\n    revision="{revision}"'
+
+    revision_config_snippet = ""
+    if revision is not None:
+        revision_config_snippet = f'\n    hf_revision="{revision}",'
+
+    # Build GCS section if asset details are provided
+    gcs_section = ""
+    if asset_name is not None:
+        # Build version string for code examples
+        version_str = f'"{asset_version}"' if asset_version else "None"
+
+        gcs_section = f"""
+### Load Raw Data from GCS (Optional)
+
+If you need to create new artifacts, you can convert this read-only store to a non-read-only store
+by loading the raw data from GCS and enabling artifact creation:
+
+```python
+from napistu_torch.napistu_data_store import NapistuDataStore
+from napistu.gcs.downloads import load_public_napistu_asset
+from napistu.gcs.constants import GCS_SUBASSET_NAMES
+from pathlib import Path
+import tempfile
+
+# Download raw data from GCS
+with tempfile.TemporaryDirectory() as temp_data_dir:
+    sbml_dfs_path = load_public_napistu_asset(
+        "{asset_name}",
+        temp_data_dir,
+        subasset=GCS_SUBASSET_NAMES.SBML_DFS,
+        version={version_str},
+    )
+    napistu_graph_path = load_public_napistu_asset(
+        "{asset_name}",
+        temp_data_dir,
+        subasset=GCS_SUBASSET_NAMES.NAPISTU_GRAPH,
+        version={version_str},
+    )
+    
+    # Load store from HuggingFace Hub
+    store = NapistuDataStore.from_huggingface(
+        repo_id="{repo_id}",
+        store_dir=Path("./local_store"){revision_snippet}
+    )
+    
+    # Convert to non-read-only by enabling artifact creation
+    store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+    
+    # Now you can create new artifacts
+    store.ensure_artifacts(["new_artifact_name"])
+```
+
+Alternatively, you can use `from_huggingface` with paths directly:
+
+```python
+from napistu_torch.napistu_data_store import NapistuDataStore
+from napistu.gcs.downloads import load_public_napistu_asset
+from napistu.gcs.constants import GCS_SUBASSET_NAMES
+from pathlib import Path
+import tempfile
+
+# Download raw data from GCS
+with tempfile.TemporaryDirectory() as temp_data_dir:
+    sbml_dfs_path = load_public_napistu_asset(
+        "{asset_name}",
+        temp_data_dir,
+        subasset=GCS_SUBASSET_NAMES.SBML_DFS,
+        version={version_str},
+    )
+    napistu_graph_path = load_public_napistu_asset(
+        "{asset_name}",
+        temp_data_dir,
+        subasset=GCS_SUBASSET_NAMES.NAPISTU_GRAPH,
+        version={version_str},
+    )
+    
+    # Load and convert in one step
+    store = NapistuDataStore.from_huggingface(
+        repo_id="{repo_id}",
+        store_dir=Path("./local_store"){revision_snippet},
+        sbml_dfs_path=sbml_dfs_path,
+        napistu_graph_path=napistu_graph_path,
+    )
+```
+"""
+
     # Build dataset card
     card = f"""---
 tags: {tags}
@@ -1267,7 +1397,7 @@ license: mit
 # NapistuDataStore Dataset
 
 This dataset contains a complete NapistuDataStore with all artifacts published as a read-only store.
-
+{source_section}
 ## Store Contents
 
 - **NapistuData artifacts**: {napistu_data_count}
@@ -1290,29 +1420,42 @@ This dataset contains a complete NapistuDataStore with all artifacts published a
 
 ### Load from HuggingFace Hub
 
-```python
-from huggingface_hub import hf_hub_download
-from napistu_torch.napistu_data_store import NapistuDataStore
-import tempfile
-import shutil
+The easiest way to load this dataset is using the `from_huggingface` class method:
 
-# Download registry.json and create a temporary store directory
-with tempfile.TemporaryDirectory() as temp_dir:
-    # Download registry.json
-    registry_path = hf_hub_download(
-        repo_id="username/repo-name",
-        filename="registry.json",
-        repo_type="dataset",
-        local_dir=temp_dir
-    )
-    
-    # Create store from downloaded registry
-    store = NapistuDataStore(temp_dir)
-    
-    # Use the store (read-only)
-    napistu_data = store.load_napistu_data("edge_prediction")
+```python
+from napistu_torch.napistu_data_store import NapistuDataStore
+from pathlib import Path
+
+# Load read-only store from HuggingFace Hub
+store = NapistuDataStore.from_huggingface(
+    repo_id="{repo_id}",
+    store_dir=Path("./local_store"){revision_snippet}
+)
+
+# Use the store (read-only)
+napistu_data = store.load_napistu_data("edge_prediction")
 ```
 
+### Configure DataConfig
+
+You can also use this dataset in your `DataConfig` for PyTorch Lightning experiments:
+
+```python
+from napistu_torch.configs import DataConfig
+from pathlib import Path
+
+# Configure DataConfig to load from HuggingFace Hub
+config = DataConfig(
+    store_dir=Path("./local_store"),
+    hf_repo_id="{repo_id}",{revision_config_snippet}
+    napistu_data_name="edge_prediction",
+)
+
+# Use with NapistuDataStore.from_config()
+from napistu_torch.napistu_data_store import NapistuDataStore
+store = NapistuDataStore.from_config(config)
+```
+{gcs_section}
 ## Note
 
 This is a read-only store. The `sbml_dfs_path` and `napistu_graph_path` are set to None,

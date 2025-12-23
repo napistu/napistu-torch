@@ -1061,6 +1061,8 @@ class NapistuDataStore:
         overwrite: bool = False,
         commit_message: Optional[str] = None,
         token: Optional[str] = None,
+        asset_name: Optional[str] = None,
+        asset_version: Optional[str] = None,
     ) -> str:
         """
         Publish this entire store to HuggingFace Hub.
@@ -1082,6 +1084,10 @@ class NapistuDataStore:
             Custom commit message (default: auto-generated)
         token : Optional[str]
             HuggingFace API token (default: uses `huggingface-cli login` token)
+        asset_name : Optional[str]
+            Name of the GCS asset used to create the store (for documentation)
+        asset_version : Optional[str]
+            Version of the GCS asset used to create the store (for documentation)
 
         Returns
         -------
@@ -1092,7 +1098,9 @@ class NapistuDataStore:
         --------
         >>> store = NapistuDataStore("path/to/store")
         >>> url = store.publish_store_to_huggingface(
-        ...     repo_id="username/my-dataset"
+        ...     repo_id="username/my-dataset",
+        ...     asset_name="human_consensus",
+        ...     asset_version="v1.0"
         ... )
         """
         from napistu_torch.ml.hugging_face import HFDatasetPublisher
@@ -1104,6 +1112,8 @@ class NapistuDataStore:
             revision=revision,
             overwrite=overwrite,
             commit_message=commit_message,
+            asset_name=asset_name,
+            asset_version=asset_version,
         )
 
     def save_napistu_data(

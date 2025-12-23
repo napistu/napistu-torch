@@ -193,11 +193,25 @@ def model(
     default=False,
     help="Explicitly confirm overwriting existing dataset in repo",
 )
+@click.option(
+    "--asset-name",
+    type=str,
+    default=None,
+    help="Name of the GCS asset used to create the store (for documentation)",
+)
+@click.option(
+    "--asset-version",
+    type=str,
+    default=None,
+    help="Version of the GCS asset used to create the store (for documentation)",
+)
 def dataset(
     store_dir: Path,
     repo_id: str,
     message: Optional[str],
     overwrite: bool,
+    asset_name: Optional[str],
+    asset_version: Optional[str],
 ):
     """
     Publish a NapistuDataStore to HuggingFace Hub as a dataset.
@@ -221,6 +235,10 @@ def dataset(
         # Publish with custom message
         $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
             --message "Updated dataset with new artifacts"
+
+        # Publish with source asset information
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
+            --asset-name human_consensus --asset-version v1.0
     """
     from napistu_torch.napistu_data_store import NapistuDataStore
 
@@ -238,6 +256,8 @@ def dataset(
             repo_id=repo_id,
             commit_message=message,
             overwrite=overwrite,
+            asset_name=asset_name,
+            asset_version=asset_version,
         )
 
         # Success output
