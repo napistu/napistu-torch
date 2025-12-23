@@ -720,3 +720,48 @@ def test_read_only_store_operations(
         ValueError, match="Cannot load NapistuGraph: store is read_only"
     ):
         read_only_store.load_napistu_graph()
+
+
+def test_enable_artifact_creation(sbml_dfs, napistu_graph):
+    """Test converting a read-only store to non-read-only."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a read-only store
+        read_only_store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            read_only=True,
+        )
+        assert read_only_store.read_only is True
+        assert read_only_store.sbml_dfs_path is None
+        assert read_only_store.napistu_graph_path is None
+
+        # Create pickle files for paths
+        sbml_dfs_path = Path(temp_dir) / "sbml_dfs.pkl"
+        napistu_graph_path = Path(temp_dir) / "napistu_graph.pkl"
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
+
+        # Enable artifact creation
+        read_only_store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+
+        # Verify store is now non-read-only
+        assert read_only_store.read_only is False
+        assert read_only_store.sbml_dfs_path is not None
+        assert read_only_store.napistu_graph_path is not None
+        assert read_only_store.registry[NAPISTU_DATA_STORE.READ_ONLY] is False
+
+        # Verify paths are set correctly in registry
+        napistu_raw = read_only_store.registry[NAPISTU_DATA_STORE.NAPISTU_RAW]
+        assert napistu_raw[NAPISTU_DATA_STORE.SBML_DFS] is not None
+        assert napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH] is not None
+
+        # Verify we can now load SBML_dfs and NapistuGraph
+        loaded_sbml = read_only_store.load_sbml_dfs()
+        loaded_ng = read_only_store.load_napistu_graph()
+        assert loaded_sbml is not None
+        assert loaded_ng is not None
+
+        # Verify registry persists after reload
+        reloaded_store = NapistuDataStore(store_dir=temp_dir)
+        assert reloaded_store.read_only is False
+        assert reloaded_store.sbml_dfs_path is not None
+        assert reloaded_store.napistu_graph_path is not None
