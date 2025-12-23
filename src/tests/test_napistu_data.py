@@ -17,7 +17,12 @@ from napistu.network.constants import (
 )
 from utils import assert_tensors_equal
 
-from napistu_torch.constants import NAPISTU_DATA, NAPISTU_DATA_SUMMARIES, PYG
+from napistu_torch.constants import (
+    NAPISTU_DATA,
+    NAPISTU_DATA_SUMMARIES,
+    NAPISTU_DATA_SUMMARY_TYPES,
+    PYG,
+)
 from napistu_torch.napistu_data import NapistuData
 
 
@@ -36,7 +41,7 @@ def test_feature_names(napistu_data):
 
 def test_summary(napistu_data):
     """Test the get_summary method."""
-    summary = napistu_data.get_summary()
+    summary = napistu_data.get_summary(NAPISTU_DATA_SUMMARY_TYPES.DETAILED)
 
     assert isinstance(summary, dict)
     assert PYG.NUM_NODES in summary

@@ -51,6 +51,7 @@ NAPISTU_DATA = SimpleNamespace(
     LABELS="labels",
     LABELING_MANAGER="labeling_manager",
     RELATION_TYPE="relation_type",
+    RELATION_TYPE_LABELS="relation_type_labels",
     RELATION_MANAGER="relation_manager",
     TRAIN_MASK=SPLIT_TO_MASK[TRAINING.TRAIN],
     TEST_MASK=SPLIT_TO_MASK[TRAINING.TEST],
@@ -81,6 +82,25 @@ NAPISTU_DATA_SUMMARIES = SimpleNamespace(
     NUM_VAL_EDGES="num_val_edges",
     NUM_TEST_EDGES="num_test_edges",
 )
+
+NAPISTU_DATA_SUMMARY_TYPES = SimpleNamespace(
+    ALL="all",
+    BASIC="basic",
+    DETAILED="detailed",
+    VALIDATION="validation",
+)
+
+VALID_NAPISTU_DATA_SUMMARY_TYPES = list(NAPISTU_DATA_SUMMARY_TYPES.__dict__.values())
+
+# Mask hash constants
+MASK_TO_HASH = {
+    NAPISTU_DATA.TRAIN_MASK: f"{NAPISTU_DATA.TRAIN_MASK}_hash",
+    NAPISTU_DATA.VAL_MASK: f"{NAPISTU_DATA.VAL_MASK}_hash",
+    NAPISTU_DATA.TEST_MASK: f"{NAPISTU_DATA.TEST_MASK}_hash",
+}
+
+MASK_HASHES = list(MASK_TO_HASH.values())
+VALID_MASK_HASHES = MASK_HASHES
 
 # VertexTensor
 

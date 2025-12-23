@@ -130,7 +130,7 @@ class ExperimentDict(BaseModel):
 def fit_model(
     run_manifest: RunManifest,
     resume_from: Optional[Path] = None,
-    max_corruption_restarts: int = 30,
+    max_corruption_restarts: int = 100,
     logger: Optional[logging.Logger] = logger,
 ) -> NapistuTrainer:
     """
