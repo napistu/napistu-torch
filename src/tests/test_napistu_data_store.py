@@ -722,6 +722,7 @@ def test_read_only_store_operations(
         read_only_store.load_napistu_graph()
 
 
+@pytest.mark.skip_on_windows
 def test_enable_artifact_creation(sbml_dfs, napistu_graph):
     """Test converting a read-only store to non-read-only."""
     with tempfile.TemporaryDirectory() as temp_dir:

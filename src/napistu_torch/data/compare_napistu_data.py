@@ -10,12 +10,10 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from napistu_torch.constants import (
-    MASK_HASHES,
     MASK_TO_HASH,
     NAPISTU_DATA,
-    NAPISTU_DATA_SUMMARIES,
-    PYG,
 )
+from napistu_torch.data.constants import DEFAULT_SAME_DATA_ALLOW_MISSING_KEYS
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +64,7 @@ def validate_same_data(
     >>> validate_same_data(current_summary, reference_summary)
     """
     if allow_missing_keys is None:
-        allow_missing_keys = [
-            PYG.NUM_EDGE_FEATURES,
-            NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_RELATIONS,
-            NAPISTU_DATA_SUMMARIES.NUM_UNIQUE_CLASSES,
-            *MASK_HASHES,
-        ]
+        allow_missing_keys = DEFAULT_SAME_DATA_ALLOW_MISSING_KEYS
 
     # 1. Validate keys presence
     _validate_keys(current_summary, reference_summary, allow_missing_keys)
@@ -330,8 +323,8 @@ def _validate_feature_names(
 
 
 def _validate_keys(
-    reference_summary: Dict[str, Any],
     current_summary: Dict[str, Any],
+    reference_summary: Dict[str, Any],
     allow_missing_keys: List[str],
 ) -> None:
     """
@@ -339,10 +332,10 @@ def _validate_keys(
 
     Parameters
     ----------
-    reference_summary : Dict[str, Any]
-        Data summary from reference
     current_summary : Dict[str, Any]
         Data summary from current NapistuData
+    reference_summary : Dict[str, Any]
+        Data summary from reference
     allow_missing_keys : List[str]
         Keys allowed to be missing in either summary
 
@@ -351,18 +344,18 @@ def _validate_keys(
     ValueError
         If required keys are missing
     """
-    reference_keys = set(reference_summary.keys())
     current_keys = set(current_summary.keys())
+    reference_keys = set(reference_summary.keys())
     allow_missing_keys_set = set(allow_missing_keys)
 
-    key_union = reference_keys | current_keys
-    key_intersection = reference_keys & current_keys
+    key_union = current_keys | reference_keys
+    key_intersection = current_keys & reference_keys
     key_difference = key_union - key_intersection
     key_difference_without_allow_missing = key_difference - allow_missing_keys_set
 
     if key_difference_without_allow_missing:
-        missing_in_reference = key_difference_without_allow_missing & current_keys
         missing_in_current = key_difference_without_allow_missing & reference_keys
+        missing_in_reference = key_difference_without_allow_missing & current_keys
 
         msg_parts = ["Data summary mismatch:"]
         if missing_in_current:
