@@ -124,6 +124,7 @@ NAPISTU_DATA_STORE = SimpleNamespace(
     # attributes
     SBML_DFS="sbml_dfs",
     NAPISTU_GRAPH="napistu_graph",
+    READ_ONLY="read_only",
     OVERWRITE="overwrite",
     # metadata
     LAST_MODIFIED="last_modified",

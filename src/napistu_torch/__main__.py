@@ -57,7 +57,30 @@ def cli():
             console = None
 
 
-@cli.command()
+@cli.group()
+def publish():
+    """
+    Publish models or datasets to HuggingFace Hub.
+
+    Automatically creates private repositories if they don't exist.
+    Repositories can be made public manually on huggingface.co after curation.
+
+    \b
+    Examples:
+        # Publish a model
+        $ napistu-torch publish model experiments/run_001 shackett/napistu-sage-octopus
+
+        # Publish a dataset store
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset
+
+    \b
+    Note: Requires 'napistu-torch[lightning]' to be installed.
+          Authenticate first with: huggingface-cli login
+    """
+    pass
+
+
+@publish.command()
 @click.argument(
     "experiment_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
 )
@@ -80,7 +103,7 @@ def cli():
     default=False,
     help="Explicitly confirm overwriting existing model in repo",
 )
-def publish(
+def model(
     experiment_dir: Path,
     repo_id: str,
     checkpoint: Optional[Path],
@@ -90,9 +113,6 @@ def publish(
     """
     Publish a trained model to HuggingFace Hub.
 
-    Automatically creates a private repository if it doesn't exist.
-    Repositories can be made public manually on huggingface.co after curation.
-
     EXPERIMENT_DIR: Path to experiment directory containing manifest and checkpoints
 
     REPO_ID: HuggingFace repository in format 'username/repo-name'
@@ -100,19 +120,15 @@ def publish(
     \b
     Examples:
         # First upload - creates new private repo
-        $ napistu-torch publish experiments/run_001 shackett/napistu-sage-octopus
+        $ napistu-torch publish model experiments/run_001 shackett/napistu-sage-octopus
 
         # Update existing model
-        $ napistu-torch publish experiments/run_002 shackett/napistu-sage-octopus --overwrite
+        $ napistu-torch publish model experiments/run_002 shackett/napistu-sage-octopus --overwrite
 
         # Publish specific checkpoint with custom message
-        $ napistu-torch publish experiments/run_001 shackett/napistu-transe-v1 \\
+        $ napistu-torch publish model experiments/run_001 shackett/napistu-transe-v1 \\
             --checkpoint experiments/run_001/checkpoints/epoch=50.ckpt \\
             --message "Improved model with increased dropout"
-
-    \b
-    Note: Requires 'napistu-torch[lightning]' to be installed.
-          Authenticate first with: huggingface-cli login
     """
     # Import EvaluationManager
     from napistu_torch.evaluation.evaluation_manager import EvaluationManager
@@ -148,6 +164,121 @@ def publish(
         click.echo()
         click.echo(click.style("💡 Repository is private by default", fg="yellow"))
         click.echo(f"   Make public at: {repo_url}/settings")
+
+    except RuntimeError as e:
+        # Authentication error
+        if "authentication" in str(e).lower():
+            click.echo(click.style("\n✗ HuggingFace authentication failed", fg="red"))
+            click.echo("\nAuthenticate with: huggingface-cli login")
+        raise click.ClickException(str(e))
+    except ValueError as e:
+        # Validation error (e.g., repo exists without --overwrite)
+        raise click.ClickException(str(e))
+
+
+@publish.command()
+@click.argument(
+    "store_dir", type=click.Path(exists=True, file_okay=False, path_type=Path)
+)
+@click.argument("repo_id", type=str)
+@click.option(
+    "--message",
+    type=str,
+    default=None,
+    help="Custom commit message (default: auto-generated from store name)",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    default=False,
+    help="Explicitly confirm overwriting existing dataset in repo",
+)
+@click.option(
+    "--asset-name",
+    type=str,
+    default=None,
+    help="Name of the GCS asset used to create the store (for documentation)",
+)
+@click.option(
+    "--asset-version",
+    type=str,
+    default=None,
+    help="Version of the GCS asset used to create the store (for documentation)",
+)
+def dataset(
+    store_dir: Path,
+    repo_id: str,
+    message: Optional[str],
+    overwrite: bool,
+    asset_name: Optional[str],
+    asset_version: Optional[str],
+):
+    """
+    Publish a NapistuDataStore to HuggingFace Hub as a dataset.
+
+    Uploads all artifacts from the store to a HuggingFace dataset repository.
+    The published store will be read-only (sbml_dfs_path and napistu_graph_path
+    set to None).
+
+    STORE_DIR: Path to NapistuDataStore directory containing registry.json and artifacts
+
+    REPO_ID: HuggingFace repository in format 'username/repo-name'
+
+    \b
+    Examples:
+        # First upload - creates new private repo
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset
+
+        # Update existing dataset
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset --overwrite
+
+        # Publish with custom message
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
+            --message "Updated dataset with new artifacts"
+
+        # Publish with source asset information
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
+            --asset-name human_consensus --asset-version v1.0
+    """
+    from napistu_torch.napistu_data_store import NapistuDataStore
+
+    # Load the store
+    try:
+        store = NapistuDataStore(store_dir)
+    except Exception as e:
+        raise click.ClickException(
+            f"Failed to load NapistuDataStore from {store_dir}: {e}"
+        )
+
+    # Publish to HuggingFace Hub
+    try:
+        repo_url = store.publish_store_to_huggingface(
+            repo_id=repo_id,
+            commit_message=message,
+            overwrite=overwrite,
+            asset_name=asset_name,
+            asset_version=asset_version,
+        )
+
+        # Success output
+        click.echo()
+        click.echo(click.style("✅ Published successfully!", fg="green", bold=True))
+        click.echo(f"   URL: {repo_url}")
+        click.echo()
+        click.echo("   Uploaded files:")
+        click.echo("     • registry.json (read-only)")
+        click.echo("     • All artifacts from store")
+        click.echo("     • README.md")
+        click.echo()
+        click.echo(click.style("💡 Repository is private by default", fg="yellow"))
+        click.echo(f"   Make public at: {repo_url}/settings")
+        click.echo()
+        click.echo(
+            click.style(
+                "📝 Note: Published store is read-only (sbml_dfs_path and napistu_graph_path set to None)",
+                fg="blue",
+            )
+        )
 
     except RuntimeError as e:
         # Authentication error

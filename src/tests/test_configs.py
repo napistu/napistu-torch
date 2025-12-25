@@ -396,7 +396,6 @@ class TestDataConfig:
         assert DATA_CONFIG.SBML_DFS_PATH in model_fields
         assert DATA_CONFIG.NAPISTU_GRAPH_PATH in model_fields
         assert DATA_CONFIG.COPY_TO_STORE in model_fields
-        assert DATA_CONFIG.OVERWRITE in model_fields
         assert DATA_CONFIG.NAPISTU_DATA_NAME in model_fields
         assert DATA_CONFIG.OTHER_ARTIFACTS in model_fields
 
@@ -410,7 +409,6 @@ class TestDataConfig:
 
         assert config.store_dir == Path(".store")
         assert config.copy_to_store is False
-        assert config.overwrite is False
         assert config.napistu_data_name == DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION
         assert config.other_artifacts == []
 
@@ -422,7 +420,6 @@ class TestDataConfig:
             sbml_dfs_path=Path("custom_sbml.pkl"),
             napistu_graph_path=Path("custom_graph.pkl"),
             copy_to_store=True,
-            overwrite=True,
             napistu_data_name=DEFAULT_ARTIFACTS_NAMES.UNLABELED,
             other_artifacts=[
                 DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
@@ -434,7 +431,6 @@ class TestDataConfig:
         assert config.sbml_dfs_path == Path("custom_sbml.pkl")
         assert config.napistu_graph_path == Path("custom_graph.pkl")
         assert config.copy_to_store is True
-        assert config.overwrite is True
         assert config.napistu_data_name == DEFAULT_ARTIFACTS_NAMES.UNLABELED
         assert config.other_artifacts == [
             DEFAULT_ARTIFACTS_NAMES.EDGE_PREDICTION,
@@ -962,7 +958,6 @@ class TestExperimentConfig:
                 sbml_dfs_path=Path("/PATH/TO/DATA/sbml.pkl"),
                 napistu_graph_path=Path("/PATH/TO/DATA/graph.pkl"),
                 copy_to_store=False,
-                overwrite=False,
                 napistu_data_name="test",
                 other_artifacts=[],
             ),

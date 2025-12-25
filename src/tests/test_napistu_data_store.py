@@ -649,3 +649,120 @@ def test_list_artifacts(
     # Test invalid artifact type
     with pytest.raises(ValueError, match="Invalid artifact type"):
         store.list_artifacts("invalid_type")
+
+
+# Tests for read-only mode
+def test_create_read_only_store(caplog):
+    """Test creating a read-only store."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Case 1: Create read-only store without paths
+        store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            read_only=True,
+        )
+
+        # Verify read_only attribute and paths
+        assert store.read_only is True
+        assert store.sbml_dfs_path is None
+        assert store.napistu_graph_path is None
+        assert store.registry[NAPISTU_DATA_STORE.READ_ONLY] is True
+
+        # Case 2: Create read-only store with paths (should be ignored with warning)
+        with tempfile.TemporaryDirectory() as temp_dir2:
+            sbml_dfs_path = Path(temp_dir2) / "mock_sbml_dfs.pkl"
+            napistu_graph_path = Path(temp_dir2) / "mock_napistu_graph.pkl"
+            sbml_dfs_path.touch()
+            napistu_graph_path.touch()
+
+            with caplog.at_level(logging.WARNING):
+                store2 = NapistuDataStore.create(
+                    store_dir=temp_dir2,
+                    read_only=True,
+                    sbml_dfs_path=sbml_dfs_path,
+                    napistu_graph_path=napistu_graph_path,
+                )
+
+            # Verify warnings were logged
+            assert "will be ignored becasue read_only is True" in caplog.text
+
+            # Verify paths are still None despite being provided
+            assert store2.read_only is True
+            assert store2.sbml_dfs_path is None
+            assert store2.napistu_graph_path is None
+
+
+def test_read_only_store_operations(
+    temp_napistu_data_store, species_type_prediction_napistu_data
+):
+    """Test initializing and working with a read-only store."""
+    # Create a regular store and save an artifact
+    store = temp_napistu_data_store
+    store.save_napistu_data(species_type_prediction_napistu_data, overwrite=True)
+
+    # Convert to read-only by setting flag in registry
+    store.registry[NAPISTU_DATA_STORE.READ_ONLY] = True
+    store._save_registry()
+
+    # Reload as read-only store
+    read_only_store = NapistuDataStore(store_dir=store.store_dir)
+    assert read_only_store.read_only is True
+
+    # Can load existing artifacts
+    loaded_data = read_only_store.load_napistu_data(
+        species_type_prediction_napistu_data.name
+    )
+    _verify_napistu_data_equality(species_type_prediction_napistu_data, loaded_data)
+
+    # Cannot load SBML_dfs or NapistuGraph
+    with pytest.raises(ValueError, match="Cannot load SBML_dfs: store is read_only"):
+        read_only_store.load_sbml_dfs()
+    with pytest.raises(
+        ValueError, match="Cannot load NapistuGraph: store is read_only"
+    ):
+        read_only_store.load_napistu_graph()
+
+
+@pytest.mark.skip_on_windows
+def test_enable_artifact_creation(sbml_dfs, napistu_graph):
+    """Test converting a read-only store to non-read-only."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a read-only store
+        read_only_store = NapistuDataStore.create(
+            store_dir=temp_dir,
+            read_only=True,
+        )
+        assert read_only_store.read_only is True
+        assert read_only_store.sbml_dfs_path is None
+        assert read_only_store.napistu_graph_path is None
+
+        # Create pickle files for paths
+        sbml_dfs_path = Path(temp_dir) / "sbml_dfs.pkl"
+        napistu_graph_path = Path(temp_dir) / "napistu_graph.pkl"
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
+
+        # Enable artifact creation
+        read_only_store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+
+        # Verify store is now non-read-only
+        assert read_only_store.read_only is False
+        assert read_only_store.sbml_dfs_path is not None
+        assert read_only_store.napistu_graph_path is not None
+        assert read_only_store.registry[NAPISTU_DATA_STORE.READ_ONLY] is False
+
+        # Verify paths are set correctly in registry
+        napistu_raw = read_only_store.registry[NAPISTU_DATA_STORE.NAPISTU_RAW]
+        assert napistu_raw[NAPISTU_DATA_STORE.SBML_DFS] is not None
+        assert napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH] is not None
+
+        # Verify we can now load SBML_dfs and NapistuGraph
+        loaded_sbml = read_only_store.load_sbml_dfs()
+        loaded_ng = read_only_store.load_napistu_graph()
+        assert loaded_sbml is not None
+        assert loaded_ng is not None
+
+        # Verify registry persists after reload
+        reloaded_store = NapistuDataStore(store_dir=temp_dir)
+        assert reloaded_store.read_only is False
+        assert reloaded_store.sbml_dfs_path is not None
+        assert reloaded_store.napistu_graph_path is not None

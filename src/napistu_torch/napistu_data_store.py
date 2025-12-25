@@ -56,12 +56,17 @@ class NapistuDataStore:
     --------------
     create(store_dir, sbml_dfs_path, napistu_graph_path, copy_to_store=False, overwrite=False)
         Create a new NapistuDataStore
+    enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+        Convert a read-only store to non-read-only by enabling artifact creation.
     ensure_artifacts(artifact_names, artifact_registry=DEFAULT_ARTIFACT_REGISTRY, overwrite=False)
         Ensure specified artifacts exist in the store, creating if missing.
     get_missing_artifacts(artifact_names)
         Check which artifacts are missing from the store.
     from_config(config)
         Create or load a NapistuDataStore from a DataConfig.
+    from_huggingface(repo_id, store_dir, revision=None, token=None, sbml_dfs_path=None, napistu_graph_path=None)
+        Download and create a NapistuDataStore from HuggingFace Hub.
+        Optionally convert from read-only to non-read-only by providing paths.
     list_napistu_datas()
         List all NapistuData names in the store
     list_vertex_tensors()
@@ -78,6 +83,8 @@ class NapistuDataStore:
         Load a VertexTensor from the store
     load_pandas_df(name)
         Load a pandas DataFrame from the store
+    publish_store_to_huggingface(repo_id, revision=None, overwrite=False, commit_message=None, token=None)
+        Publish entire store to HuggingFace Hub as a read-only dataset
     save_napistu_data(napistu_data, name=None, overwrite=False)
         Save a NapistuData object to the store
     save_vertex_tensor(vertex_tensor, name=None, overwrite=False)
@@ -126,21 +133,42 @@ class NapistuDataStore:
         # Load registry
         self.registry = self._load_registry()
 
+        # Set read_only attribute (default to False for backward compatibility)
+        self.read_only = self.registry.get(NAPISTU_DATA_STORE.READ_ONLY, False)
+
         # set attributes based on values in the registry
         napistu_raw = self.registry[NAPISTU_DATA_STORE.NAPISTU_RAW]
-        self.sbml_dfs_path = _resolve_path(
-            napistu_raw[NAPISTU_DATA_STORE.SBML_DFS], self.store_dir
-        )
-        self.napistu_graph_path = _resolve_path(
-            napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH], self.store_dir
-        )
+        sbml_dfs_path_str = napistu_raw[NAPISTU_DATA_STORE.SBML_DFS]
+        napistu_graph_path_str = napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH]
+
+        # Handle None paths (read_only stores)
+        if self.read_only:
+            self.sbml_dfs_path = None
+        else:
+            if sbml_dfs_path_str is None:
+                raise FileNotFoundError(
+                    "SBML_dfs file is not set but read_only is False"
+                )
+            self.sbml_dfs_path = _resolve_path(sbml_dfs_path_str, self.store_dir)
+
+        if self.read_only:
+            self.napistu_graph_path = None
+        else:
+            if napistu_graph_path_str is None:
+                raise FileNotFoundError(
+                    "NapistuGraph file is not set but read_only is False"
+                )
+            self.napistu_graph_path = _resolve_path(
+                napistu_graph_path_str, self.store_dir
+            )
 
     @classmethod
     def create(
         cls,
         store_dir: Union[str, Path],
-        sbml_dfs_path: Union[str, Path],
-        napistu_graph_path: Union[str, Path],
+        read_only: bool = False,
+        sbml_dfs_path: Optional[Union[str, Path]] = None,
+        napistu_graph_path: Optional[Union[str, Path]] = None,
         copy_to_store: bool = False,
         overwrite: bool = False,
     ) -> "NapistuDataStore":
@@ -151,13 +179,17 @@ class NapistuDataStore:
         ----------
         store_dir : Union[str, Path]
             Root directory for this store
-        sbml_dfs_path : Union[str, Path]
-            Path to the SBML_dfs pickle file
-        napistu_graph_path : Union[str, Path]
-            Path to the NapistuGraph pickle file
+        read_only: bool, default=False
+            If True, the store will be read-only which means that no new artifacts
+            can be created. If True, sbml_dfs_path and napistu_graph_path will be ignored.
+        sbml_dfs_path : Optional[Union[str, Path]], default=None
+            Path to the SBML_dfs pickle file. Ignored if read_only is True.
+        napistu_graph_path : Optional[Union[str, Path]], default=None
+            Path to the NapistuGraph pickle file. Ignored if read_only is True.
         copy_to_store : bool, default=False
             If True, copy the files into the store directory and store relative paths.
             If False, store absolute paths to the original files.
+            Ignored if read_only is True.
         overwrite : bool, default=False
             If True, remove existing store_dir if it exists before creating new store.
             If False, raise FileExistsError if store_dir already exists.
@@ -172,7 +204,7 @@ class NapistuDataStore:
         FileExistsError
             If a registry.json already exists at store_dir and overwrite=False
         FileNotFoundError
-            If the specified napistu files don't exist
+            If the specified napistu files don't exist (only when read_only=False)
 
         Examples
         --------
@@ -185,8 +217,6 @@ class NapistuDataStore:
         ... )
         """
         store_dir = Path(store_dir)
-        sbml_dfs_path = Path(sbml_dfs_path)
-        napistu_graph_path = Path(napistu_graph_path)
         registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
 
         # Handle overwrite logic
@@ -194,7 +224,27 @@ class NapistuDataStore:
             logger.warning(f"Overwriting existing store at {store_dir}")
             shutil.rmtree(store_dir)
 
-        _validate_create_inputs(registry_path, sbml_dfs_path, napistu_graph_path)
+        # Skip path validation and copying when read_only is True
+        if not read_only:
+            sbml_dfs_path = Path(sbml_dfs_path) if sbml_dfs_path is not None else None
+            napistu_graph_path = (
+                Path(napistu_graph_path) if napistu_graph_path is not None else None
+            )
+            _validate_create_inputs(registry_path, sbml_dfs_path, napistu_graph_path)
+
+        else:
+            if sbml_dfs_path is not None:
+                logger.warning(
+                    f"sbml_dfs_path {sbml_dfs_path} will be ignored becasue read_only is True"
+                )
+            if napistu_graph_path is not None:
+                logger.warning(
+                    f"napistu_graph_path {napistu_graph_path} will be ignored becasue read_only is True"
+                )
+
+            # In read_only mode, paths are ignored
+            sbml_dfs_path = None
+            napistu_graph_path = None
 
         # create directories
         store_dir.mkdir(parents=True, exist_ok=True)
@@ -204,13 +254,14 @@ class NapistuDataStore:
         vertex_tensors_dir.mkdir(exist_ok=True)
         pandas_dfs_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.PANDAS_DFS
         pandas_dfs_dir.mkdir(exist_ok=True)
-        if copy_to_store:
+
+        # Only create napistu_raw directory and copy files if not read_only
+        if not read_only and copy_to_store:
             napistu_raw_dir = store_dir / NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_RAW
             napistu_raw_dir.mkdir(exist_ok=True)
 
-        # copy sbml_dfs and napistu_graph to store if requested
-        if copy_to_store:
-
+        # copy sbml_dfs and napistu_graph to store if requested (and not read_only)
+        if not read_only and copy_to_store:
             # Copy files to store
             cached_sbml_path = napistu_raw_dir / sbml_dfs_path.name
             cached_ng_path = napistu_raw_dir / napistu_graph_path.name
@@ -231,7 +282,7 @@ class NapistuDataStore:
                 NAPISTU_DATA_STORE.SBML_DFS: str(sbml_relative),
                 NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(ng_relative),
             }
-        else:
+        elif not read_only:
             # Store normalized absolute paths to original files
             napistu_entry = {
                 NAPISTU_DATA_STORE.SBML_DFS: str(
@@ -241,9 +292,16 @@ class NapistuDataStore:
                     _resolve_path(napistu_graph_path, store_dir)
                 ),
             }
+        else:
+            # read_only mode: store None for paths
+            napistu_entry = {
+                NAPISTU_DATA_STORE.SBML_DFS: None,
+                NAPISTU_DATA_STORE.NAPISTU_GRAPH: None,
+            }
 
         # Create initial registry
         registry = {
+            NAPISTU_DATA_STORE.READ_ONLY: read_only,
             NAPISTU_DATA_STORE.NAPISTU_RAW: napistu_entry,
             NAPISTU_DATA_STORE.NAPISTU_DATA: {},
             NAPISTU_DATA_STORE.VERTEX_TENSORS: {},
@@ -257,6 +315,75 @@ class NapistuDataStore:
 
         # Return new instance
         return cls(store_dir)
+
+    def enable_artifact_creation(
+        self,
+        sbml_dfs_path: Union[str, Path],
+        napistu_graph_path: Union[str, Path],
+    ) -> None:
+        """
+        Convert a read-only store to non-read-only by enabling artifact creation.
+
+        Updates the registry to set READ_ONLY to False and store paths to SBML_dfs
+        and NapistuGraph files, allowing the store to create new artifacts.
+
+        Parameters
+        ----------
+        sbml_dfs_path : Union[str, Path]
+            Path to SBML_dfs pickle file
+        napistu_graph_path : Union[str, Path]
+            Path to NapistuGraph pickle file
+
+        Raises
+        ------
+        ValueError
+            If store is already non-read-only
+        FileNotFoundError
+            If the provided paths don't exist
+        """
+        # Validate that store is currently read-only
+        if not self.read_only:
+            logger.warning(
+                "Store is already non-read-only. Cannot enable artifact creation on a store that already has artifact creation enabled."
+            )
+            return
+
+        # Validate that files exist
+        sbml_dfs_path = Path(sbml_dfs_path)
+        napistu_graph_path = Path(napistu_graph_path)
+
+        if not sbml_dfs_path.is_file():
+            raise FileNotFoundError(f"SBML_dfs file not found: {sbml_dfs_path}")
+        if not napistu_graph_path.is_file():
+            raise FileNotFoundError(
+                f"NapistuGraph file not found: {napistu_graph_path}"
+            )
+
+        # Update registry to convert from read-only to non-read-only
+        logger.info(
+            "Converting store from read-only to non-read-only by updating registry..."
+        )
+
+        # Resolve paths (handles both absolute and relative paths)
+        resolved_sbml_path = _resolve_path(str(sbml_dfs_path), self.store_dir)
+        resolved_ng_path = _resolve_path(str(napistu_graph_path), self.store_dir)
+
+        # Update registry
+        self.registry[NAPISTU_DATA_STORE.READ_ONLY] = False
+        self.registry[NAPISTU_DATA_STORE.NAPISTU_RAW] = {
+            NAPISTU_DATA_STORE.SBML_DFS: str(resolved_sbml_path),
+            NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(resolved_ng_path),
+        }
+
+        # Save updated registry
+        self._save_registry()
+
+        # Update instance attributes
+        self.read_only = False
+        self.sbml_dfs_path = resolved_sbml_path
+        self.napistu_graph_path = resolved_ng_path
+
+        logger.info("✓ Store converted to non-read-only")
 
     def ensure_artifacts(
         self,
@@ -318,6 +445,21 @@ class NapistuDataStore:
         if not to_create:
             logger.info("All requested artifacts already exist in store")
             return
+
+        # Check if store is read_only (only if we need to create artifacts)
+        if self.read_only:
+            raise ValueError(
+                "Cannot create artifacts: store is read_only. "
+                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph. "
+                f"{len(to_create)} artifacts are unavailable: {to_create}"
+            )
+
+        if self.read_only:
+            raise ValueError(
+                "Cannot create artifacts: store is read_only. "
+                "Read-only stores cannot create new artifacts that require SBML_dfs or NapistuGraph. "
+                f"{len(to_create)} artifacts are unavailable: {to_create}"
+            )
 
         logger.info(f"Need to create {len(to_create)} artifacts: {to_create}")
 
@@ -429,17 +571,21 @@ class NapistuDataStore:
         Create or load a NapistuDataStore from a DataConfig.
 
         Flow:
-        1. If store exists and not config.overwrite: load existing store
-        2. If store doesn't exist or config.overwrite: create new store
-        - Uses sbml_dfs_path and napistu_graph_path from config
-        - Copies to store if config.copy_to_store is True
+        1. If store exists: load existing store
+        2. If store doesn't exist:
+           - If config.hf_repo_id is provided: load store from HuggingFace Hub
+             * If sbml_dfs_path and napistu_graph_path are provided: convert to non-read-only
+           - Otherwise: create new store locally (requires sbml_dfs_path and napistu_graph_path)
+             * Creates regular store with provided paths
+             * Copies to store if config.copy_to_store is True
         3. Ensure napistu_data_name, other_artifacts, and task artifacts exist (always, regardless of store creation)
 
         Parameters
         ----------
         config : DataConfig
             Configuration with store location, artifact paths, and requirements.
-            Must include sbml_dfs_path and napistu_graph_path.
+            If hf_repo_id is provided and store doesn't exist, the store will be loaded from HuggingFace Hub.
+            Otherwise, both sbml_dfs_path and napistu_graph_path are required to create a new store.
         task_config : Optional[TaskConfig], default=None
             Optional task configuration. If provided, artifacts required by the task
             will be added to the required artifacts list.
@@ -454,6 +600,9 @@ class NapistuDataStore:
 
         Raises
         ------
+        ValueError
+            If store doesn't exist and neither hf_repo_id nor both paths are provided
+            If hf_repo_id is provided but only one of sbml_dfs_path or napistu_graph_path is provided
         FileNotFoundError
             If sbml_dfs_path or napistu_graph_path don't exist when creating new store
 
@@ -462,48 +611,89 @@ class NapistuDataStore:
         >>> from napistu_torch.configs import DataConfig
         >>> from pathlib import Path
         >>>
+        >>> # Create a regular store with paths
         >>> config = DataConfig(
-        ...     store_dir=Path(".store/ecoli"),
-        ...     sbml_dfs_path=Path("/data/ecoli_sbml_dfs.pkl"),
-        ...     napistu_graph_path=Path("/data/ecoli_ng.pkl"),
+        ...     store_dir=Path(".store"),
+        ...     sbml_dfs_path=Path("/path/to/sbml_dfs.pkl"),
+        ...     napistu_graph_path=Path("/path/to/napistu_graph.pkl"),
         ...     copy_to_store=True,
         ...     napistu_data_name="edge_prediction",
         ...     other_artifacts=["unlabeled"]
         ... )
         >>> store = NapistuDataStore.from_config(config)
+        >>>
+        >>> # Load store from HuggingFace Hub
+        >>> hf_config = DataConfig(
+        ...     store_dir=Path(".store"),
+        ...     hf_repo_id="username/my-dataset",
+        ...     hf_revision="v1.0",
+        ...     napistu_data_name="edge_prediction"
+        ... )
+        >>> hf_store = NapistuDataStore.from_config(hf_config)
+        >>>
+        >>> # Load from HuggingFace and convert to non-read-only
+        >>> hf_config_with_paths = DataConfig(
+        ...     store_dir=Path(".store"),
+        ...     hf_repo_id="username/my-dataset",
+        ...     sbml_dfs_path=Path("/path/to/sbml_dfs.pkl"),
+        ...     napistu_graph_path=Path("/path/to/napistu_graph.pkl"),
+        ...     napistu_data_name="edge_prediction"
+        ... )
+        >>> hf_store = NapistuDataStore.from_config(hf_config_with_paths)
         """
         store_dir = config.store_dir
         registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
 
         # Determine if we need to create or load the store
-        if registry_path.exists() and not config.overwrite:
+        if registry_path.is_file():
             # Store exists - load it
             logger.info(f"Loading existing store from {store_dir}")
             store = cls(store_dir)
         else:
-            # Store doesn't exist or we're overwriting - create new store
-            logger.info(f"Creating new store at {store_dir}")
-
-            # Validate that paths exist
-            if not config.sbml_dfs_path.is_file():
-                raise FileNotFoundError(
-                    f"SBML_dfs file not found: {config.sbml_dfs_path}. "
-                    "Please provide a valid path in config.sbml_dfs_path"
+            # Store doesn't exist
+            # Check if we should load from HuggingFace Hub
+            if config.hf_repo_id is not None:
+                # Load store from HuggingFace Hub
+                logger.info(
+                    f"Loading store from HuggingFace Hub: {config.hf_repo_id} "
+                    f"(revision: {config.hf_revision or 'main'})"
                 )
-            if not config.napistu_graph_path.is_file():
-                raise FileNotFoundError(
-                    f"NapistuGraph file not found: {config.napistu_graph_path}. "
-                    "Please provide a valid path in config.napistu_graph_path"
+                store = cls.from_huggingface(
+                    repo_id=config.hf_repo_id,
+                    store_dir=store_dir,
+                    revision=config.hf_revision,
+                    sbml_dfs_path=config.sbml_dfs_path,
+                    napistu_graph_path=config.napistu_graph_path,
                 )
+            else:
+                # Create new store locally - requires paths or hf_repo_id
+                if config.sbml_dfs_path is None or config.napistu_graph_path is None:
+                    raise ValueError(
+                        "Cannot create a new store: both sbml_dfs_path and napistu_graph_path are required "
+                        "when creating a local store. Alternatively, provide hf_repo_id to load from HuggingFace Hub."
+                    )
 
-            # Create store
-            store = cls.create(
-                store_dir=store_dir,
-                sbml_dfs_path=config.sbml_dfs_path,
-                napistu_graph_path=config.napistu_graph_path,
-                copy_to_store=config.copy_to_store,
-                overwrite=config.overwrite,
-            )
+                logger.info(f"Creating new store at {store_dir}")
+
+                # Validate that paths exist
+                if not config.sbml_dfs_path.is_file():
+                    raise FileNotFoundError(
+                        f"SBML_dfs file not found: {config.sbml_dfs_path}. "
+                        "Please provide a valid path in config.sbml_dfs_path"
+                    )
+                if not config.napistu_graph_path.is_file():
+                    raise FileNotFoundError(
+                        f"NapistuGraph file not found: {config.napistu_graph_path}. "
+                        "Please provide a valid path in config.napistu_graph_path"
+                    )
+
+                # Create store with paths
+                store = cls.create(
+                    store_dir=store_dir,
+                    sbml_dfs_path=config.sbml_dfs_path,
+                    napistu_graph_path=config.napistu_graph_path,
+                    copy_to_store=config.copy_to_store,
+                )
 
         # Conditionally ensure required artifacts exist
         if ensure_artifacts:
@@ -518,7 +708,103 @@ class NapistuDataStore:
 
             if required_artifacts:
                 logger.info(f"Ensuring required artifacts exist: {required_artifacts}")
-                store.ensure_artifacts(required_artifacts, overwrite=config.overwrite)
+                store.ensure_artifacts(required_artifacts, overwrite=False)
+
+        return store
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        repo_id: str,
+        store_dir: Union[str, Path],
+        revision: Optional[str] = None,
+        token: Optional[str] = None,
+        sbml_dfs_path: Optional[Union[str, Path]] = None,
+        napistu_graph_path: Optional[Union[str, Path]] = None,
+    ) -> "NapistuDataStore":
+        """
+        Download and create a NapistuDataStore from HuggingFace Hub.
+
+        This is a convenience method that uses HFDatasetLoader to download a store
+        from HuggingFace Hub and create a local NapistuDataStore instance.
+
+        If sbml_dfs_path and napistu_graph_path are provided, the store will be
+        converted from read-only to non-read-only, allowing artifact creation.
+
+        Parameters
+        ----------
+        repo_id : str
+            HuggingFace repository in format "username/repo-name"
+        store_dir : Union[str, Path]
+            Local directory where the store will be created
+        revision : Optional[str]
+            Git revision (branch, tag, or commit hash). Defaults to "main"
+        token : Optional[str]
+            HuggingFace access token for private repositories
+        sbml_dfs_path : Optional[Union[str, Path]]
+            Path to SBML_dfs pickle file. If provided along with napistu_graph_path,
+            converts the store from read-only to non-read-only.
+        napistu_graph_path : Optional[Union[str, Path]]
+            Path to NapistuGraph pickle file. If provided along with sbml_dfs_path,
+            converts the store from read-only to non-read-only.
+
+        Returns
+        -------
+        NapistuDataStore
+            Loaded store ready to use
+
+        Raises
+        ------
+        ValueError
+            If only one of sbml_dfs_path or napistu_graph_path is provided
+        FileNotFoundError
+            If the provided paths don't exist
+
+        Examples
+        --------
+        >>> from napistu_torch.napistu_data_store import NapistuDataStore
+        >>> from pathlib import Path
+        >>>
+        >>> # Load read-only store from HuggingFace Hub
+        >>> store = NapistuDataStore.from_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     store_dir=Path("./local_store")
+        ... )
+        >>>
+        >>> # Load and convert to non-read-only store
+        >>> store = NapistuDataStore.from_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     store_dir=Path("./local_store"),
+        ...     sbml_dfs_path=Path("/data/sbml_dfs.pkl"),
+        ...     napistu_graph_path=Path("/data/graph.pkl")
+        ... )
+        >>>
+        >>> # Use the store
+        >>> napistu_data = store.load_napistu_data("edge_prediction")
+        """
+        from napistu_torch.ml.hugging_face import HFDatasetLoader
+
+        loader = HFDatasetLoader(
+            repo_id=repo_id,
+            store_dir=store_dir,
+            revision=revision,
+            token=token,
+        )
+        store_dir_path = loader.load_store()
+
+        # Load the store first
+        store = cls(store_dir_path)
+
+        # Convert to non-read-only if paths are provided
+        if sbml_dfs_path is not None or napistu_graph_path is not None:
+            # Validate that both paths are provided
+            if sbml_dfs_path is None or napistu_graph_path is None:
+                raise ValueError(
+                    "Both sbml_dfs_path and napistu_graph_path must be provided together "
+                    "to convert the store from read-only to non-read-only. "
+                    "Cannot provide only one."
+                )
+            store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
 
         return store
 
@@ -663,6 +949,11 @@ class NapistuDataStore:
 
     def load_napistu_graph(self) -> NapistuGraph:
         """Load the NapistuGraph from disk."""
+        if self.read_only:
+            raise ValueError(
+                "Cannot load NapistuGraph: store is read_only and "
+                "no napistu_graph_path was provided."
+            )
         if self.napistu_graph_path.is_file():
             return NapistuGraph.from_pickle(self.napistu_graph_path)
         else:
@@ -672,6 +963,11 @@ class NapistuDataStore:
 
     def load_sbml_dfs(self) -> SBML_dfs:
         """Load the SBML_dfs from disk."""
+        if self.read_only:
+            raise ValueError(
+                "Cannot load SBML_dfs: store is read_only and "
+                "no sbml_dfs_path was provided."
+            )
         if self.sbml_dfs_path.is_file():
             return SBML_dfs.from_pickle(self.sbml_dfs_path)
         else:
@@ -757,6 +1053,68 @@ class NapistuDataStore:
         # Load and return
         logger.info(f"Loading pandas DataFrame from {filepath}")
         return pd.read_parquet(filepath)
+
+    def publish_store_to_huggingface(
+        self,
+        repo_id: str,
+        revision: Optional[str] = None,
+        overwrite: bool = False,
+        commit_message: Optional[str] = None,
+        token: Optional[str] = None,
+        asset_name: Optional[str] = None,
+        asset_version: Optional[str] = None,
+    ) -> str:
+        """
+        Publish this entire store to HuggingFace Hub.
+
+        This is a convenience method that uses HFDatasetPublisher to publish
+        all artifacts from this store to HuggingFace Hub as a dataset repository.
+        The published store will be read-only (sbml_dfs_path and napistu_graph_path
+        set to None).
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID in format "username/repo-name"
+        revision : Optional[str]
+            Git revision (branch, tag, or commit hash). Defaults to "main"
+        overwrite : bool
+            Explicitly confirm overwriting existing dataset (default: False)
+        commit_message : Optional[str]
+            Custom commit message (default: auto-generated)
+        token : Optional[str]
+            HuggingFace API token (default: uses `huggingface-cli login` token)
+        asset_name : Optional[str]
+            Name of the GCS asset used to create the store (for documentation)
+        asset_version : Optional[str]
+            Version of the GCS asset used to create the store (for documentation)
+
+        Returns
+        -------
+        str
+            URL to the published dataset on HuggingFace Hub
+
+        Examples
+        --------
+        >>> store = NapistuDataStore("path/to/store")
+        >>> url = store.publish_store_to_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     asset_name="human_consensus",
+        ...     asset_version="v1.0"
+        ... )
+        """
+        from napistu_torch.ml.hugging_face import HFDatasetPublisher
+
+        publisher = HFDatasetPublisher(token=token)
+        return publisher.publish_store(
+            repo_id=repo_id,
+            store=self,
+            revision=revision,
+            overwrite=overwrite,
+            commit_message=commit_message,
+            asset_name=asset_name,
+            asset_version=asset_version,
+        )
 
     def save_napistu_data(
         self,
@@ -1114,6 +1472,11 @@ def _validate_create_inputs(
             f"Registry already exists at {registry_path}. "
             f"Use NapistuDataStore(store_dir) to load it."
         )
+
+    if sbml_dfs_path is None:
+        raise FileNotFoundError("sbml_dfs_path is required but was not provided")
+    if napistu_graph_path is None:
+        raise FileNotFoundError("napistu_graph_path is required but was not provided")
 
     if not sbml_dfs_path.is_file():
         raise FileNotFoundError(f"SBML_dfs file not found: {sbml_dfs_path}")
