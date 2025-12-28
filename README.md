@@ -3,6 +3,7 @@
 Python package supporting integration of Napistu network graphs and PyTorch NNs
 
 [![PyPI version](https://badge.fury.io/py/napistu_torch.svg)](https://badge.fury.io/py/napistu_torch)
+[![Documentation](https://readthedocs.org/projects/napistu-torch/badge/?version=latest)](https://napistu-torch.readthedocs.io/)
 [![CI](https://github.com/napistu/napistu-torch/actions/workflows/ci.yml/badge.svg)](https://github.com/napistu/napistu-torch/actions/workflows/ci.yml)
 [![Release](https://github.com/napistu/napistu-torch/actions/workflows/release.yml/badge.svg)](https://github.com/napistu/napistu-torch/actions/workflows/release.yml)
 [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
