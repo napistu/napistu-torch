@@ -1063,6 +1063,8 @@ class NapistuDataStore:
         token: Optional[str] = None,
         asset_name: Optional[str] = None,
         asset_version: Optional[str] = None,
+        tag: Optional[str] = None,
+        tag_message: Optional[str] = None,
     ) -> str:
         """
         Publish this entire store to HuggingFace Hub.
@@ -1088,6 +1090,10 @@ class NapistuDataStore:
             Name of the GCS asset used to create the store (for documentation)
         asset_version : Optional[str]
             Version of the GCS asset used to create the store (for documentation)
+        tag : Optional[str]
+            Tag name to create after all assets are uploaded (e.g., "v1.0")
+        tag_message : Optional[str]
+            Optional message for the tag
 
         Returns
         -------
@@ -1114,6 +1120,8 @@ class NapistuDataStore:
             commit_message=commit_message,
             asset_name=asset_name,
             asset_version=asset_version,
+            tag=tag,
+            tag_message=tag_message,
         )
 
     def save_napistu_data(

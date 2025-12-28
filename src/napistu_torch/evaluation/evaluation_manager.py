@@ -398,6 +398,8 @@ class EvaluationManager:
         commit_message: Optional[str] = None,
         overwrite: bool = False,
         token: Optional[str] = None,
+        tag: Optional[str] = None,
+        tag_message: Optional[str] = None,
     ) -> str:
         """
         Publish this experiment's model to HuggingFace Hub.
@@ -417,6 +419,10 @@ class EvaluationManager:
             Explicitly confirm overwriting existing model (default: False)
         token : Optional[str]
             HuggingFace API token (default: uses `huggingface-cli login` token)
+        tag : Optional[str]
+            Tag name to create after all assets are uploaded (e.g., "v1.0")
+        tag_message : Optional[str]
+            Optional message for the tag
 
         Returns
         -------
@@ -455,6 +461,8 @@ class EvaluationManager:
             manifest=self.manifest,
             commit_message=commit_message,
             overwrite=overwrite,
+            tag=tag,
+            tag_message=tag_message,
         )
 
     # private methods
