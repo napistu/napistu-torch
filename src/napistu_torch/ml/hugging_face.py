@@ -14,7 +14,13 @@ from torch import load as torch_load
 from tqdm import tqdm
 
 try:
-    from huggingface_hub import HfApi, create_repo, hf_hub_download
+    from huggingface_hub import (
+        HfApi,
+        create_repo,
+        create_tag,
+        hf_hub_download,
+        list_repo_refs,
+    )
     from huggingface_hub.utils import RepositoryNotFoundError
 except ImportError as e:
     raise ImportError(
@@ -50,6 +56,30 @@ class HFClient:
 
     Provides common functionality for authentication, validation, and repo operations.
     Subclassed by HFModelPublisher and HFModelLoader for specific workflows.
+
+    Attributes
+    ----------
+    api : HfApi
+        HuggingFace API client with an initialized token
+    _token : Optional[str]
+        HuggingFace API token
+    _validate_authentication() : None
+        Verify HuggingFace authentication is working
+
+    Private Methods
+    ---------------
+    _check_repo_exists(repo_id, repo_type=HUGGING_FACE_REPOS.MODEL) : bool
+        Check if repository exists without raising errors
+    _check_tag_exists(repo_id, tag, repo_type=HUGGING_FACE_REPOS.MODEL) : bool
+        Check if a tag already exists in the HuggingFace repository
+    _create_tag(repo_id, tag, tag_message=None, repo_type=HUGGING_FACE_REPOS.MODEL, revision=None) : None
+        Create a git tag in the HuggingFace repository
+    _get_repo_url(repo_id, repo_type=HUGGING_FACE_REPOS.MODEL, overwrite=False) : str
+        Create or get repository URL
+    _validate_authentication() : None
+        Verify HuggingFace authentication is working
+    _validate_repo_id(repo_id) : None
+        Validate repository ID format
     """
 
     def __init__(self, token: Optional[str] = None):
@@ -91,44 +121,92 @@ class HFClient:
         except RepositoryNotFoundError:
             return False
 
-    def _validate_authentication(self) -> None:
-        """Verify HuggingFace authentication is working."""
-        try:
-            # Simple check: attempt to get user info
-            self.api.whoami()
-            logger.info("✓ HuggingFace authentication verified")
-        except Exception as e:
-            raise RuntimeError(
-                "HuggingFace authentication failed. Please run:\n"
-                "  huggingface-cli login\n"
-                f"Error: {e}"
-            )
-
-    def _validate_repo_id(self, repo_id: str) -> None:
+    def _check_tag_exists(
+        self,
+        repo_id: str,
+        tag: str,
+        repo_type: str = HUGGING_FACE_REPOS.MODEL,
+    ) -> bool:
         """
-        Validate repository ID format.
+        Check if a tag already exists in the HuggingFace repository.
 
         Parameters
         ----------
         repo_id : str
-            Repository ID to validate
+            Repository ID
+        tag : str
+            Tag name to check (e.g., "v1.0")
+        repo_type : str
+            Type of repository. Defaults to HUGGING_FACE_REPOS.MODEL
+
+        Returns
+        -------
+        bool
+            True if tag exists, False otherwise
+        """
+        try:
+            refs = list_repo_refs(
+                repo_id=repo_id,
+                repo_type=repo_type,
+                token=self._token,
+            )
+            existing_tags = [ref.ref for ref in refs.tags]
+            return tag in existing_tags
+        except Exception as e:
+            logger.warning(f"Failed to check for existing tags: {e}")
+            # If we can't check, assume tag doesn't exist to allow creation attempt
+            return False
+
+    def _create_tag(
+        self,
+        repo_id: str,
+        tag: str,
+        tag_message: Optional[str] = None,
+        repo_type: str = HUGGING_FACE_REPOS.MODEL,
+        revision: Optional[str] = None,
+    ) -> None:
+        """
+        Create a git tag in the HuggingFace repository.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID
+        tag : str
+            Tag name (e.g., "v1.0")
+        tag_message : Optional[str]
+            Optional message for the tag
+        repo_type : str
+            Type of repository. Defaults to HUGGING_FACE_REPOS.MODEL
+        revision : Optional[str]
+            Git revision to tag (branch name or commit hash).
+            If None, tags the latest commit on the default branch.
 
         Raises
         ------
         ValueError
-            If repo_id format is invalid
+            If the tag already exists in the repository
         """
-        if "/" not in repo_id:
+        # Check if tag already exists
+        if self._check_tag_exists(repo_id, tag, repo_type=repo_type):
             raise ValueError(
-                f"Invalid repo_id format: '{repo_id}'\n"
-                f"Expected format: 'username/repo-name'"
+                f"Tag '{tag}' already exists in repository '{repo_id}'. "
+                f"Cannot create duplicate tag."
             )
-        parts = repo_id.split("/")
-        if len(parts) != 2 or not all(parts):
-            raise ValueError(
-                f"Invalid repo_id format: '{repo_id}'\n"
-                f"Expected format: 'username/repo-name'"
+
+        try:
+            create_tag(
+                repo_id=repo_id,
+                tag=tag,
+                tag_message=tag_message,
+                repo_type=repo_type,
+                revision=revision,
+                token=self._token,
             )
+            logger.info(f"✓ Created tag: {tag}")
+        except Exception as e:
+            logger.error(f"Failed to create tag {tag}: {e}")
+            raise
 
     def _get_repo_url(
         self,
@@ -185,6 +263,45 @@ class HFClient:
             )
             logger.info(f"Updating existing repository: {repo_id}")
             return repo_url
+
+    def _validate_authentication(self) -> None:
+        """Verify HuggingFace authentication is working."""
+        try:
+            # Simple check: attempt to get user info
+            self.api.whoami()
+            logger.info("✓ HuggingFace authentication verified")
+        except Exception as e:
+            raise RuntimeError(
+                "HuggingFace authentication failed. Please run:\n"
+                "  huggingface-cli login\n"
+                f"Error: {e}"
+            )
+
+    def _validate_repo_id(self, repo_id: str) -> None:
+        """
+        Validate repository ID format.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID to validate
+
+        Raises
+        ------
+        ValueError
+            If repo_id format is invalid
+        """
+        if "/" not in repo_id:
+            raise ValueError(
+                f"Invalid repo_id format: '{repo_id}'\n"
+                f"Expected format: 'username/repo-name'"
+            )
+        parts = repo_id.split("/")
+        if len(parts) != 2 or not all(parts):
+            raise ValueError(
+                f"Invalid repo_id format: '{repo_id}'\n"
+                f"Expected format: 'username/repo-name'"
+            )
 
 
 class HFDatasetLoader(HFClient):
@@ -473,6 +590,8 @@ class HFDatasetPublisher(HFClient):
         commit_message: Optional[str] = None,
         asset_name: Optional[str] = None,
         asset_version: Optional[str] = None,
+        tag: Optional[str] = None,
+        tag_message: Optional[str] = None,
     ) -> str:
         """
         Publish entire NapistuDataStore to HuggingFace Hub.
@@ -497,6 +616,10 @@ class HFDatasetPublisher(HFClient):
             Name of the GCS asset used to create the store (for documentation)
         asset_version : Optional[str]
             Version of the GCS asset used to create the store (for documentation)
+        tag : Optional[str]
+            Tag name to create after all assets are uploaded (e.g., "v1.0")
+        tag_message : Optional[str]
+            Optional message for the tag
 
         Returns
         -------
@@ -519,7 +642,8 @@ class HFDatasetPublisher(HFClient):
         ...     "username/my-dataset",
         ...     store,
         ...     asset_name="human_consensus",
-        ...     asset_version="v1.0"
+        ...     asset_version="v1.0",
+        ...     tag="v1.0"
         ... )
         """
         # Validate inputs
@@ -533,6 +657,16 @@ class HFDatasetPublisher(HFClient):
                 "Cannot publish store: Store must contain at least one NapistuData artifact. "
                 "Publishing currently requires one or more NapistuData objects."
             )
+
+        # Check if tag already exists (fail early before uploading)
+        if tag:
+            if self._check_tag_exists(
+                repo_id, tag, repo_type=HUGGING_FACE_REPOS.DATASET
+            ):
+                raise ValueError(
+                    f"Tag '{tag}' already exists in repository '{repo_id}'. "
+                    f"Cannot publish with duplicate tag."
+                )
 
         # Get or create repository URL
         repo_url = self._get_repo_url(
@@ -562,6 +696,13 @@ class HFDatasetPublisher(HFClient):
         )
         logger.info("Uploading dataset card (README.md)...")
         self._upload_dataset_card(repo_id, dataset_card, commit_message)
+
+        # Create tag if requested
+        if tag:
+            logger.info(f"Creating tag: {tag}")
+            self._create_tag(
+                repo_id, tag, tag_message, repo_type=HUGGING_FACE_REPOS.DATASET
+            )
 
         return repo_url
 
@@ -849,7 +990,7 @@ class HFModelLoader(HFClient):
                     filename="model.ckpt",
                     revision=self.revision,
                     cache_dir=self.cache_dir,
-                    repo_type="model",
+                    repo_type=HUGGING_FACE_REPOS.MODEL,
                     token=self._token,
                 )
             )
@@ -873,7 +1014,7 @@ class HFModelLoader(HFClient):
                     filename="config.json",
                     revision=self.revision,
                     cache_dir=self.cache_dir,
-                    repo_type="model",
+                    repo_type=HUGGING_FACE_REPOS.MODEL,
                     token=self._token,
                 )
             )
@@ -894,7 +1035,7 @@ class HFModelPublisher(HFClient):
 
     Public Methods
     --------------
-    publish_model(repo_id, checkpoint_path, manifest, commit_message=None, overwrite=False)
+    publish_model(repo_id, checkpoint_path, manifest, commit_message, overwrite, tag, tag_message)
         Upload model checkpoint and metadata to HuggingFace Hub
 
     Private Methods
@@ -918,6 +1059,8 @@ class HFModelPublisher(HFClient):
         manifest: RunManifest,
         commit_message: Optional[str] = None,
         overwrite: bool = False,
+        tag: Optional[str] = None,
+        tag_message: Optional[str] = None,
     ) -> str:
         """
         Upload model checkpoint and metadata to HuggingFace Hub.
@@ -937,6 +1080,10 @@ class HFModelPublisher(HFClient):
             Custom commit message (default: auto-generated from manifest)
         overwrite : bool
             Explicitly confirm overwriting existing model (default: False)
+        tag : Optional[str]
+            Tag name to create after all assets are uploaded (e.g., "v1.0")
+        tag_message : Optional[str]
+            Optional message for the tag
 
         Returns
         -------
@@ -959,8 +1106,18 @@ class HFModelPublisher(HFClient):
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
+        # Check if tag already exists (fail early before uploading)
+        if tag:
+            if self._check_tag_exists(repo_id, tag, repo_type=HUGGING_FACE_REPOS.MODEL):
+                raise ValueError(
+                    f"Tag '{tag}' already exists in repository '{repo_id}'. "
+                    f"Cannot publish with duplicate tag."
+                )
+
         # Get or create repository URL
-        repo_url = self._get_repo_url(repo_id, repo_type="model", overwrite=overwrite)
+        repo_url = self._get_repo_url(
+            repo_id, repo_type=HUGGING_FACE_REPOS.MODEL, overwrite=overwrite
+        )
 
         # Generate commit message if not provided
         if commit_message is None:
@@ -989,6 +1146,13 @@ class HFModelPublisher(HFClient):
         logger.info("Uploading run info...")
         self._upload_run_info(repo_id, manifest, commit_message, wandb_run_summaries)
 
+        # Create tag if requested
+        if tag:
+            logger.info(f"Creating tag: {tag}")
+            self._create_tag(
+                repo_id, tag, tag_message, repo_type=HUGGING_FACE_REPOS.MODEL
+            )
+
         return repo_url
 
     # private methods
@@ -1012,7 +1176,7 @@ class HFModelPublisher(HFClient):
             path_or_fileobj=str(checkpoint_path),
             path_in_repo="model.ckpt",
             repo_id=repo_id,
-            repo_type="model",
+            repo_type=HUGGING_FACE_REPOS.MODEL,
             commit_message=commit_message,
         )
         logger.info("✓ Uploaded checkpoint: model.ckpt")
@@ -1041,7 +1205,7 @@ class HFModelPublisher(HFClient):
             path_or_fileobj=config_json.encode("utf-8"),
             path_in_repo="config.json",
             repo_id=repo_id,
-            repo_type="model",
+            repo_type=HUGGING_FACE_REPOS.MODEL,
             commit_message=commit_message,
         )
         logger.info("✓ Uploaded config: config.json")
@@ -1080,7 +1244,7 @@ class HFModelPublisher(HFClient):
             path_or_fileobj=model_card.encode("utf-8"),
             path_in_repo="README.md",
             repo_id=repo_id,
-            repo_type="model",
+            repo_type=HUGGING_FACE_REPOS.MODEL,
             commit_message=commit_message,
         )
         logger.info("✓ Uploaded model card: README.md")
