@@ -1,10 +1,13 @@
 import logging
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
 
 import pandas as pd
 from lightning.pytorch.loggers import WandbLogger
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from wandb import Api
 from wandb.sdk.wandb_run import Run
+from yaml import safe_load
 
 from napistu_torch.configs import (
     ExperimentConfig,
@@ -26,6 +29,135 @@ from napistu_torch.ml.constants import (
 from napistu_torch.utils.constants import METRIC_VALUE_TABLE
 
 logger = logging.getLogger(__name__)
+
+
+class WandbRunInfo(BaseModel):
+    """
+    WandB run information including summaries and metadata.
+
+    This class stores WandB run information that can be saved to and loaded from
+    YAML files for validation and reproducibility.
+
+    Public methods
+    --------------
+    from_yaml(filepath: Path) -> "WandbRunInfo":
+        Load WandB run info from YAML file.
+    """
+
+    run_summaries: Dict[str, Any] = Field(
+        description="WandB run summaries dictionary containing metrics and other run data"
+    )
+    wandb_entity: str = Field(description="WandB entity (username/team)")
+    wandb_project: str = Field(description="WandB project name")
+    wandb_run_id: str = Field(description="WandB run ID")
+    run_path: str = Field(
+        default="",
+        description="Path to the WandB run (entity/project/run_id), computed automatically if not provided",
+    )
+
+    @model_validator(mode="after")
+    def compute_run_path(self) -> "WandbRunInfo":
+        """Compute run_path from entity, project, and run_id if not provided."""
+        if not self.run_path:
+            self.run_path = (
+                f"{self.wandb_entity}/{self.wandb_project}/{self.wandb_run_id}"
+            )
+        return self
+
+    @classmethod
+    def from_yaml(cls, filepath: Path) -> "WandbRunInfo":
+        """
+        Load WandB run info from YAML file.
+
+        Parameters
+        ----------
+        filepath : Path
+            Path to the YAML file
+
+        Returns
+        -------
+        WandbRunInfo
+            Loaded WandB run info object
+
+        Examples
+        --------
+        >>> run_info = WandbRunInfo.from_yaml("wandb_run_info.yaml")
+        >>> print(run_info.run_path)
+        """
+        with open(filepath) as f:
+            data = safe_load(f)
+
+        return cls(**data)
+
+    model_config = ConfigDict(extra="forbid")  # Catch typos!
+
+
+def get_wandb_metrics_table(
+    wandb_run_summaries: Dict[str, Any],
+    metrics: Optional[list[str]] = None,
+    filter_missing_metrics: bool = True,
+) -> pd.DataFrame:
+    """
+    Get performance metrics from a WandB run as a DataFrame.
+
+    Parameters
+    ----------
+    wandb_run_summaries : Dict[str, Any]
+        A WandB run summaries, usually obtained using `get_wandb_run_summaries`
+    metrics : Optional[list[str]]
+        List of metric keys to extract. If None, uses DEFAULT_MODEL_CARD_METRICS.
+    filter_missing_metrics: bool = True,
+        Whether to filter out metrics that are missing (None or 0 values) from the run summary.
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns ['metric', 'value'] containing the metrics
+        Rows are filtered based on filter_missing_metrics parameter.
+
+    Raises
+    ------
+    ValueError
+        If neither run_path nor (wandb_entity, wandb_project, wandb_run_id) are provided
+
+    Examples
+    --------
+    >>> # Get default metrics
+    >>> wandb_summaries = get_wandb_run_summaries(run_path="entity/project/abc123")
+    >>> df = get_run_metrics_table(wandb_summaries=wandb_summaries)
+    >>> print(df)
+              metric    value
+    0  Validation AUC  0.8923
+    1        Test AUC  0.8856
+    ...
+
+    >>> # Get specific metrics
+    >>> from napistu_torch.ml.constants import METRIC_SUMMARIES
+    >>> df = get_run_metrics_table(
+    ...     run_object=run,
+    ...     metrics=[METRIC_SUMMARIES.VAL_AUC, METRIC_SUMMARIES.TRAIN_LOSS]
+    ... )
+    """
+    # Use default metrics if none specified
+    if metrics is None:
+        metrics = DEFAULT_MODEL_CARD_METRICS
+
+    # Build DataFrame
+    rows = []
+    for metric_key in metrics:
+        value = wandb_run_summaries.get(metric_key)
+        display_name = METRIC_DISPLAY_NAMES.get(metric_key, metric_key)
+        rows.append(
+            {METRIC_VALUE_TABLE.METRIC: display_name, METRIC_VALUE_TABLE.VALUE: value}
+        )
+
+    df = pd.DataFrame(rows)
+    if filter_missing_metrics:
+        df = df[
+            df[METRIC_VALUE_TABLE.VALUE].notna() & (df[METRIC_VALUE_TABLE.VALUE] != 0)
+        ]
+
+    return df
 
 
 def get_wandb_run_id_and_url(
@@ -83,6 +215,42 @@ def get_wandb_run_id_and_url(
                 pass
 
     return wandb_run_id, wandb_run_url
+
+
+def get_wandb_run_summaries(
+    run_path: Optional[str] = None,
+    wandb_entity: Optional[str] = None,
+    wandb_project: Optional[str] = None,
+    wandb_run_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Get WandB run summaries.
+
+    Either run_path or wandb_entity, wandb_project, and wandb_run_id must be provided.
+
+    Parameters
+    ----------
+    run_path : Optional[str]
+        The path to the WandB run
+    wandb_entity : Optional[str]
+        The entity of the WandB run
+    wandb_project : Optional[str]
+        The project of the WandB run
+    wandb_run_id : Optional[str]
+        The ID of the WandB run
+
+    Returns
+    -------
+    Dict[str, Any]
+        Dictionary containing WandB run summaries
+    """
+    run_object = _get_wandb_run_object(
+        run_path=run_path,
+        wandb_entity=wandb_entity,
+        wandb_project=wandb_project,
+        wandb_run_id=wandb_run_id,
+    )
+    return run_object.summary._json_dict
 
 
 def prepare_wandb_config(cfg: ExperimentConfig) -> None:
@@ -219,94 +387,32 @@ def setup_wandb_logger(cfg: ExperimentConfig) -> Optional[WandbLogger]:
     return wandb_logger
 
 
-def get_wandb_metrics_table(
-    run_path: Optional[str] = None,
-    wandb_entity: Optional[str] = None,
-    wandb_project: Optional[str] = None,
-    wandb_run_id: Optional[str] = None,
-    metrics: Optional[list[str]] = None,
-    filter_missing_metrics: bool = True,
-) -> pd.DataFrame:
+# private functions
+
+
+def _build_wandb_run_path(
+    wandb_entity: str,
+    wandb_project: str,
+    wandb_run_id: str,
+) -> str:
     """
-    Get performance metrics from a WandB run as a DataFrame.
+    Build a WandB run path from entity, project, and run ID.
 
     Parameters
     ----------
-    run_path : Optional[str]
-        The path to the WandB run (format: "entity/project/run_id")
-    wandb_entity : Optional[str]
+    wandb_entity : str
         The entity of the WandB run
-    wandb_project : Optional[str]
+    wandb_project : str
         The project of the WandB run
-    wandb_run_id : Optional[str]
+    wandb_run_id : str
         The ID of the WandB run
-    metrics : Optional[list[str]]
-        List of metric keys to extract. If None, uses DEFAULT_MODEL_CARD_METRICS.
-    filter_missing_metrics: bool = True,
-        Whether to filter out metrics that are missing (None or 0 values) from the run summary.
 
     Returns
     -------
-    pd.DataFrame
-        DataFrame with columns ['metric', 'value'] containing the metrics
-        Rows are filtered based on filter_missing_metrics parameter.
-
-    Raises
-    ------
-    ValueError
-        If neither run_path nor (wandb_entity, wandb_project, wandb_run_id) are provided
-
-    Examples
-    --------
-    >>> # Get default metrics
-    >>> df = get_run_metrics_dataframe(run_path="entity/project/abc123")
-    >>> print(df)
-              metric    value
-    0  Validation AUC  0.8923
-    1       Test AUC  0.8856
-    ...
-
-    >>> # Get specific metrics
-    >>> from napistu_torch.ml.constants import METRIC_SUMMARIES
-    >>> df = get_run_metrics_dataframe(
-    ...     run_path="entity/project/abc123",
-    ...     metrics=[METRIC_SUMMARIES.VAL_AUC, METRIC_SUMMARIES.TRAIN_LOSS]
-    ... )
+    str
+        The WandB run path in format "entity/project/run_id"
     """
-    # Use default metrics if none specified
-    if metrics is None:
-        metrics = DEFAULT_MODEL_CARD_METRICS
-
-    # Get WandB run object
-    run = _get_wandb_run_object(
-        run_path=run_path,
-        wandb_entity=wandb_entity,
-        wandb_project=wandb_project,
-        wandb_run_id=wandb_run_id,
-    )
-
-    # Extract metrics from summary
-    summary = run.summary._json_dict
-
-    # Build DataFrame
-    rows = []
-    for metric_key in metrics:
-        value = summary.get(metric_key)
-        display_name = METRIC_DISPLAY_NAMES.get(metric_key, metric_key)
-        rows.append(
-            {METRIC_VALUE_TABLE.METRIC: display_name, METRIC_VALUE_TABLE.VALUE: value}
-        )
-
-    df = pd.DataFrame(rows)
-    if filter_missing_metrics:
-        df = df[
-            df[METRIC_VALUE_TABLE.VALUE].notna() & (df[METRIC_VALUE_TABLE.VALUE] != 0)
-        ]
-
-    return df
-
-
-# private functions
+    return f"{wandb_entity}/{wandb_project}/{wandb_run_id}"
 
 
 def _define_minimal_experiment_summaries(cfg: ExperimentConfig) -> dict:
@@ -395,7 +501,11 @@ def _get_wandb_run_object(
             raise ValueError(
                 "wandb_entity, wandb_project, and wandb_run_id are required if run_path is not provided"
             )
-        run_path = f"{wandb_entity}/{wandb_project}/{wandb_run_id}"
+        run_path = _build_wandb_run_path(
+            wandb_entity=wandb_entity,
+            wandb_project=wandb_project,
+            wandb_run_id=wandb_run_id,
+        )
 
     api = Api()
     return api.run(run_path)

@@ -40,6 +40,8 @@ RELATION_WEIGHTED_AUC_DEFS = SimpleNamespace(
 )
 
 METRIC_SUMMARIES = SimpleNamespace(
+    VAL_RELATION_WEIGHTED_AUC="val_relation_weighted_auc",
+    TEST_RELATION_WEIGHTED_AUC="test_relation_weighted_auc",
     VAL_AUC="val_auc",
     TEST_AUC="test_auc",
     VAL_AP="val_ap",
@@ -50,6 +52,8 @@ METRIC_SUMMARIES = SimpleNamespace(
 
 # Lookup table for nice display names
 METRIC_DISPLAY_NAMES = {
+    METRIC_SUMMARIES.VAL_RELATION_WEIGHTED_AUC: "Validation relation-weighted AUC",
+    METRIC_SUMMARIES.TEST_RELATION_WEIGHTED_AUC: "Test relation-weighted AUC",
     METRIC_SUMMARIES.VAL_AUC: "Validation AUC",
     METRIC_SUMMARIES.TEST_AUC: "Test AUC",
     METRIC_SUMMARIES.VAL_AP: "Validation AP",
@@ -60,6 +64,8 @@ METRIC_DISPLAY_NAMES = {
 
 # Default metrics to include in model cards
 DEFAULT_MODEL_CARD_METRICS = [
+    METRIC_SUMMARIES.VAL_RELATION_WEIGHTED_AUC,
+    METRIC_SUMMARIES.TEST_RELATION_WEIGHTED_AUC,
     METRIC_SUMMARIES.VAL_AUC,
     METRIC_SUMMARIES.TEST_AUC,
     METRIC_SUMMARIES.VAL_AP,
@@ -108,3 +114,13 @@ HUGGING_FACE_REPOS = SimpleNamespace(
 )
 
 VALID_HUGGING_FACE_REPOS = list(HUGGING_FACE_REPOS.__dict__.values())
+
+# wandb
+
+WANDB_INFO = SimpleNamespace(
+    RUN_SUMMARIES="run_summaries",
+    WANDB_ENTITY="wandb_entity",
+    WANDB_PROJECT="wandb_project",
+    WANDB_RUN_ID="wandb_run_id",
+    RUN_PATH="run_path",
+)

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from json import load as json_load
 from pathlib import Path
 from shutil import copy2
 from typing import Any, Dict, Optional, Union
 
+import yaml
 from torch import load as torch_load
 from tqdm import tqdm
 
@@ -33,7 +35,7 @@ from napistu_torch.ml.constants import (
     HUGGING_FACE_REPOS,
     VALID_HUGGING_FACE_REPOS,
 )
-from napistu_torch.ml.wandb import get_wandb_metrics_table
+from napistu_torch.ml.wandb import WandbRunInfo, get_wandb_metrics_table
 from napistu_torch.models.constants import RELATION_AWARE_HEADS
 from napistu_torch.napistu_data_store import NapistuDataStore
 from napistu_torch.tasks.constants import TASK_DESCRIPTIONS
@@ -682,7 +684,6 @@ class HFDatasetPublisher(HFClient):
         self, repo_id: str, registry: Dict, commit_message: str
     ) -> None:
         """Upload registry.json to HuggingFace Hub."""
-        import json
 
         registry_json = json.dumps(registry, indent=2)
 
@@ -904,6 +905,8 @@ class HFModelPublisher(HFClient):
         Upload model configuration as JSON
     _upload_model_card(repo_id, manifest, checkpoint_path, commit_message)
         Generate and upload model card (README.md)
+    _upload_run_info(repo_id, manifest, commit_message, wandb_run_summaries)
+        Upload WandB run information as YAML
     """
 
     # public methods
@@ -947,6 +950,7 @@ class HFModelPublisher(HFClient):
         FileNotFoundError
             If checkpoint doesn't exist
         """
+        from napistu_torch.ml.wandb import get_wandb_run_summaries
 
         config = manifest.experiment_config
 
@@ -963,6 +967,13 @@ class HFModelPublisher(HFClient):
             logger.warning("No commit message provided, using default generation")
             commit_message = "Default commit message"
 
+        # Get WandB run summaries
+        wandb_run_summaries = get_wandb_run_summaries(
+            wandb_entity=manifest.wandb_entity,
+            wandb_project=manifest.wandb_project,
+            wandb_run_id=manifest.wandb_run_id,
+        )
+
         # Upload files
         logger.info("Uploading checkpoint...")
         self._upload_checkpoint(repo_id, checkpoint_path, commit_message)
@@ -971,7 +982,12 @@ class HFModelPublisher(HFClient):
         self._upload_config(repo_id, config, commit_message)
 
         logger.info("Uploading model card...")
-        self._upload_model_card(repo_id, manifest, checkpoint_path, commit_message)
+        self._upload_model_card(
+            repo_id, manifest, checkpoint_path, commit_message, wandb_run_summaries
+        )
+
+        logger.info("Uploading run info...")
+        self._upload_run_info(repo_id, manifest, commit_message, wandb_run_summaries)
 
         return repo_url
 
@@ -1036,6 +1052,7 @@ class HFModelPublisher(HFClient):
         manifest: RunManifest,
         checkpoint_path: Path,
         commit_message: str,
+        wandb_run_summaries: Dict[str, Any],
     ) -> None:
         """
         Generate and upload model card (README.md).
@@ -1052,8 +1069,12 @@ class HFModelPublisher(HFClient):
             Path to checkpoint file
         commit_message : str
             Commit message
+        wandb_run_summaries : Dict[str, Any]
+            WandB run summaries
         """
-        model_card = generate_model_card(manifest, repo_id, checkpoint_path)
+        model_card = generate_model_card(
+            manifest, repo_id, checkpoint_path, wandb_run_summaries
+        )
 
         self.api.upload_file(
             path_or_fileobj=model_card.encode("utf-8"),
@@ -1064,12 +1085,56 @@ class HFModelPublisher(HFClient):
         )
         logger.info("✓ Uploaded model card: README.md")
 
+    def _upload_run_info(
+        self,
+        repo_id: str,
+        manifest: RunManifest,
+        commit_message: str,
+        wandb_run_summaries: Dict[str, Any],
+    ) -> None:
+        """
+        Upload WandB run information as YAML to the model repository.
+
+        Parameters
+        ----------
+        repo_id : str
+            Repository ID
+        manifest : RunManifest
+            Run manifest with metadata
+        commit_message : str
+            Commit message
+        wandb_run_summaries : Dict[str, Any]
+            WandB run summaries
+        """
+        run_info = WandbRunInfo(
+            run_summaries=wandb_run_summaries,
+            wandb_entity=manifest.wandb_entity,
+            wandb_project=manifest.wandb_project,
+            wandb_run_id=manifest.wandb_run_id,
+        )
+
+        # Serialize to YAML string directly
+        data = run_info.model_dump(mode="json")
+        run_info_yaml = yaml.dump(data, default_flow_style=False, sort_keys=False)
+
+        self.api.upload_file(
+            path_or_fileobj=run_info_yaml.encode("utf-8"),
+            path_in_repo="wandb_run_info.yaml",
+            repo_id=repo_id,
+            repo_type="model",
+            commit_message=commit_message,
+        )
+        logger.info("✓ Uploaded run info: wandb_run_info.yaml")
+
 
 # public functions
 
 
 def generate_model_card(
-    manifest: RunManifest, repo_id: str, checkpoint_path: Path
+    manifest: RunManifest,
+    repo_id: str,
+    checkpoint_path: Path,
+    wandb_run_summaries: Dict[str, Any],
 ) -> str:
     """
     Generate a comprehensive HuggingFace model card from run metadata.
@@ -1118,11 +1183,7 @@ def generate_model_card(
     task_description = TASK_DESCRIPTIONS[task]
 
     # Get metrics table
-    metrics_table = get_wandb_metrics_table(
-        wandb_entity=manifest.wandb_entity,
-        wandb_project=manifest.wandb_project,
-        wandb_run_id=manifest.wandb_run_id,
-    )
+    metrics_table = get_wandb_metrics_table(wandb_run_summaries)
     metrics_markdown = format_metrics_as_markdown(metrics_table)
 
     # Build W&B link if available
