@@ -18,7 +18,7 @@ from napistu_torch._cli import (
 )
 from napistu_torch.configs import create_template_yaml
 from napistu_torch.constants import RUN_MANIFEST, RUN_MANIFEST_DEFAULTS
-from napistu_torch.evaluation.evaluation_manager import EvaluationManager
+from napistu_torch.evaluation.manager import LocalEvaluationManager
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.lightning.workflows import (
     fit_model,
@@ -148,11 +148,10 @@ def model(
         $ napistu-torch publish model experiments/run_001 shackett/napistu-sage-v1 \\
             --tag v1.0 --tag-message "Initial release"
     """
-    # Import EvaluationManager
-    from napistu_torch.evaluation.evaluation_manager import EvaluationManager
+    from napistu_torch.evaluation.manager import LocalEvaluationManager
 
     # Initialize manager
-    evaluation_manager = EvaluationManager(experiment_dir)
+    evaluation_manager = LocalEvaluationManager(experiment_dir)
 
     # Determine checkpoint path
     checkpoint_path = checkpoint or evaluation_manager.best_checkpoint_path
@@ -376,7 +375,7 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
 
     try:
         # Load experiment from manifest
-        evaluation_manager = EvaluationManager(out_dir)
+        evaluation_manager = LocalEvaluationManager(out_dir)
         run_manifest = evaluation_manager.manifest
 
         # Determine checkpoint to use
@@ -422,7 +421,7 @@ def resume(out_dir: Path, checkpoint: str, verbosity: str):
 def test(experiment_dir: Path, checkpoint: Optional[Path]):
     """Run evaluation for a finished experiment located at EXPERIMENT_DIR."""
 
-    evaluation_manager = EvaluationManager(experiment_dir)
+    evaluation_manager = LocalEvaluationManager(experiment_dir)
     checkpoint_path = checkpoint or evaluation_manager.best_checkpoint_path
 
     if checkpoint_path is None:

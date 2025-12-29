@@ -1,9 +1,9 @@
 """Manager for organizing experiments' metadata, data, models, and evaluation results."""
 
 import logging
-import re
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 import torch
 from pydantic import ValidationError
@@ -13,59 +13,50 @@ if TYPE_CHECKING:  # for static analysis only
 else:
     LightningModule = object
 
-from napistu_torch.configs import RunManifest
+from napistu_torch.configs import ExperimentConfig, RunManifest
 from napistu_torch.constants import (
     RUN_MANIFEST,
     RUN_MANIFEST_DEFAULTS,
 )
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
-from napistu_torch.ml.constants import METRIC_SUMMARIES
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.napistu_data_store import NapistuDataStore
-from napistu_torch.utils.optional import import_lightning, require_lightning
+from napistu_torch.utils.optional import require_lightning
 
 logger = logging.getLogger(__name__)
 
 
-class EvaluationManager:
+class EvaluationManager(ABC):
     """
-    Manager for post-training evaluation of a model.
+    Base class for evaluation managers.
 
-    This class provides a unified interface for accessing experiment artifacts,
-    loading models from checkpoints, publishing to HuggingFace Hub, and managing
-    experiment metadata. It loads the experiment manifest and provides convenient
-    access to checkpoints, WandB information, and data stores.
-
-    Parameters
-    ----------
-    experiment_dir : Union[Path, str]
-        Path to the experiment directory containing the manifest file and checkpoints.
-        Must contain a `run_manifest.yaml` file.
+    Provides a unified interface for accessing experiment artifacts, loading models,
+    and managing experiment metadata. Both local and remote (HuggingFace) evaluation
+    managers share this common interface built around the RunManifest abstraction.
 
     Attributes
     ----------
-    experiment_dir : Path
-        Path to the experiment directory
     manifest : RunManifest
         The experiment manifest containing metadata and configuration
-    experiment_name : Optional[str]
-        Name of the experiment from the manifest
-    wandb_run_id : Optional[str]
-        WandB run ID from the manifest
-    wandb_run_url : Optional[str]
-        WandB run URL from the manifest
-    wandb_project : Optional[str]
-        WandB project name from the manifest
-    wandb_entity : Optional[str]
-        WandB entity (username/team) from the manifest
+    napistu_data_store : Optional[NapistuDataStore]
+        Data store for accessing NapistuData objects and other artifacts
+    experiment_dict : Optional[dict]
+        Cached experiment dictionary with model, data module, trainer, etc.
+
+    Properties (derived from manifest)
+    ----------------------------------
     experiment_config : ExperimentConfig
-        The experiment configuration from the manifest
-    checkpoint_dir : Path
-        Directory containing model checkpoints
-    best_checkpoint_path : Optional[Path]
-        Path to the best checkpoint (highest validation AUC)
-    best_checkpoint_val_auc : Optional[float]
-        Validation AUC of the best checkpoint
+        The experiment configuration
+    experiment_name : Optional[str]
+        Name of the experiment
+    wandb_run_id : Optional[str]
+        WandB run ID
+    wandb_run_url : Optional[str]
+        WandB run URL
+    wandb_project : Optional[str]
+        WandB project name
+    wandb_entity : Optional[str]
+        WandB entity (username/team)
 
     Public Methods
     --------------
@@ -78,107 +69,48 @@ class EvaluationManager:
     get_run_summary()
         Get summary metrics from WandB for this experiment
     load_model_from_checkpoint(checkpoint_name=None)
-        Load a trained model from a checkpoint file
+        Load a trained model from a checkpoint file (abstract, subclass-specific)
     load_napistu_data(napistu_data_name=None)
         Load the NapistuData object used for this experiment
-    publish_to_huggingface(repo_id, checkpoint_path=None, commit_message=None, overwrite=False, token=None)
-        Publish this experiment's model to HuggingFace Hub
-
-    Private Methods
-    ---------------
-    _resolve_checkpoint_path(checkpoint_name=None)
-        Resolve a checkpoint name or path to an actual checkpoint file path
-
-    Examples
-    --------
-    >>> # Load an experiment
-    >>> manager = EvaluationManager("experiments/my_run")
-    >>>
-    >>> # Load the model from best checkpoint
-    >>> model = manager.load_model_from_checkpoint()
-    >>>
-    >>> # Load from specific checkpoint
-    >>> model = manager.load_model_from_checkpoint("last")
-    >>> model = manager.load_model_from_checkpoint("best-epoch=50-val_auc=0.85.ckpt")
-    >>>
-    >>> # Get experiment summary
-    >>> summary = manager.get_summary_string()
-    >>> print(summary)  # "model: sage-octopus-baseline (sage-dot_product_h128_l3) | WandB: abc123"
-    >>>
-    >>> # Publish to HuggingFace
-    >>> url = manager.publish_to_huggingface("username/model-name")
     """
 
-    def __init__(self, experiment_dir: Union[Path, str]):
-        """
-        Initialize EvaluationManager from an experiment directory.
+    # Core attributes that all subclasses must provide
+    manifest: RunManifest
+    napistu_data_store: Optional[NapistuDataStore]
+    experiment_dict: Optional[dict]
 
-        Parameters
-        ----------
-        experiment_dir : Union[Path, str]
-            Path to experiment directory containing manifest and checkpoints.
-            Must contain a `run_manifest.yaml` file.
+    # Properties derived from manifest for convenience
+    @property
+    def experiment_config(self) -> ExperimentConfig:
+        """Get the experiment configuration from the manifest."""
+        return self.manifest.experiment_config
 
-        Raises
-        ------
-        FileNotFoundError
-            If experiment directory or manifest file doesn't exist
-        ValueError
-            If manifest file is invalid or cannot be parsed
-        """
+    @property
+    def experiment_name(self) -> Optional[str]:
+        """Get the experiment name from the manifest."""
+        return self.manifest.experiment_name
 
-        if isinstance(experiment_dir, str):
-            experiment_dir = Path(experiment_dir).expanduser()
-        elif not isinstance(experiment_dir, Path):
-            raise TypeError(
-                f"Experiment directory must be a Path or string, got {type(experiment_dir)}"
-            )
+    @property
+    def wandb_run_id(self) -> Optional[str]:
+        """Get the WandB run ID from the manifest."""
+        return self.manifest.wandb_run_id
 
-        if not experiment_dir.exists():
-            raise FileNotFoundError(
-                f"Experiment directory {experiment_dir} does not exist"
-            )
-        self.experiment_dir = experiment_dir
+    @property
+    def wandb_run_url(self) -> Optional[str]:
+        """Get the WandB run URL from the manifest."""
+        return self.manifest.wandb_run_url
 
-        manifest_path = (
-            experiment_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
-        )
-        if not manifest_path.is_file():
-            raise FileNotFoundError(f"Manifest file {manifest_path} does not exist")
-        try:
-            self.manifest = RunManifest.from_yaml(manifest_path)
-        except ValidationError as e:
-            raise ValueError(f"Invalid manifest file {manifest_path}: {e}")
+    @property
+    def wandb_project(self) -> Optional[str]:
+        """Get the WandB project name from the manifest."""
+        return self.manifest.wandb_project
 
-        # set attributes based on manifest
-        self.experiment_name = self.manifest.experiment_name
-        self.wandb_run_id = self.manifest.wandb_run_id
-        self.wandb_run_url = self.manifest.wandb_run_url
-        self.wandb_project = self.manifest.wandb_project
-        self.wandb_entity = self.manifest.wandb_entity
+    @property
+    def wandb_entity(self) -> Optional[str]:
+        """Get the WandB entity from the manifest."""
+        return self.manifest.wandb_entity
 
-        # Get ExperimentConfig from manifest (already reconstructed by RunManifest.from_yaml)
-        self.experiment_config = self.manifest.experiment_config
-        # Replace output_dir with experiment_dir so paths will appropriately resolve
-        self.experiment_config.output_dir = experiment_dir
-
-        # set checkpoint directory
-        self.checkpoint_dir = self.experiment_config.training.get_checkpoint_dir(
-            experiment_dir
-        )
-        if not self.checkpoint_dir.exists():
-            raise FileNotFoundError(
-                f"Checkpoint directory {self.checkpoint_dir} does not exist"
-            )
-
-        best_checkpoint = find_best_checkpoint(self.checkpoint_dir)
-        if best_checkpoint is None:
-            self.best_checkpoint_path, self.best_checkpoint_val_auc = None, None
-        else:
-            self.best_checkpoint_path, self.best_checkpoint_val_auc = best_checkpoint
-
-        self.experiment_dict = None
-        self.napistu_data_store = None
+    # Concrete methods (work identically for both Local and Remote)
 
     @require_lightning
     def get_experiment_dict(self) -> dict:
@@ -200,7 +132,7 @@ class EvaluationManager:
 
         Examples
         --------
-        >>> manager = EvaluationManager("experiments/my_run")
+        >>> manager = LocalEvaluationManager("experiments/my_run")
         >>> experiment_dict = manager.get_experiment_dict()
         >>> model = experiment_dict[EXPERIMENT_DICT.MODEL]
         """
@@ -226,18 +158,23 @@ class EvaluationManager:
         NapistuDataStore
             The data store instance for this experiment
 
+        Raises
+        ------
+        ValueError
+            If no data store is available
+
         Examples
         --------
-        >>> manager = EvaluationManager("experiments/my_run")
+        >>> manager = LocalEvaluationManager("experiments/my_run")
         >>> store = manager.get_store()
         >>> napistu_data = store.load_napistu_data("edge_prediction")
         """
-
         if self.napistu_data_store is None:
-            self.napistu_data_store = NapistuDataStore(
-                self.experiment_config.data.store_dir
+            raise ValueError(
+                "No data store available. For LocalEvaluationManager, ensure the "
+                "experiment was created with a valid store_dir in the config. "
+                "For RemoteEvaluationManager, provide data_repo_id when loading."
             )
-
         return self.napistu_data_store
 
     def get_summary_string(self) -> str:
@@ -245,13 +182,13 @@ class EvaluationManager:
         Generate a descriptive summary string from experiment metadata.
 
         Examples:
-        - "model: sage-octopus-baseline (WandB: abc123)"
+        - "model: sage-octopus-baseline (sage-dot_product_h128_l3) | WandB: abc123"
         - "model: transe-256-hidden"
 
         Returns
         -------
         str
-            Formatted commit message string
+            Formatted summary string
         """
         parts = []
 
@@ -293,11 +230,202 @@ class EvaluationManager:
 
         Examples
         --------
-        >>> manager = EvaluationManager("experiments/my_run")
+        >>> manager = LocalEvaluationManager("experiments/my_run")
         >>> summary = manager.get_run_summary()
         >>> print(summary["val_auc"])  # Final validation AUC
         """
         return self.manifest.get_run_summary()
+
+    def load_napistu_data(self, napistu_data_name: Optional[str] = None) -> NapistuData:
+        """
+        Load the NapistuData object used for this experiment.
+
+        Loads the NapistuData object from the experiment's data store.
+        If no name is provided, uses the name from the experiment configuration.
+
+        Parameters
+        ----------
+        napistu_data_name : Optional[str], default=None
+            Name of the NapistuData object to load. If None, uses the name
+            from the experiment configuration.
+
+        Returns
+        -------
+        NapistuData
+            The loaded NapistuData object
+
+        Examples
+        --------
+        >>> manager = LocalEvaluationManager("experiments/my_run")
+        >>> # Load using name from config
+        >>> data = manager.load_napistu_data()
+        >>> # Load specific artifact
+        >>> data = manager.load_napistu_data("edge_prediction")
+        """
+        if napistu_data_name is None:
+            napistu_data_name = self.experiment_config.data.napistu_data_name
+        napistu_data_store = self.get_store()
+        return napistu_data_store.load_napistu_data(napistu_data_name)
+
+    # Abstract methods (must be implemented by subclasses)
+
+    @abstractmethod
+    def load_model_from_checkpoint(
+        self, checkpoint_name: Optional[Union[Path, str]] = None
+    ) -> LightningModule:
+        """
+        Load a trained model from a checkpoint file.
+
+        This method is implemented differently for local and remote managers:
+        - LocalEvaluationManager: discovers and loads from checkpoint directory
+        - RemoteEvaluationManager: loads the single published checkpoint from HuggingFace
+
+        Parameters
+        ----------
+        checkpoint_name : Optional[Union[Path, str]], default=None
+            Checkpoint identifier (interpretation depends on subclass)
+
+        Returns
+        -------
+        LightningModule
+            The loaded model in evaluation mode
+
+        Raises
+        ------
+        NotImplementedError
+            This is an abstract method and must be implemented by subclasses
+        """
+        raise NotImplementedError(
+            "load_model_from_checkpoint must be implemented by subclass"
+        )
+
+
+class LocalEvaluationManager(EvaluationManager):
+    """
+    Manager for post-training evaluation of a locally-stored model.
+
+    This class provides a unified interface for accessing experiment artifacts,
+    loading models from checkpoints, publishing to HuggingFace Hub, and managing
+    experiment metadata. It loads the experiment manifest from a local directory
+    and provides convenient access to checkpoints, WandB information, and data stores.
+
+    Parameters
+    ----------
+    experiment_dir : Union[Path, str]
+        Path to the experiment directory containing the manifest file and checkpoints.
+        Must contain a `run_manifest.yaml` file.
+
+    Attributes
+    ----------
+    experiment_dir : Path
+        Path to the experiment directory
+    manifest : RunManifest
+        The experiment manifest containing metadata and configuration
+    checkpoint_dir : Path
+        Directory containing model checkpoints
+    best_checkpoint_path : Optional[Path]
+        Path to the best checkpoint (highest validation AUC)
+    best_checkpoint_val_auc : Optional[float]
+        Validation AUC of the best checkpoint
+    napistu_data_store : Optional[NapistuDataStore]
+        The data store instance (lazily loaded)
+    experiment_dict : Optional[dict]
+        Cached experiment dictionary (lazily loaded)
+
+    Public Methods
+    --------------
+    load_model_from_checkpoint(checkpoint_name=None)
+        Load a trained model from a checkpoint file
+    publish_to_huggingface(repo_id, checkpoint_path=None, commit_message=None, overwrite=False, token=None)
+        Publish this experiment's model to HuggingFace Hub
+
+    Private Methods
+    ---------------
+    _resolve_checkpoint_path(checkpoint_name=None)
+        Resolve a checkpoint name or path to an actual checkpoint file path
+
+    Examples
+    --------
+    >>> # Load an experiment
+    >>> manager = LocalEvaluationManager("experiments/my_run")
+    >>>
+    >>> # Load the model from best checkpoint
+    >>> model = manager.load_model_from_checkpoint()
+    >>>
+    >>> # Load from specific checkpoint
+    >>> model = manager.load_model_from_checkpoint("last")
+    >>> model = manager.load_model_from_checkpoint("best-epoch=50-val_auc=0.85.ckpt")
+    >>>
+    >>> # Get experiment summary
+    >>> summary = manager.get_summary_string()
+    >>> print(summary)  # "model: sage-octopus-baseline (sage-dot_product_h128_l3) | WandB: abc123"
+    >>>
+    >>> # Publish to HuggingFace
+    >>> url = manager.publish_to_huggingface("username/model-name")
+    """
+
+    def __init__(self, experiment_dir: Union[Path, str]):
+        """
+        Initialize LocalEvaluationManager from an experiment directory.
+
+        Parameters
+        ----------
+        experiment_dir : Union[Path, str]
+            Path to experiment directory containing manifest and checkpoints.
+            Must contain a `run_manifest.yaml` file.
+
+        Raises
+        ------
+        FileNotFoundError
+            If experiment directory or manifest file doesn't exist
+        ValueError
+            If manifest file is invalid or cannot be parsed
+        """
+
+        if isinstance(experiment_dir, str):
+            experiment_dir = Path(experiment_dir).expanduser()
+        elif not isinstance(experiment_dir, Path):
+            raise TypeError(
+                f"Experiment directory must be a Path or string, got {type(experiment_dir)}"
+            )
+
+        if not experiment_dir.exists():
+            raise FileNotFoundError(
+                f"Experiment directory {experiment_dir} does not exist"
+            )
+        self.experiment_dir = experiment_dir
+
+        manifest_path = (
+            experiment_dir / RUN_MANIFEST_DEFAULTS[RUN_MANIFEST.MANIFEST_FILENAME]
+        )
+        if not manifest_path.is_file():
+            raise FileNotFoundError(f"Manifest file {manifest_path} does not exist")
+        try:
+            self.manifest = RunManifest.from_yaml(manifest_path)
+        except ValidationError as e:
+            raise ValueError(f"Invalid manifest file {manifest_path}: {e}")
+
+        # Replace output_dir with experiment_dir so paths will appropriately resolve
+        self.manifest.experiment_config.output_dir = experiment_dir
+
+        # Set checkpoint directory
+        self.checkpoint_dir = (
+            self.manifest.experiment_config.training.get_checkpoint_dir(experiment_dir)
+        )
+        if not self.checkpoint_dir.exists():
+            raise FileNotFoundError(
+                f"Checkpoint directory {self.checkpoint_dir} does not exist"
+            )
+
+        best_checkpoint = find_best_checkpoint(self.checkpoint_dir)
+        if best_checkpoint is None:
+            self.best_checkpoint_path, self.best_checkpoint_val_auc = None, None
+        else:
+            self.best_checkpoint_path, self.best_checkpoint_val_auc = best_checkpoint
+
+        # Initialize base class attributes
+        self.experiment_dict = None
+        self.napistu_data_store = None
 
     @require_lightning
     def load_model_from_checkpoint(
@@ -333,7 +461,7 @@ class EvaluationManager:
 
         Examples
         --------
-        >>> manager = EvaluationManager("experiments/my_run")
+        >>> manager = LocalEvaluationManager("experiments/my_run")
         >>>
         >>> # Load from best checkpoint
         >>> model = manager.load_model_from_checkpoint()
@@ -347,6 +475,8 @@ class EvaluationManager:
         >>> # Load from absolute path
         >>> model = manager.load_model_from_checkpoint("/path/to/checkpoint.ckpt")
         """
+        from napistu_torch.utils.optional import import_lightning
+
         import_lightning()
 
         checkpoint_path = self._resolve_checkpoint_path(checkpoint_name)
@@ -359,37 +489,6 @@ class EvaluationManager:
         model.eval()
 
         return model
-
-    def load_napistu_data(self, napistu_data_name: Optional[str] = None) -> NapistuData:
-        """
-        Load the NapistuData object used for this experiment.
-
-        Loads the NapistuData object from the experiment's data store.
-        If no name is provided, uses the name from the experiment configuration.
-
-        Parameters
-        ----------
-        napistu_data_name : Optional[str], default=None
-            Name of the NapistuData object to load. If None, uses the name
-            from the experiment configuration.
-
-        Returns
-        -------
-        NapistuData
-            The loaded NapistuData object
-
-        Examples
-        --------
-        >>> manager = EvaluationManager("experiments/my_run")
-        >>> # Load using name from config
-        >>> data = manager.load_napistu_data()
-        >>> # Load specific artifact
-        >>> data = manager.load_napistu_data("edge_prediction")
-        """
-        if napistu_data_name is None:
-            napistu_data_name = self.experiment_config.data.napistu_data_name
-        napistu_data_store = self.get_store()
-        return napistu_data_store.load_napistu_data(napistu_data_name)
 
     def publish_to_huggingface(
         self,
@@ -431,7 +530,7 @@ class EvaluationManager:
 
         Examples
         --------
-        >>> manager = EvaluationManager("experiments/my_run")
+        >>> manager = LocalEvaluationManager("experiments/my_run")
         >>> # First upload
         >>> url = manager.publish_to_huggingface("shackett/napistu-sage-octopus")
         >>> # Update same repo
@@ -465,7 +564,33 @@ class EvaluationManager:
             tag_message=tag_message,
         )
 
-    # private methods
+    def get_store(self) -> NapistuDataStore:
+        """
+        Get the NapistuDataStore for this experiment's data.
+
+        The data store is lazily loaded and cached. It provides access to
+        NapistuData objects, vertex tensors, and pandas DataFrames stored
+        for this experiment.
+
+        Returns
+        -------
+        NapistuDataStore
+            The data store instance for this experiment
+
+        Examples
+        --------
+        >>> manager = LocalEvaluationManager("experiments/my_run")
+        >>> store = manager.get_store()
+        >>> napistu_data = store.load_napistu_data("edge_prediction")
+        """
+        if self.napistu_data_store is None:
+            self.napistu_data_store = NapistuDataStore(
+                self.manifest.experiment_config.data.store_dir
+            )
+
+        return self.napistu_data_store
+
+    # Private methods
 
     def _resolve_checkpoint_path(
         self, checkpoint_name: Optional[Union[Path, str]] = None
@@ -534,11 +659,12 @@ class EvaluationManager:
         return checkpoint_path
 
 
-# public functions
+# Public functions
 
 
-def find_best_checkpoint(checkpoint_dir: Path) -> Tuple[Path, float] | None:
+def find_best_checkpoint(checkpoint_dir: Path) -> tuple[Path, float] | None:
     """Get the best checkpoint from a directory of checkpoints."""
+
     # Get all checkpoint files
     checkpoint_files = list(checkpoint_dir.glob("*.ckpt"))
 
@@ -567,10 +693,10 @@ def find_best_checkpoint(checkpoint_dir: Path) -> Tuple[Path, float] | None:
     return best_checkpoint
 
 
-# private functions
+# Private functions
 
 
-def _parse_checkpoint_filename(filename: str | Path) -> Tuple[int, float] | None:
+def _parse_checkpoint_filename(filename: str | Path) -> tuple[int, float] | None:
     """
     Extract epoch number and validation AUC from checkpoint filename.
 
@@ -587,9 +713,13 @@ def _parse_checkpoint_filename(filename: str | Path) -> Tuple[int, float] | None
         Validation AUC
 
     Example:
-        >>> parse_checkpoint_filename("best-epoch=120-val_auc=0.7604.ckpt")
-        {'epoch': 120, 'val_auc': 0.7604}
+        >>> _parse_checkpoint_filename("best-epoch=120-val_auc=0.7604.ckpt")
+        (120, 0.7604)
     """
+    import re
+
+    from napistu_torch.ml.constants import METRIC_SUMMARIES
+
     # Convert Path to string and extract just the filename
     if isinstance(filename, Path):
         filename_str = filename.name

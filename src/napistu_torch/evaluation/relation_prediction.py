@@ -241,7 +241,7 @@ def summarize_relation_type_aucs(
     Parameters
     ----------
     run_summaries : Dict[str, Dict[str, Any]]
-        The run summaries to summarize. As produced by `EvaluationManager.get_run_summary()`.
+        The run summaries to summarize. As produced by `LocalEvaluationManager.get_run_summary()`.
     relation_types : List[str]
         The relation types to summarize.
 
