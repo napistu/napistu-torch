@@ -103,12 +103,26 @@ def publish():
     default=False,
     help="Explicitly confirm overwriting existing model in repo",
 )
+@click.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Tag name to create after all assets are uploaded (e.g., 'v1.0')",
+)
+@click.option(
+    "--tag-message",
+    type=str,
+    default=None,
+    help="Optional message for the tag",
+)
 def model(
     experiment_dir: Path,
     repo_id: str,
     checkpoint: Optional[Path],
     message: Optional[str],
     overwrite: bool,
+    tag: Optional[str],
+    tag_message: Optional[str],
 ):
     """
     Publish a trained model to HuggingFace Hub.
@@ -129,6 +143,10 @@ def model(
         $ napistu-torch publish model experiments/run_001 shackett/napistu-transe-v1 \\
             --checkpoint experiments/run_001/checkpoints/epoch=50.ckpt \\
             --message "Improved model with increased dropout"
+
+        # Publish with tag
+        $ napistu-torch publish model experiments/run_001 shackett/napistu-sage-v1 \\
+            --tag v1.0 --tag-message "Initial release"
     """
     from napistu_torch.evaluation.manager import LocalEvaluationManager
 
@@ -149,6 +167,8 @@ def model(
             checkpoint_path=checkpoint,
             commit_message=message,
             overwrite=overwrite,
+            tag=tag,
+            tag_message=tag_message,
         )
 
         # Success output
@@ -157,9 +177,10 @@ def model(
         click.echo(f"   URL: {repo_url}")
         click.echo()
         click.echo("   Uploaded files:")
-        click.echo("     • model.ckpt")
-        click.echo("     • config.json")
-        click.echo("     • README.md")
+        click.echo("     • model.ckpt (checkpoint)")
+        click.echo("     • config.json (configuration)")
+        click.echo("     • README.md (model card)")
+        click.echo("     • wandb_run_info.yaml (WandB run information)")
         click.echo()
         click.echo(click.style("💡 Repository is private by default", fg="yellow"))
         click.echo(f"   Make public at: {repo_url}/settings")
@@ -204,6 +225,18 @@ def model(
     default=None,
     help="Version of the GCS asset used to create the store (for documentation)",
 )
+@click.option(
+    "--tag",
+    type=str,
+    default=None,
+    help="Tag name to create after all assets are uploaded (e.g., 'v1.0')",
+)
+@click.option(
+    "--tag-message",
+    type=str,
+    default=None,
+    help="Optional message for the tag",
+)
 def dataset(
     store_dir: Path,
     repo_id: str,
@@ -211,6 +244,8 @@ def dataset(
     overwrite: bool,
     asset_name: Optional[str],
     asset_version: Optional[str],
+    tag: Optional[str],
+    tag_message: Optional[str],
 ):
     """
     Publish a NapistuDataStore to HuggingFace Hub as a dataset.
@@ -238,6 +273,10 @@ def dataset(
         # Publish with source asset information
         $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
             --asset-name human_consensus --asset-version v1.0
+
+        # Publish with tag
+        $ napistu-torch publish dataset ./data/store shackett/my-dataset \\
+            --tag v1.0 --tag-message "Initial release"
     """
     from napistu_torch.napistu_data_store import NapistuDataStore
 
@@ -257,6 +296,8 @@ def dataset(
             overwrite=overwrite,
             asset_name=asset_name,
             asset_version=asset_version,
+            tag=tag,
+            tag_message=tag_message,
         )
 
         # Success output
