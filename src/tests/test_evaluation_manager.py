@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from napistu_torch.evaluation.evaluation_manager import (
+from napistu_torch.evaluation.manager import (
     _parse_checkpoint_filename,
     find_best_checkpoint,
 )

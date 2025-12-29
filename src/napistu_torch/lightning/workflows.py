@@ -21,7 +21,7 @@ from napistu_torch.constants import (
     VALID_PRETRAINED_COMPONENT_SOURCES,
     WANDB_CONFIG,
 )
-from napistu_torch.evaluation.evaluation_manager import find_best_checkpoint
+from napistu_torch.evaluation.manager import find_best_checkpoint
 from napistu_torch.lightning.constants import (
     EXPERIMENT_DICT,
     TRAINER_MODES,
