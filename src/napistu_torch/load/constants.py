@@ -186,3 +186,60 @@ CHECKPOINT_HYPERPARAMETERS = SimpleNamespace(
     DATA="data",
     ENVIRONMENT="environment",
 )
+
+# foundation models
+
+FOUNDATION_MODEL_NAMES = SimpleNamespace(
+    AIDOCELL="AIDOCell",
+    SCPRINT="scPRINT",
+    SCGPT="scGPT",
+)
+
+AIDOCELL_CLASSES = SimpleNamespace(
+    THREE_M="aido_cell_3m",
+    TEN_M="aido_cell_10m",
+    ONE_HUNDRED_M="aido_cell_100m",
+)
+AIDOCELL_CLASSES_LIST = list(AIDOCELL_CLASSES.__dict__.values())
+
+ALL_MODEL_FULL_NAMES = {
+    FOUNDATION_MODEL_NAMES.SCGPT,
+    FOUNDATION_MODEL_NAMES.SCPRINT,
+} | {FOUNDATION_MODEL_NAMES.AIDOCELL + "_" + x for x in AIDOCELL_CLASSES_LIST}
+
+FM_CLASSES = SimpleNamespace(
+    FOUNDATION_MODEL="FoundationModel",
+    FOUNDATION_MODEL_WEIGHTS="FoundationModelWeights",
+    ATTENTION_LAYER="AttentionLayer",
+)
+
+FM_DEFS = SimpleNamespace(
+    # class-specific fields
+    MODELS="models",
+    ATTENTION_LAYERS="attention_layers",
+    # model summaries
+    WEIGHTS_DICT="weights_dict",
+    GENE_EMBEDDING="gene_embedding",
+    ATTENTION_WEIGHTS="attention_weights",
+    LAYER_NAME_TEMPLATE="layer_{layer_idx}",
+    W_Q="W_q",
+    W_K="W_k",
+    W_V="W_v",
+    W_O="W_o",
+    # gene metadata
+    GENE_ANNOTATIONS="gene_annotations",
+    VOCAB_NAME="vocab_name",
+    # model metadata
+    MODEL_METADATA="model_metadata",
+    MODEL_NAME="model_name",
+    MODEL_VARIANT="model_variant",
+    N_GENES="n_genes",
+    N_VOCAB="n_vocab",
+    ORDERED_VOCABULARY="ordered_vocabulary",
+    EMBED_DIM="embed_dim",
+    N_LAYERS="n_layers",
+    N_HEADS="n_heads",
+    # filename/variable name templates
+    WEIGHTS_TEMPLATE="{prefix}_weights.npz",
+    METADATA_TEMPLATE="{prefix}_metadata.json",
+)
