@@ -1,6 +1,9 @@
 """Manager for organizing experiments' metadata, data, models, and evaluation results."""
 
+from __future__ import annotations
+
 import logging
+import os
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, Union
@@ -10,11 +13,14 @@ from pydantic import ValidationError
 
 if TYPE_CHECKING:  # for static analysis only
     from pytorch_lightning import LightningModule
+
+    from napistu_torch.ml.hugging_face import HFModelLoader
 else:
     LightningModule = object
 
 from napistu_torch.configs import ExperimentConfig, RunManifest
 from napistu_torch.constants import (
+    NAPISTU_DATA_STORE_STRUCTURE,
     RUN_MANIFEST,
     RUN_MANIFEST_DEFAULTS,
 )
@@ -149,9 +155,9 @@ class EvaluationManager(ABC):
         """
         Get the NapistuDataStore for this experiment's data.
 
-        The data store is lazily loaded and cached. It provides access to
-        NapistuData objects, vertex tensors, and pandas DataFrames stored
-        for this experiment.
+        The data store is lazily loaded and cached. For LocalEvaluationManager,
+        it loads from experiment_config.data.store_dir on first access. For
+        RemoteEvaluationManager, it's already loaded during initialization.
 
         Returns
         -------
@@ -168,13 +174,23 @@ class EvaluationManager(ABC):
         >>> manager = LocalEvaluationManager("experiments/my_run")
         >>> store = manager.get_store()
         >>> napistu_data = store.load_napistu_data("edge_prediction")
+        >>>
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     data_store_dir=Path("./store")
+        ... )
+        >>> store = manager.get_store()
         """
         if self.napistu_data_store is None:
-            raise ValueError(
-                "No data store available. For LocalEvaluationManager, ensure the "
-                "experiment was created with a valid store_dir in the config. "
-                "For RemoteEvaluationManager, provide data_repo_id when loading."
-            )
+            # Lazy load from config (LocalEvaluationManager path)
+            store_dir = self.experiment_config.data.store_dir
+            if store_dir is None:
+                raise ValueError(
+                    "No data store available: experiment_config.data.store_dir is None"
+                )
+            logger.info(f"Lazy loading data store from {store_dir}")
+            self.napistu_data_store = NapistuDataStore(store_dir)
+
         return self.napistu_data_store
 
     def get_summary_string(self) -> str:
@@ -564,32 +580,6 @@ class LocalEvaluationManager(EvaluationManager):
             tag_message=tag_message,
         )
 
-    def get_store(self) -> NapistuDataStore:
-        """
-        Get the NapistuDataStore for this experiment's data.
-
-        The data store is lazily loaded and cached. It provides access to
-        NapistuData objects, vertex tensors, and pandas DataFrames stored
-        for this experiment.
-
-        Returns
-        -------
-        NapistuDataStore
-            The data store instance for this experiment
-
-        Examples
-        --------
-        >>> manager = LocalEvaluationManager("experiments/my_run")
-        >>> store = manager.get_store()
-        >>> napistu_data = store.load_napistu_data("edge_prediction")
-        """
-        if self.napistu_data_store is None:
-            self.napistu_data_store = NapistuDataStore(
-                self.manifest.experiment_config.data.store_dir
-            )
-
-        return self.napistu_data_store
-
     # Private methods
 
     def _resolve_checkpoint_path(
@@ -657,6 +647,323 @@ class LocalEvaluationManager(EvaluationManager):
             )
 
         return checkpoint_path
+
+
+class RemoteEvaluationManager(EvaluationManager):
+    """
+    Manager for evaluation of models loaded from HuggingFace Hub.
+
+    This class provides evaluation capabilities for models published to HuggingFace,
+    loading the model checkpoint, configuration, and optionally data from remote
+    repositories. It shares the same interface as LocalEvaluationManager but with
+    remote-specific implementation details.
+
+    Parameters
+    ----------
+    repo_id : str
+        HuggingFace model repository ID (e.g., "username/model-name")
+    model_loader : HFModelLoader
+        Loader instance with downloaded model artifacts
+    data_store : Optional[NapistuDataStore]
+        Data store for accessing NapistuData objects (optional)
+
+    Attributes
+    ----------
+    repo_id : str
+        HuggingFace repository ID
+    revision : str
+        Git revision (branch, tag, or commit) used for loading
+    manifest : RunManifest
+        Reconstructed run manifest from HuggingFace artifacts
+    checkpoint : Checkpoint
+        Loaded model checkpoint
+    checkpoint_path : Path
+        Path to cached checkpoint file
+    napistu_data_store : Optional[NapistuDataStore]
+        The data store instance (may be None)
+    experiment_dict : Optional[dict]
+        Cached experiment dictionary (lazily loaded)
+
+    Public Methods
+    --------------
+    from_huggingface(repo_id, revision=None, data_repo_id=None, data_store_dir=None, ...)
+        Load a model and optionally data from HuggingFace Hub
+    load_model_from_checkpoint(checkpoint_name=None)
+        Load the published model checkpoint
+
+    Properties (Remote-specific, raise AttributeError)
+    --------------------------------------------------
+    experiment_dir
+        Not available for remote models
+    checkpoint_dir
+        Not available for remote models
+    best_checkpoint_path
+        Not available for remote models (only one checkpoint exists)
+
+    Examples
+    --------
+    >>> # Load model only
+    >>> manager = RemoteEvaluationManager.from_huggingface(
+    ...     repo_id="shackett/sage-octopus"
+    ... )
+    >>>
+    >>> # Load model with data
+    >>> manager = RemoteEvaluationManager.from_huggingface(
+    ...     repo_id="shackett/sage-octopus",
+    ...     data_repo_id="shackett/octopus-consensus-v1"
+    ... )
+    >>>
+    >>> # Load model and use it
+    >>> model = manager.load_model_from_checkpoint()
+    >>> summary = manager.get_summary_string()
+    """
+
+    def __init__(
+        self,
+        repo_id: str,
+        model_loader: HFModelLoader,
+        data_store: Optional[NapistuDataStore] = None,
+    ):
+        """
+        Initialize RemoteEvaluationManager from HuggingFace artifacts.
+
+        Parameters
+        ----------
+        repo_id : str
+            HuggingFace repository ID
+        model_loader : HFModelLoader
+            Loader instance with downloaded model artifacts
+        data_store : Optional[NapistuDataStore]
+            Data store for accessing NapistuData objects
+        """
+        self.repo_id = repo_id
+        self.revision = model_loader.revision
+        self._model_loader = model_loader
+
+        # Load checkpoint
+        self.checkpoint = model_loader.load_checkpoint()
+        self.checkpoint_path = model_loader._checkpoint_path
+
+        # Reconstruct manifest from HuggingFace artifacts
+        self.manifest = RunManifest.from_huggingface(model_loader, repo_id)
+
+        # Initialize base class attributes
+        self.napistu_data_store = data_store
+        self.experiment_dict = None
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        repo_id: str,
+        data_store_dir: Path,
+        revision: Optional[str] = None,
+        data_repo_id: Optional[str] = None,
+        data_revision: Optional[str] = None,
+        model_cache_dir: Optional[Path] = None,
+        token: Optional[str] = None,
+    ) -> "RemoteEvaluationManager":
+        """
+        Load a model and data from HuggingFace Hub.
+
+        Parameters
+        ----------
+        repo_id : str
+            Model repository ID (e.g., "shackett/sage-octopus")
+        data_store_dir : Path
+            Directory for the data store. If it exists, will be loaded as-is.
+            If it doesn't exist, will be downloaded from HuggingFace using
+            data_repo_id (or config.data.hf_repo_id if not provided).
+        revision : Optional[str]
+            Model revision (branch/tag/commit). Default: "main"
+        data_repo_id : Optional[str]
+            Data repository ID. If None and data_store_dir doesn't exist,
+            will try to use config.data.hf_repo_id.
+        data_revision : Optional[str]
+            Data revision (branch/tag/commit). Default: uses config.data.hf_revision
+            or "main" if not specified.
+        model_cache_dir : Optional[Path]
+            Where to cache model files. Default: HF default cache
+        token : Optional[str]
+            HuggingFace token for private repos
+
+        Returns
+        -------
+        RemoteEvaluationManager
+            Manager instance with model and data loaded
+
+        Raises
+        ------
+        ValueError
+            If data_store_dir doesn't exist and no HF repo info is available
+
+        Examples
+        --------
+        >>> # Use existing local data store
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     data_store_dir=Path("./existing_store")
+        ... )
+        >>>
+        >>> # Download data from HF to new location
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     data_store_dir=Path("./new_store"),
+        ...     data_repo_id="shackett/octopus-consensus-v1"
+        ... )
+        >>>
+        >>> # Let config determine data repo (if available)
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     data_store_dir=Path("./new_store")
+        ... )
+        >>>
+        >>> # Pinned versions
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     revision="v1.0",
+        ...     data_store_dir=Path("./store"),
+        ...     data_repo_id="shackett/octopus-consensus-v1",
+        ...     data_revision="v1.0"
+        ... )
+        """
+        from napistu_torch.ml.hugging_face import HFModelLoader
+
+        # Load model
+        model_loader = HFModelLoader(
+            repo_id=repo_id,
+            revision=revision,
+            cache_dir=model_cache_dir,
+            token=token,
+        )
+
+        # Load experiment config to get data repo info if needed
+        experiment_config = model_loader.load_config()
+
+        # Resolve data store (handles existing vs. download from HF)
+        data_store = _resolve_data_store_for_remote(
+            data_store_dir=data_store_dir,
+            experiment_config=experiment_config,
+            data_repo_id=data_repo_id,
+            data_revision=data_revision,
+            token=token,
+        )
+
+        return cls(
+            repo_id=repo_id,
+            model_loader=model_loader,
+            data_store=data_store,
+        )
+
+    @require_lightning
+    def load_model_from_checkpoint(
+        self, checkpoint_name: Optional[Union[Path, str]] = None
+    ) -> LightningModule:
+        """
+        Load the published model checkpoint from HuggingFace Hub.
+
+        RemoteEvaluationManager only contains the single published checkpoint,
+        so checkpoint_name should not be provided.
+
+        Parameters
+        ----------
+        checkpoint_name : Optional[Union[Path, str]], default=None
+            Must be None. Remote models only have one checkpoint.
+
+        Returns
+        -------
+        LightningModule
+            The loaded model in evaluation mode
+
+        Raises
+        ------
+        ValueError
+            If checkpoint_name is provided (not supported for remote models)
+
+        Examples
+        --------
+        >>> manager = RemoteEvaluationManager.from_huggingface("shackett/sage-octopus")
+        >>> model = manager.load_model_from_checkpoint()
+        """
+        from napistu_torch.utils.optional import import_lightning
+
+        import_lightning()
+
+        if checkpoint_name is not None:
+            raise ValueError(
+                "RemoteEvaluationManager only contains the published checkpoint. "
+                "Call load_model_from_checkpoint() without arguments to load it. "
+                f"Attempted to load: {checkpoint_name}"
+            )
+
+        experiment_dict = self.get_experiment_dict()
+
+        # Load state dict from the checkpoint we already have
+        checkpoint_dict = torch.load(self.checkpoint_path, weights_only=False)
+        model = experiment_dict[EXPERIMENT_DICT.MODEL]
+        model.load_state_dict(checkpoint_dict["state_dict"])
+        model.eval()
+
+        return model
+
+    # Properties that don't exist for remote models
+
+    @property
+    def experiment_dir(self) -> Path:
+        """Not available for remote models."""
+        raise AttributeError(
+            "RemoteEvaluationManager does not have an experiment_dir. "
+            "The model is loaded from HuggingFace Hub. "
+            f"Model repository: https://huggingface.co/{self.repo_id}"
+        )
+
+    @property
+    def checkpoint_dir(self) -> Path:
+        """Not available for remote models."""
+        raise AttributeError(
+            "RemoteEvaluationManager does not have a checkpoint_dir. "
+            "Only the published checkpoint is available. "
+            "Use load_model_from_checkpoint() to load it."
+        )
+
+    @property
+    def best_checkpoint_path(self) -> Optional[Path]:
+        """Not available for remote models."""
+        raise AttributeError(
+            "RemoteEvaluationManager does not track multiple checkpoints. "
+            "Only the published checkpoint is available. "
+            "Access it via: manager.checkpoint_path"
+        )
+
+    @property
+    def best_checkpoint_val_auc(self) -> Optional[float]:
+        """Not available for remote models."""
+        raise AttributeError(
+            "RemoteEvaluationManager does not track checkpoint metrics. "
+            "Use get_run_summary() to access WandB metrics instead."
+        )
+
+    @property
+    def repo_url(self) -> str:
+        """URL to the HuggingFace model repository."""
+        return f"https://huggingface.co/{self.repo_id}"
+
+    # Methods that don't make sense for remote models
+
+    def publish_to_huggingface(self, *args, **kwargs) -> str:
+        """Not supported for remote models (already published)."""
+        raise NotImplementedError(
+            f"Model is already published on HuggingFace at {self.repo_url}. "
+            "To update, use a LocalEvaluationManager with the original experiment "
+            "directory and call publish_to_huggingface() again with overwrite=True."
+        )
+
+    def __repr__(self) -> str:
+        """String representation of remote manager."""
+        data_status = "with data" if self.napistu_data_store else "without data"
+        return (
+            f"RemoteEvaluationManager(repo_id='{self.repo_id}', "
+            f"revision='{self.revision}', {data_status})"
+        )
 
 
 # Public functions
@@ -734,3 +1041,108 @@ def _parse_checkpoint_filename(filename: str | Path) -> tuple[int, float] | None
         return None
 
     return int(match.group(1)), float(match.group(2))
+
+
+def _resolve_data_store_for_remote(
+    data_store_dir: Path,
+    experiment_config: ExperimentConfig,
+    data_repo_id: Optional[str] = None,
+    data_revision: Optional[str] = None,
+    token: Optional[str] = None,
+) -> NapistuDataStore:
+    """
+    Resolve and load a NapistuDataStore for remote evaluation.
+
+    Handles three scenarios:
+    1. data_store_dir exists -> load existing store
+    2. data_store_dir missing + HF repo info available -> download from HF
+    3. data_store_dir missing + no HF info -> error
+
+    Parameters
+    ----------
+    data_store_dir : Path
+        Directory for the data store (may or may not exist)
+    experiment_config : ExperimentConfig
+        Experiment configuration (may contain HF repo info)
+    data_repo_id : Optional[str]
+        HuggingFace data repository ID (overrides config)
+    data_revision : Optional[str]
+        Data revision (overrides config)
+    token : Optional[str]
+        HuggingFace token for private repos
+
+    Returns
+    -------
+    NapistuDataStore
+        Loaded data store
+
+    Raises
+    ------
+    ValueError
+        If data_store_dir doesn't exist and no HF repo info is available
+
+    Examples
+    --------
+    >>> # Existing store
+    >>> store = _resolve_data_store_for_remote(
+    ...     data_store_dir=Path("./existing_store"),
+    ...     experiment_config=config
+    ... )
+    >>>
+    >>> # Download from HF
+    >>> store = _resolve_data_store_for_remote(
+    ...     data_store_dir=Path("./new_store"),
+    ...     experiment_config=config,
+    ...     data_repo_id="username/data-repo"
+    ... )
+    """
+    # Check if store already exists
+    registry_path = data_store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
+
+    if registry_path.exists():
+        logger.info(f"Loading existing data store from {data_store_dir}")
+        return NapistuDataStore(data_store_dir)
+    elif os.path.exists(data_store_dir):
+        raise ValueError(
+            f"Data store found at {data_store_dir}, but it is not a valid NapistuDataStore"
+        )
+
+    # Store doesn't exist - need to download from HF
+    logger.info(
+        f"Data store not found at {data_store_dir}, attempting to download from HuggingFace Hub"
+    )
+
+    # Try to get HF repo info from arguments or config
+    if data_repo_id is None:
+        data_repo_id = experiment_config.data.hf_repo_id
+
+    if data_revision is None:
+        data_revision = experiment_config.data.hf_revision
+
+    # Validate we have what we need
+    if data_repo_id is None:
+        raise ValueError(
+            f"Cannot load data store: {data_store_dir} does not exist and no "
+            "HuggingFace repository specified.\n\n"
+            "To fix this, either:\n"
+            "1. Provide data_repo_id when creating the manager:\n"
+            f"   RemoteEvaluationManager.from_huggingface(\n"
+            f"       repo_id='...',\n"
+            f"       data_store_dir='{data_store_dir}',\n"
+            f"       data_repo_id='username/data-repo-name'\n"
+            f"   )\n\n"
+            "2. Or use an existing local data store by pointing data_store_dir to it."
+        )
+
+    # Download from HuggingFace
+    logger.info(
+        f"Downloading data store from {data_repo_id} "
+        f"(revision: {data_revision or 'main'}) to {data_store_dir}..."
+    )
+
+    return NapistuDataStore.from_huggingface(
+        repo_id=data_repo_id,
+        store_dir=data_store_dir,
+        revision=data_revision,
+        token=token,
+    )

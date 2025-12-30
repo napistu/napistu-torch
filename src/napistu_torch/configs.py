@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import logging
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional
+
+if TYPE_CHECKING:
+    from napistu_torch.ml.hugging_face import HFModelLoader
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -819,6 +824,84 @@ class RunManifest(BaseModel):
     experiment_config: ExperimentConfig = Field(
         description="Complete experiment configuration"
     )
+
+    @classmethod
+    def from_huggingface(
+        cls,
+        model_loader: HFModelLoader,
+        repo_id: str,
+    ) -> "RunManifest":
+        """
+        Reconstruct RunManifest from HuggingFace artifacts.
+
+        Loads experiment_config from config.json and WandB metadata from
+        wandb_run_info.yaml (if available).
+
+        Parameters
+        ----------
+        model_loader : HFModelLoader
+            Loader instance with downloaded artifacts
+        repo_id : str
+            HuggingFace repository ID (for fallback experiment name)
+
+        Returns
+        -------
+        RunManifest
+            Reconstructed manifest
+
+        Examples
+        --------
+        >>> from napistu_torch.ml.hugging_face import HFModelLoader
+        >>> loader = HFModelLoader("username/model-name")
+        >>> manifest = RunManifest.from_huggingface(loader, "username/model-name")
+        """
+        import logging
+        from datetime import datetime
+
+        logger = logging.getLogger(__name__)
+
+        # Load experiment config
+        experiment_config = model_loader.load_config()
+
+        # Try to load WandB run info (may not exist for older models)
+        try:
+            run_info = model_loader.load_run_info()
+            wandb_run_id = run_info.wandb_run_id
+            wandb_project = run_info.wandb_project
+            wandb_entity = run_info.wandb_entity
+
+            # Construct run URL from components
+            if wandb_run_id and wandb_project and wandb_entity:
+                wandb_run_url = f"https://wandb.ai/{wandb_entity}/{wandb_project}/runs/{wandb_run_id}"
+            else:
+                wandb_run_url = None
+        except Exception as e:
+            logger.warning(
+                f"Could not load WandB run info from {repo_id}: {e}. "
+                "WandB metadata will not be available."
+            )
+            wandb_run_id = None
+            wandb_run_url = None
+            wandb_project = None
+            wandb_entity = None
+
+        # Extract experiment name: use explicit name, generated name, or repo name
+        experiment_name = experiment_config.name
+        if experiment_name is None:
+            # Generate descriptive name from model and task configs
+            experiment_name = experiment_config.get_experiment_name()
+
+        # Create manifest
+        # Note: created_at is not meaningful for remote models
+        return cls(
+            created_at=datetime.now(),  # Sentinel value, not meaningful
+            experiment_config=experiment_config,
+            wandb_run_id=wandb_run_id,
+            wandb_run_url=wandb_run_url,
+            wandb_project=wandb_project,
+            wandb_entity=wandb_entity,
+            experiment_name=experiment_name,
+        )
 
     @classmethod
     def from_yaml(cls, filepath: Path) -> "RunManifest":
