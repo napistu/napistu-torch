@@ -874,6 +874,10 @@ class HFModelLoader(HFClient):
     --------------
     load_checkpoint()
         Load model checkpoint from HuggingFace Hub
+    load_config()
+        Load experiment configuration from HuggingFace Hub
+    load_run_info()
+        Load WandB run information from HuggingFace Hub
 
     Private Methods
     ---------------
@@ -881,10 +885,8 @@ class HFModelLoader(HFClient):
         Download model checkpoint from HuggingFace Hub
     _download_config()
         Download config.json from HuggingFace Hub
-    _get_checkpoint()
-        Download and load checkpoint, with caching
-    _get_config()
-        Download and parse config, with caching
+    _download_run_info()
+        Download wandb_run_info.yaml from HuggingFace Hub
 
     Examples
     --------
@@ -928,6 +930,7 @@ class HFModelLoader(HFClient):
         # Cache for downloaded files
         self._checkpoint_path: Optional[Path] = None
         self._config_path: Optional[Path] = None
+        self._run_info_path: Optional[Path] = None
 
     def load_checkpoint(
         self, raw_checkpoint: bool = False
@@ -973,45 +976,75 @@ class HFModelLoader(HFClient):
 
         return ExperimentConfig.from_json(self._config_path)
 
+    def load_run_info(self) -> WandbRunInfo:
+        """
+        Load WandB run information from HuggingFace Hub.
+
+        Downloads and parses the wandb_run_info.yaml file from the model repository.
+
+        Returns
+        -------
+        WandbRunInfo
+            WandB run information including summaries and metadata
+
+        Examples
+        --------
+        >>> loader = HFModelLoader("username/model-name")
+        >>> run_info = loader.load_run_info()
+        >>> print(run_info.run_path)
+        >>> print(run_info.run_summaries)
+        """
+        if self._run_info_path is None:
+            self._download_run_info()
+
+        return WandbRunInfo.from_yaml(self._run_info_path)
+
     # private methods
 
     def _download_checkpoint(self) -> None:
         """
         Download model checkpoint from HuggingFace Hub and set the _checkpoint_path attribute.
         """
-        if self._checkpoint_path is None:
-            logger.info(
-                f"Downloading checkpoint from {self.repo_id} (revision: {self.revision})..."
-            )
-
-            self._checkpoint_path = Path(
-                hf_hub_download(
-                    repo_id=self.repo_id,
-                    filename="model.ckpt",
-                    revision=self.revision,
-                    cache_dir=self.cache_dir,
-                    repo_type=HUGGING_FACE_REPOS.MODEL,
-                    token=self._token,
-                )
-            )
-
-            logger.info(f"Checkpoint cached at: {self._checkpoint_path}")
-
+        self._download_file("model.ckpt", "checkpoint", "_checkpoint_path")
         return None
 
     def _download_config(self) -> None:
         """
         Download config.json from HuggingFace Hub and set the _config_path attribute.
         """
-        if self._config_path is None:
+        self._download_file("config.json", "config", "_config_path")
+        return None
+
+    def _download_file(self, filename: str, description: str, cache_attr: str) -> Path:
+        """
+        Download a file from HuggingFace Hub and cache it.
+
+        Parameters
+        ----------
+        filename : str
+            Name of the file to download
+        description : str
+            Human-readable description for logging (e.g., "checkpoint", "config", "run info")
+        cache_attr : str
+            Name of the instance attribute to store the cached path (e.g., "_checkpoint_path")
+
+        Returns
+        -------
+        Path
+            Path to the downloaded file
+        """
+        # Get current cached path
+        cached_path = getattr(self, cache_attr)
+
+        if cached_path is None:
             logger.info(
-                f"Downloading config from {self.repo_id} (revision: {self.revision})..."
+                f"Downloading {description} from {self.repo_id} (revision: {self.revision})..."
             )
 
-            self._config_path = Path(
+            downloaded_path = Path(
                 hf_hub_download(
                     repo_id=self.repo_id,
-                    filename="config.json",
+                    filename=filename,
                     revision=self.revision,
                     cache_dir=self.cache_dir,
                     repo_type=HUGGING_FACE_REPOS.MODEL,
@@ -1019,8 +1052,19 @@ class HFModelLoader(HFClient):
                 )
             )
 
-            logger.info(f"Config cached at: {self._config_path}")
+            # Set the cache attribute
+            setattr(self, cache_attr, downloaded_path)
 
+            logger.info(f"{description.capitalize()} cached at: {downloaded_path}")
+            return downloaded_path
+
+        return cached_path
+
+    def _download_run_info(self) -> None:
+        """
+        Download wandb_run_info.yaml from HuggingFace Hub and set the _run_info_path attribute.
+        """
+        self._download_file("wandb_run_info.yaml", "run info", "_run_info_path")
         return None
 
 
