@@ -8,6 +8,7 @@ embeddings, and metadata in a standardized format.
 import json
 import logging
 import os
+from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -18,6 +19,15 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from napistu_torch.load.constants import FM_DEFS
 from napistu_torch.ml.constants import DEVICE
+from napistu_torch.utils.tensor_utils import (
+    compute_cosine_distances_torch,
+    compute_spearman_correlation_torch,
+)
+from napistu_torch.utils.torch_utils import (
+    ensure_device,
+    memory_manager,
+    select_device,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +50,8 @@ class AttentionLayer(BaseModel):
 
     Methods
     -------
-    None
-        This class has no public methods.
+    compute_attention_pattern(embeddings, n_heads, average_heads, device)
+        Compute attention pattern for this layer with multi-head handling.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -60,6 +70,81 @@ class AttentionLayer(BaseModel):
         if v.ndim != 2:
             raise ValueError("Weight matrix must be 2-dimensional")
         return v
+
+    def compute_attention_pattern(
+        self,
+        embeddings: np.ndarray,
+        n_heads: int,
+        average_heads: bool = True,
+        device: Union[str, torch.device] = torch.device(DEVICE.CPU),
+    ) -> torch.Tensor:
+        """
+        Compute attention pattern for this layer with proper multi-head handling.
+
+        Parameters
+        ----------
+        embeddings : np.ndarray
+            Gene embeddings of shape (n_genes, d_model)
+        n_heads : int
+            Number of attention heads
+        average_heads : bool, optional
+            If True, return averaged attention across heads (default: True).
+            If False, return list of per-head attention patterns.
+        device : str or torch.device, optional
+            Device to perform computation on (default: 'cpu')
+
+        Returns
+        -------
+        torch.Tensor
+            If average_heads=True: attention matrix of shape (n_genes, n_genes)
+            If average_heads=False: list of n_heads attention matrices, each (n_genes, n_genes)
+
+        Examples
+        --------
+        >>> layer = model.weights.attention_layers[0]
+        >>> attention = layer.compute_attention_pattern(embeddings, n_heads=4)
+        >>> attention.shape
+        torch.Size([15000, 15000])
+        """
+        # Convert to tensors
+        emb = torch.from_numpy(embeddings).float().to(device)
+        Wq = torch.from_numpy(self.W_q).float().to(device)
+        Wk = torch.from_numpy(self.W_k).float().to(device)
+
+        n_genes, d_model = emb.shape
+        d_k = d_model // n_heads
+
+        if d_model % n_heads != 0:
+            raise ValueError(
+                f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+            )
+
+        # Split by heads (row-wise)
+        # W_q is (d_model, d_model), split rows into n_heads chunks of d_k rows each
+        Wq_heads = Wq.reshape(n_heads, d_k, d_model)
+        Wk_heads = Wk.reshape(n_heads, d_k, d_model)
+
+        # Compute per-head attention
+        head_attentions = []
+
+        for h in range(n_heads):
+            # Project embeddings for this head
+            Q = emb @ Wq_heads[h].T  # (n_genes, d_k)
+            K = emb @ Wk_heads[h].T  # (n_genes, d_k)
+
+            # Scaled dot-product attention
+            attn_scores = (Q @ K.T) / torch.sqrt(
+                torch.tensor(d_k, dtype=torch.float32, device=device)
+            )
+            attn_probs = torch.softmax(attn_scores, dim=-1)  # (n_genes, n_genes)
+
+            head_attentions.append(attn_probs)
+
+        if average_heads:
+            # Average across heads
+            return torch.stack(head_attentions).mean(dim=0)
+        else:
+            return head_attentions
 
 
 class FoundationModelWeights(BaseModel):
@@ -125,18 +210,21 @@ class FoundationModelWeights(BaseModel):
     def compute_attention_from_weights(
         self,
         layer_idx: int,
+        n_heads: int,
+        average_heads: bool = True,
         device: Union[str, torch.device] = torch.device(DEVICE.CPU),
     ) -> torch.Tensor:
         """
-        Compute attention scores for a specific layer.
-
-        Computes scaled dot-product attention: Attention(Q,K) = softmax(QK^T / sqrt(d_k))
-        where Q = embeddings @ W_q.T and K = embeddings @ W_k.T
+        Compute attention scores for a specific layer with proper multi-head handling.
 
         Parameters
         ----------
         layer_idx : int
             Index of the layer to compute attention for
+        n_heads : int
+            Number of attention heads in the model
+        average_heads : bool, optional
+            If True, return averaged attention across heads (default: True)
         device : str or torch.device, optional
             Device to perform computation on (default: 'cpu')
 
@@ -149,6 +237,13 @@ class FoundationModelWeights(BaseModel):
         ------
         ValueError
             If layer_idx is out of range
+
+        Examples
+        --------
+        >>> attention = model.weights.compute_attention_from_weights(
+        ...     layer_idx=0,
+        ...     n_heads=model.n_heads
+        ... )
         """
         if layer_idx >= len(self.attention_layers):
             raise ValueError(
@@ -158,24 +253,12 @@ class FoundationModelWeights(BaseModel):
 
         layer = self.attention_layers[layer_idx]
 
-        # Convert to torch tensors and move to device
-        if isinstance(self.gene_embedding, np.ndarray):
-            embeddings_tensor = torch.from_numpy(self.gene_embedding).float().to(device)
-        else:
-            embeddings_tensor = self.gene_embedding.to(device)
-
-        W_q_tensor = torch.from_numpy(layer.W_q).float().to(device)
-        W_k_tensor = torch.from_numpy(layer.W_k).float().to(device)
-
-        # Compute attention: Attention(Q,K) = softmax(QK^T / sqrt(d_k))
-        Q = embeddings_tensor @ W_q_tensor.T
-        K = embeddings_tensor @ W_k_tensor.T
-
-        attn_scores = (Q @ K.T) / torch.sqrt(
-            torch.tensor(Q.shape[-1], dtype=torch.float32, device=device)
+        return layer.compute_attention_pattern(
+            embeddings=self.gene_embedding,
+            n_heads=n_heads,
+            average_heads=average_heads,
+            device=device,
         )
-
-        return torch.softmax(attn_scores, dim=-1)
 
 
 class GeneAnnotations(BaseModel):
@@ -639,6 +722,41 @@ class FoundationModels(BaseModel):
             raise ValueError("All elements must be FoundationModel instances")
         return v
 
+    def compare_embeddings(
+        self, device: Optional[Union[str, torch.device]] = None, verbose: bool = False
+    ) -> Dict[str, float]:
+        """
+        Compare the embeddings of all models.
+
+        Aligns gene embeddings across all models based on common identifiers and then calculates Spearman correlations of distances between all pairs of models
+
+        Parameters
+        ----------
+        device : Optional[Union[str, torch.device]]
+            Device to use for the computation.
+        verbose : bool
+            Whether to print verbose output.
+
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary mapping model pair names to Spearman correlation coefficients.
+        """
+
+        # Get common identifiers across all models
+        common_identifiers = self.get_common_identifiers(verbose=verbose)
+
+        # pull out and align embeddings across models
+        aligned_embeddings = self._align_embeddings(common_identifiers, verbose=verbose)
+
+        # calculate each model's gene-gene distance matrix and then Spearman correlations of
+        # distances between all pairs of models
+        comparisons = _calculate_embedding_correlations(
+            aligned_embeddings, common_identifiers, device, verbose
+        )
+
+        return comparisons
+
     def get_common_identifiers(
         self, ontology: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True
     ) -> List[str]:
@@ -694,8 +812,48 @@ class FoundationModels(BaseModel):
 
         return common_identifiers
 
-    def get_aligned_embeddings(
-        self, common_identifiers: List[str], ontology: str = ONTOLOGIES.ENSEMBL_GENE
+    @classmethod
+    def load_multiple(cls, output_dir: str, prefixes: List[str]) -> "FoundationModels":
+        """
+        Load multiple foundation models from saved files.
+
+        Parameters
+        ----------
+        output_dir : str
+            Directory path containing the saved model files
+        prefixes : List[str]
+            List of prefixes for the models to load
+
+        Returns
+        -------
+        FoundationModels
+            Container with all loaded models
+
+        Examples
+        --------
+        >>> models = FoundationModels.load_multiple(
+        ...     '/path/to/output',
+        ...     ['scGPT', 'AIDOCell_aido_cell_100m', 'scPRINT']
+        ... )
+        >>> common_ids = models.get_common_identifiers()
+        """
+        loaded_models = [
+            FoundationModel.load(output_dir, prefix) for prefix in prefixes
+        ]
+        return cls(models=loaded_models)
+
+    @property
+    def model_names(self) -> List[str]:
+        """Get list of model names."""
+        return [model.full_name for model in self.models]
+
+    # private methods
+
+    def _align_embeddings(
+        self,
+        common_identifiers: List[str],
+        ontology: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = False,
     ) -> Dict[str, np.ndarray]:
         """
         Align gene embeddings across all models based on common identifiers.
@@ -713,6 +871,8 @@ class FoundationModels(BaseModel):
         ontology : str, optional
             The ontology column to use for common identifiers (default: 'ensembl_gene').
             This should be a column in every model's gene annotations.
+        verbose : bool, optional
+            Extra reporting (default: False)
 
         Returns
         -------
@@ -767,57 +927,92 @@ class FoundationModels(BaseModel):
                 embedding_alignment_lookup_table["index_position"].values
             ]
 
-            logger.info(
-                f"{model.model_name}: Extracted a length {aligned_embedding.shape[1]} embedding "
-                f"for {aligned_embedding.shape[0]} common identifiers"
-            )
+            if verbose:
+                logger.info(
+                    f"{model.model_name}: Extracted a length {aligned_embedding.shape[1]} embedding "
+                    f"for {aligned_embedding.shape[0]} common identifiers"
+                )
 
             aligned_embeddings[model.full_name] = aligned_embedding
 
         return aligned_embeddings
 
-    @classmethod
-    def load_multiple(cls, output_dir: str, prefixes: List[str]) -> "FoundationModels":
-        """
-        Load multiple foundation models from saved files.
-
-        Parameters
-        ----------
-        output_dir : str
-            Directory path containing the saved model files
-        prefixes : List[str]
-            List of prefixes for the models to load
-
-        Returns
-        -------
-        FoundationModels
-            Container with all loaded models
-
-        Examples
-        --------
-        >>> models = FoundationModels.load_multiple(
-        ...     '/path/to/output',
-        ...     ['scGPT', 'AIDOCell_aido_cell_100m', 'scPRINT']
-        ... )
-        >>> common_ids = models.get_common_identifiers()
-        """
-        loaded_models = [
-            FoundationModel.load(output_dir, prefix) for prefix in prefixes
-        ]
-        return cls(models=loaded_models)
-
-    @property
-    def model_names(self) -> List[str]:
-        """Get list of model names."""
-        return [model.full_name for model in self.models]
-
     def __repr__(self) -> str:
         """String representation listing model names."""
-        model_full_names_str = ", ".join(self.model_full_names)
+        model_full_names_str = ", ".join(self.model_names)
         return f"FoundationModels(models=[{model_full_names_str}])"
 
 
 # Private utility functions
+
+
+def _calculate_embedding_correlations(
+    aligned_embeddings: Dict[str, np.ndarray],
+    common_identifiers: List[str],
+    device: Optional[Union[str, torch.device]] = None,
+    verbose: bool = False,
+) -> Dict[str, float]:
+    """
+    Compare embeddings by calculating gene-gene distances and then Spearman correlations of distances between all pairs of models
+
+    Parameters
+    ----------
+    aligned_embeddings : Dict[str, np.ndarray]
+        Dictionary mapping model names to aligned embedding arrays.
+    common_identifiers : List[str]
+        List of common identifiers across all models.
+    device : Optional[Union[str, torch.device]]
+        Device to use for the computation.
+    verbose : bool
+        Whether to print verbose output.
+
+    Returns
+    -------
+    Dict[str, float]
+        Dictionary mapping model pair names to Spearman correlation coefficients.
+    """
+
+    # Check if MPS/GPU is available
+    if device is None:
+        device = select_device(mps_valid=True)
+        if verbose:
+            logger.info(f"No device specified, using default device: {device}")
+    else:
+        device = ensure_device(device)
+
+    # Convert embeddings to PyTorch tensors and compute distances with memory management
+    distances = {}
+    with memory_manager(device):
+        for model_name, embedding in aligned_embeddings.items():
+            if verbose:
+                logger.info(f"Computing distances for {model_name}...")
+            distances[model_name] = compute_cosine_distances_torch(embedding, device)
+
+    # Compare distance matrices pairwise - all unique pairs from model_prefixes
+    # Use upper triangle only (exclude diagonal and avoid redundancy)
+    mask = np.triu_indices(len(common_identifiers), k=1)  # k=1 excludes diagonal
+
+    all_model_names = list(aligned_embeddings.keys())
+    comparisons = {}
+    with memory_manager(device):
+        for model1, model2 in combinations(all_model_names, 2):
+            if verbose:
+                logger.info(f"Comparing {model1} vs {model2}...")
+
+            dist1_flat = distances[model1][mask]
+            dist2_flat = distances[model2][mask]
+
+            # Spearman correlation using PyTorch
+            rho = compute_spearman_correlation_torch(dist1_flat, dist2_flat, device)
+            comparisons[f"{model1}_vs_{model2}"] = rho
+
+            if verbose:
+                logger.info(f"  {model1} vs {model2}: Spearman rho = {rho:.4f}")
+
+        # Clean up intermediate arrays
+        del dist1_flat, dist2_flat, distances
+
+    return comparisons
 
 
 def _load_results(output_dir: str, prefix: str) -> Tuple[dict, pd.DataFrame, dict]:
