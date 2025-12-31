@@ -18,7 +18,6 @@ from napistu.constants import ONTOLOGIES
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from napistu_torch.load.constants import FM_DEFS
-from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.tensor_utils import (
     compute_cosine_distances_torch,
     compute_spearman_correlation_torch,
@@ -76,7 +75,8 @@ class AttentionLayer(BaseModel):
         embeddings: np.ndarray,
         n_heads: int,
         average_heads: bool = True,
-        device: Union[str, torch.device] = torch.device(DEVICE.CPU),
+        return_tensor: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
     ) -> torch.Tensor:
         """
         Compute attention pattern for this layer with proper multi-head handling.
@@ -90,8 +90,10 @@ class AttentionLayer(BaseModel):
         average_heads : bool, optional
             If True, return averaged attention across heads (default: True).
             If False, return list of per-head attention patterns.
+        return_tensor : bool, optional
+            If True, return a torch.Tensor. If False, return a numpy array. (default: False)
         device : str or torch.device, optional
-            Device to perform computation on (default: 'cpu')
+            Device to perform computation on (default: None to decide automatically)
 
         Returns
         -------
@@ -106,45 +108,57 @@ class AttentionLayer(BaseModel):
         >>> attention.shape
         torch.Size([15000, 15000])
         """
-        # Convert to tensors
-        emb = torch.from_numpy(embeddings).float().to(device)
-        Wq = torch.from_numpy(self.W_q).float().to(device)
-        Wk = torch.from_numpy(self.W_k).float().to(device)
 
-        n_genes, d_model = emb.shape
-        d_k = d_model // n_heads
-
-        if d_model % n_heads != 0:
-            raise ValueError(
-                f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
-            )
-
-        # Split by heads (row-wise)
-        # W_q is (d_model, d_model), split rows into n_heads chunks of d_k rows each
-        Wq_heads = Wq.reshape(n_heads, d_k, d_model)
-        Wk_heads = Wk.reshape(n_heads, d_k, d_model)
-
-        # Compute per-head attention
-        head_attentions = []
-
-        for h in range(n_heads):
-            # Project embeddings for this head
-            Q = emb @ Wq_heads[h].T  # (n_genes, d_k)
-            K = emb @ Wk_heads[h].T  # (n_genes, d_k)
-
-            # Scaled dot-product attention
-            attn_scores = (Q @ K.T) / torch.sqrt(
-                torch.tensor(d_k, dtype=torch.float32, device=device)
-            )
-            attn_probs = torch.softmax(attn_scores, dim=-1)  # (n_genes, n_genes)
-
-            head_attentions.append(attn_probs)
-
-        if average_heads:
-            # Average across heads
-            return torch.stack(head_attentions).mean(dim=0)
+        if device is None:
+            device = select_device()
         else:
-            return head_attentions
+            device = ensure_device(device)
+
+        with memory_manager(device):
+            # Convert to tensors
+            emb = torch.from_numpy(embeddings).float().to(device)
+            Wq = torch.from_numpy(self.W_q).float().to(device)
+            Wk = torch.from_numpy(self.W_k).float().to(device)
+
+            n_genes, d_model = emb.shape
+            d_k = d_model // n_heads
+
+            if d_model % n_heads != 0:
+                raise ValueError(
+                    f"d_model ({d_model}) must be divisible by n_heads ({n_heads})"
+                )
+
+            # Split by heads (row-wise)
+            # W_q is (d_model, d_model), split rows into n_heads chunks of d_k rows each
+            Wq_heads = Wq.reshape(n_heads, d_k, d_model)
+            Wk_heads = Wk.reshape(n_heads, d_k, d_model)
+
+            # Compute per-head attention
+            head_attentions = []
+
+            for h in range(n_heads):
+                # Project embeddings for this head
+                Q = emb @ Wq_heads[h].T  # (n_genes, d_k)
+                K = emb @ Wk_heads[h].T  # (n_genes, d_k)
+
+                # Scaled dot-product attention
+                attn_scores = (Q @ K.T) / torch.sqrt(
+                    torch.tensor(d_k, dtype=torch.float32, device=device)
+                )
+                attn_probs = torch.softmax(attn_scores, dim=-1)  # (n_genes, n_genes)
+
+                head_attentions.append(attn_probs)
+
+            if average_heads:
+                # Average across heads
+                results = torch.stack(head_attentions).mean(dim=0)
+            else:
+                results = head_attentions
+
+            if return_tensor:
+                return results
+            else:
+                return results.cpu().numpy()
 
 
 class FoundationModelWeights(BaseModel):
@@ -212,7 +226,8 @@ class FoundationModelWeights(BaseModel):
         layer_idx: int,
         n_heads: int,
         average_heads: bool = True,
-        device: Union[str, torch.device] = torch.device(DEVICE.CPU),
+        device: Optional[Union[str, torch.device]] = None,
+        vocab_mask: Optional[np.ndarray] = None,
     ) -> torch.Tensor:
         """
         Compute attention scores for a specific layer with proper multi-head handling.
@@ -225,18 +240,23 @@ class FoundationModelWeights(BaseModel):
             Number of attention heads in the model
         average_heads : bool, optional
             If True, return averaged attention across heads (default: True)
+        vocab_mask : np.ndarray, optional
+            Boolean mask of shape (n_vocab,) indicating which vocabulary items to include.
+            If provided, only embeddings corresponding to True values will be used.
+            Default: None.
         device : str or torch.device, optional
-            Device to perform computation on (default: 'cpu')
+            Device to perform computation on (default: None, to automatically select a device)
 
         Returns
         -------
         torch.Tensor
-            Attention scores matrix of shape (n_vocab, n_vocab) with softmax applied
+            Attention scores matrix. If vocab_mask is provided, shape is (n_selected, n_selected),
+            otherwise shape is (n_vocab, n_vocab). Softmax is applied.
 
         Raises
         ------
         ValueError
-            If layer_idx is out of range
+            If layer_idx is out of range or vocab_mask has incorrect shape
 
         Examples
         --------
@@ -251,10 +271,21 @@ class FoundationModelWeights(BaseModel):
                 f"(model has {len(self.attention_layers)} layers)"
             )
 
+        # Apply vocab_mask to filter embeddings if provided
+        embeddings = self.gene_embedding
+        if vocab_mask is not None:
+            vocab_mask = np.asarray(vocab_mask, dtype=bool)
+            n_vocab = self.gene_embedding.shape[0]
+            if vocab_mask.shape != (n_vocab,):
+                raise ValueError(
+                    f"vocab_mask must have shape ({n_vocab},), got {vocab_mask.shape}"
+                )
+            embeddings = embeddings[vocab_mask]
+
         layer = self.attention_layers[layer_idx]
 
         return layer.compute_attention_pattern(
-            embeddings=self.gene_embedding,
+            embeddings=embeddings,
             n_heads=n_heads,
             average_heads=average_heads,
             device=device,
@@ -422,10 +453,12 @@ class FoundationModel(BaseModel):
 
     Public Methods
     --------------
-    load(output_dir, prefix)
-        Load foundation model from saved files (classmethod).
+    compute_attention(layer_idx, average_heads=True, device='cpu')
+        Compute attention scores for a specific layer
     full_name
         Property returning full unique identifier (model_name with model_variant if present)
+    load(output_dir, prefix)
+        Load foundation model from saved files (classmethod)
     save(output_dir, prefix)
         Save foundation model to files.
     """
@@ -542,6 +575,64 @@ class FoundationModel(BaseModel):
             raise ValueError("ordered_vocabulary must contain only strings")
         return v
 
+    def compute_attention(
+        self,
+        layer_idx: int,
+        average_heads: bool = True,
+        device: Optional[Union[str, torch.device]] = None,
+        vocab_mask: Optional[np.ndarray] = None,
+    ) -> torch.Tensor:
+        """
+        Compute attention scores for a specific layer using the model's n_heads.
+
+        This is a convenience method that calls weights.compute_attention_from_weights
+        with the model's n_heads attribute automatically provided.
+
+        Parameters
+        ----------
+        layer_idx : int
+            Index of the layer to compute attention for
+        average_heads : bool, optional
+            If True, return averaged attention across heads (default: True)
+        device : str or torch.device, optional
+            Device to perform computation on (default: None to automatically select a device)
+        vocab_mask : np.ndarray, optional
+            Boolean mask of shape (n_vocab,) indicating which vocabulary items to include.
+            If provided, only embeddings corresponding to True values will be used.
+            Default: None.
+
+        Returns
+        -------
+        torch.Tensor
+            Attention scores matrix. If vocab_mask is provided, shape is (n_selected, n_selected),
+            otherwise shape is (n_vocab, n_vocab). Softmax is applied.
+
+        Raises
+        ------
+        ValueError
+            If layer_idx is out of range
+
+        Examples
+        --------
+        >>> attention = model.compute_attention(layer_idx=0)
+        >>> attention.shape
+        torch.Size([15000, 15000])
+        """
+        return self.weights.compute_attention_from_weights(
+            layer_idx=layer_idx,
+            n_heads=self.n_heads,
+            average_heads=average_heads,
+            device=device,
+            vocab_mask=vocab_mask,
+        )
+
+    @property
+    def full_name(self) -> str:
+        """Get full unique identifier."""
+        if self.model_variant:
+            return f"{self.model_name}_{self.model_variant}"
+        return self.model_name
+
     @classmethod
     def load(cls, output_dir: str, prefix: str) -> "FoundationModel":
         """
@@ -602,13 +693,6 @@ class FoundationModel(BaseModel):
             gene_annotations=gene_annotations,
             model_metadata=model_metadata,
         )
-
-    @property
-    def full_name(self) -> str:
-        """Get full unique identifier."""
-        if self.model_variant:
-            return f"{self.model_name}_{self.model_variant}"
-        return self.model_name
 
     def save(self, output_dir: str, prefix: str) -> None:
         """
@@ -1009,9 +1093,6 @@ def _calculate_embedding_correlations(
             if verbose:
                 logger.info(f"  {model1} vs {model2}: Spearman rho = {rho:.4f}")
 
-        # Clean up intermediate arrays
-        del dist1_flat, dist2_flat, distances
-
     return comparisons
 
 
@@ -1040,8 +1121,9 @@ def _load_results(output_dir: str, prefix: str) -> Tuple[dict, pd.DataFrame, dic
     weights_path = os.path.join(output_dir, weights_filename)
     metadata_path = os.path.join(output_dir, metadata_filename)
 
-    logger.info(f"Loading weights from {weights_path}")
-    logger.info(f"Loading metadata from {metadata_path}")
+    logger.info(
+        f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
+    )
 
     # Load weights from npz
     weights_data = np.load(weights_path, allow_pickle=True)
