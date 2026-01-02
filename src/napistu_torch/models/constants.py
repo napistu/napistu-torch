@@ -12,6 +12,7 @@ MODEL_DEFS = SimpleNamespace(
     EDGE_IN_CHANNELS="edge_in_channels",
     NUM_RELATIONS="num_relations",
     NUM_CLASSES="num_classes",
+    SYMMETRIC_RELATION_INDICES="symmetric_relation_indices",
     # generally applicable parameters
     DROPOUT="dropout",
     HIDDEN_CHANNELS="hidden_channels",
@@ -72,6 +73,7 @@ HEADS = SimpleNamespace(
     MLP="mlp",
     # relation prediction heads
     ROTATE="rotate",
+    CONDITIONAL_ROTATE="conditional_rotate",
     TRANSE="transe",
     DISTMULT="distmult",
     RELATION_ATTENTION="relation_attention",
@@ -83,6 +85,7 @@ VALID_HEADS = list(HEADS.__dict__.values())
 
 RELATION_AWARE_HEADS = {
     HEADS.ROTATE,
+    HEADS.CONDITIONAL_ROTATE,
     HEADS.TRANSE,
     HEADS.DISTMULT,
     HEADS.RELATION_ATTENTION,
@@ -94,6 +97,10 @@ EDGE_PREDICTION_HEADS = {
     HEADS.MLP,
     HEADS.ATTENTION,
 } | RELATION_AWARE_HEADS
+
+HEADS_W_SPECIAL_SYMMETRY_HANDLING = {
+    HEADS.CONDITIONAL_ROTATE,
+}
 
 # Head-specific parameter names
 HEAD_SPECIFIC_ARGS = SimpleNamespace(

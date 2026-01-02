@@ -520,7 +520,7 @@ def test_estimate_memory_footprint(napistu_data):
     napistu_data.show_memory_footprint()
 
 
-def test_get_symmetrical_relation_types():
+def test_get_symmetrical_relation_indices():
     """Test get_symmetrical_relation_types returns symmetric relation type indices."""
     # Create a LabelingManager with both symmetric and asymmetric relations
     # Symmetric: source_type == target_type
@@ -550,7 +550,7 @@ def test_get_symmetrical_relation_types():
     )
 
     # Get symmetric relation types
-    symmetric_indices = data.get_symmetrical_relation_types()
+    symmetric_indices = data.get_symmetrical_relation_indices()
 
     # Verify return type
     assert isinstance(symmetric_indices, list)
@@ -584,13 +584,13 @@ def test_get_symmetrical_relation_types():
         assert source_type == target_type, f"Index {idx} ({name}) should be symmetric"
 
 
-def test_get_symmetrical_relation_types_failure_cases(edge_masked_napistu_data):
+def test_get_symmetrical_relation_indices_failure_cases(edge_masked_napistu_data):
     """Test get_symmetrical_relation_types raises errors for invalid cases."""
 
     # Test case 1: No relation_manager (using edge_masked_napistu_data fixture)
     assert not hasattr(edge_masked_napistu_data, NAPISTU_DATA.RELATION_MANAGER)
     with pytest.raises(ValueError, match="relation_manager is missing"):
-        edge_masked_napistu_data.get_symmetrical_relation_types()
+        edge_masked_napistu_data.get_symmetrical_relation_indices()
 
     # Test case 2: All symmetric relations
     all_symmetric_manager = LabelingManager(
@@ -608,7 +608,7 @@ def test_get_symmetrical_relation_types_failure_cases(edge_masked_napistu_data):
         relation_manager=all_symmetric_manager,
     )
     with pytest.raises(ValueError, match="All .* relations are symmetric"):
-        data_all_symmetric.get_symmetrical_relation_types()
+        data_all_symmetric.get_symmetrical_relation_indices()
 
     # Test case 3: All asymmetric relations
     all_asymmetric_manager = LabelingManager(
@@ -626,7 +626,7 @@ def test_get_symmetrical_relation_types_failure_cases(edge_masked_napistu_data):
         relation_manager=all_asymmetric_manager,
     )
     with pytest.raises(ValueError, match="All .* relations are asymmetric"):
-        data_all_asymmetric.get_symmetrical_relation_types()
+        data_all_asymmetric.get_symmetrical_relation_indices()
 
     # Test case 4: Malformed relation names (don't match expected pattern)
     malformed_manager = LabelingManager(
@@ -646,4 +646,4 @@ def test_get_symmetrical_relation_types_failure_cases(edge_masked_napistu_data):
         relation_manager=malformed_manager,
     )
     with pytest.raises(ValueError, match="malformed relation names"):
-        data_malformed.get_symmetrical_relation_types()
+        data_malformed.get_symmetrical_relation_indices()

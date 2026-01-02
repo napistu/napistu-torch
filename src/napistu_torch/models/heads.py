@@ -5,7 +5,7 @@ This module provides implementations of different prediction heads for various t
 like edge prediction, node classification, etc. All heads follow a consistent interface.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
@@ -22,6 +22,10 @@ from napistu_torch.models.constants import (
     MODEL_DEFS,
     RELATION_AWARE_HEADS,
     VALID_HEADS,
+)
+from napistu_torch.models.head_utils import (
+    compute_rotate_distance,
+    normalized_distances_to_probs,
 )
 
 
@@ -158,6 +162,209 @@ class AttentionHead(nn.Module):
         scores = (src_queries * tgt_keys).sum(dim=1) * self.scale  # [num_edges]
 
         return scores
+
+
+class ConditionalRotatEHead(nn.Module):
+    """
+    Conditional decoder: DotProduct for symmetric relations, RotatE for asymmetric.
+
+    Automatically routes different relation types to appropriate scoring functions:
+    - Symmetric relations (e.g., "protein->protein"): DotProduct distance
+    - Asymmetric relations (e.g., "catalyst->modified"): RotatE rotation distance
+
+    Both heads produce distance-based scores in [-2, 0] for margin loss.
+
+    Parameters
+    ----------
+    embedding_dim : int
+        Dimension of node embeddings (must be even for RotatE complex embeddings)
+    num_relations : int
+        Total number of relation types
+    symmetric_relation_indices : List[int]
+        Indices of relations that should use dot product (symmetric).
+        All other relations use RotatE (asymmetric).
+        Obtained from NapistuData.analyze_relation_symmetry()
+    init_asymmetric_as_identity : bool, optional
+        Initialize RotatE phases to 0 (identity rotation), by default False
+    margin : float, optional
+        Margin for ranking loss (applied to both heads), by default 9.0
+
+    Notes
+    -----
+    **Score Ranges (with normalized embeddings):**
+    Both heads produce scores in [-2, 0]:
+    - DotProduct: distance = 1 - similarity, score = -distance
+    - RotatE: distance = ||h⊙r - t||, score = -distance
+
+    **When to Use:**
+    - Graph has mix of symmetric (A↔B) and asymmetric (A→B) relations
+    - Example: protein-protein interactions (symmetric) + catalysis (asymmetric)
+
+    **When NOT to Use:**
+    - All relations symmetric → Use DotProduct or DistMult instead
+    - All relations asymmetric → Use RotatE or TransE instead
+    """
+
+    loss_type = LOSSES.MARGIN
+
+    def __init__(
+        self,
+        embedding_dim: int,
+        num_relations: int,
+        symmetric_relation_indices: List[int],
+        init_asymmetric_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
+        margin: float = HEAD_DEFS.DEFAULT_ROTATE_MARGIN,
+    ):
+        super().__init__()
+
+        if embedding_dim % 2 != 0:
+            raise ValueError(
+                f"embedding_dim must be even for RotatE component, got {embedding_dim}"
+            )
+
+        # Validate symmetric relation indices
+        self._validate_symmetric_relation_indices(
+            symmetric_relation_indices, num_relations
+        )
+
+        self.embedding_dim = embedding_dim
+        self.num_relations = num_relations
+        self.margin = margin
+        self.eps = 1e-8
+
+        # Partition relations into symmetric vs asymmetric
+        self.symmetric_relations = set(symmetric_relation_indices)
+        self.asymmetric_relations = [
+            i for i in range(num_relations) if i not in self.symmetric_relations
+        ]
+
+        # Create relation routing (as buffer so it's device-aware and saved in state_dict)
+        self.register_buffer(
+            "is_symmetric", torch.zeros(num_relations, dtype=torch.bool)
+        )
+        for idx in symmetric_relation_indices:
+            self.is_symmetric[idx] = True
+
+        # Create full embedding table for all relations
+        # Symmetric relations will be initialized to NaN (unused)
+        # Asymmetric relations will be initialized for RotatE
+        self.relation_emb = nn.Embedding(
+            num_relations,
+            embedding_dim // 2,  # Complex space: half dimension for re, half for im
+        )
+
+        # Initialize embeddings
+        with torch.no_grad():
+            # Initialize symmetric relations to NaN (unused, will error if accessed)
+            for idx in symmetric_relation_indices:
+                self.relation_emb.weight[idx] = float("nan")
+
+            # Initialize asymmetric relations for RotatE
+            if init_asymmetric_as_identity:
+                # Phase = 0 means identity rotation (no transformation)
+                for idx in self.asymmetric_relations:
+                    self.relation_emb.weight[idx].zero_()
+            else:
+                # Random phases in [-π, π] for diverse rotations
+                for idx in self.asymmetric_relations:
+                    self.relation_emb.weight[idx].uniform_(-torch.pi, torch.pi)
+
+    def forward(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+        relation_type: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Compute edge scores using conditional head selection.
+
+        Routes edges to DotProduct (symmetric) or RotatE (asymmetric) based on
+        relation type, then returns unified distance-based scores.
+
+        Parameters
+        ----------
+        node_embeddings : torch.Tensor
+            Node embeddings from GNN [num_nodes, embedding_dim]
+        edge_index : torch.Tensor
+            Edge connectivity [2, num_edges]
+        relation_type : torch.Tensor
+            Relation type for each edge [num_edges]
+
+        Returns
+        -------
+        torch.Tensor
+            Edge scores in [-2, 0] for margin loss [num_edges]
+            Higher score = more likely edge (closer to 0)
+        """
+        # CRITICAL: Normalize embeddings to unit norm
+        # This ensures distances are bounded in [0, 2] for both heads
+        node_embeddings = F.normalize(node_embeddings, p=2, dim=1)
+
+        num_edges = edge_index.size(1)
+        scores = torch.zeros(num_edges, device=node_embeddings.device)
+
+        # Process symmetric relations (dot product → distance)
+        sym_mask = self.is_symmetric[relation_type]
+        if sym_mask.any():
+            scores[sym_mask] = self._compute_dot_scores(
+                node_embeddings, edge_index[:, sym_mask]
+            )
+
+        # Process asymmetric relations (RotatE)
+        asym_mask = ~sym_mask
+        if asym_mask.any():
+            scores[asym_mask] = self._compute_rotate_scores(
+                node_embeddings,
+                edge_index[:, asym_mask],
+                relation_type[asym_mask],  # Direct indexing now!
+            )
+
+        return scores
+
+    def scores_to_probs(self, scores: torch.Tensor) -> torch.Tensor:
+        return normalized_distances_to_probs(scores)
+
+    def _compute_dot_scores(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute dot product-based distance scores."""
+        src = node_embeddings[edge_index[0]]
+        tgt = node_embeddings[edge_index[1]]
+
+        # Similarity in [-1, 1] for normalized embeddings
+        similarity = (src * tgt).mean(dim=1)
+
+        # Convert to distance in [0, 2], then negate for score in [-2, 0]
+        distance = 1.0 - similarity
+        score = -distance
+
+        return score
+
+    def _compute_rotate_scores(
+        self,
+        node_embeddings: torch.Tensor,
+        edge_index: torch.Tensor,
+        relation_type: torch.Tensor,  # Now uses global indices directly!
+    ) -> torch.Tensor:
+        """Compute RotatE rotation-based distance scores using shared utility."""
+        # Get head and tail embeddings
+        head_embeddings = node_embeddings[edge_index[0]]
+        tail_embeddings = node_embeddings[edge_index[1]]
+
+        # Get relation phase angles (direct indexing, NaNs for symmetric relations)
+        phase = self.relation_emb(relation_type)
+
+        # Compute RotatE distance using shared utility
+        distance = compute_rotate_distance(
+            head_embeddings, tail_embeddings, phase, self.eps
+        )
+
+        # Negate for score in [-2, 0]
+        score = -distance
+
+        return score
 
 
 class DistMultHead(nn.Module):
@@ -1068,29 +1275,7 @@ class RotatEHead(nn.Module):
         return score
 
     def scores_to_probs(self, scores: torch.Tensor) -> torch.Tensor:
-        """
-        Convert RotatE scores (negative distances) to probabilities.
-
-        RotatE scores are negative L2 distances in range [-2, 0]
-        for normalized embeddings.
-
-        Map linearly to [0, 1]:
-        - distance = 0 (perfect match) → score = 0 → prob = 1.0
-        - distance = 2 (max distance) → score = -2 → prob = 0.0
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Raw RotatE scores (negative distances)
-
-        Returns
-        -------
-        torch.Tensor
-            Probabilities in [0, 1]
-        """
-        # Linear mapping: prob = (score + 2) / 2
-        # Maps [-2, 0] → [0, 1]
-        return (scores + 2.0) / 2.0
+        return normalized_distances_to_probs(scores)
 
 
 class TransEHead(nn.Module):
@@ -1207,39 +1392,7 @@ class TransEHead(nn.Module):
         return score
 
     def scores_to_probs(self, scores: torch.Tensor) -> torch.Tensor:
-        """
-        Convert TransE scores (negative distances) to probabilities.
-
-        TransE scores are negative distances. With L2 norm and normalized embeddings:
-        - distance ∈ [0, sqrt(2)]
-        - score ∈ [-sqrt(2), 0]
-
-        Map linearly to [0, 1]:
-        - distance = 0 (perfect match) → score = 0 → prob = 1.0
-        - distance = sqrt(2) (max) → score = -1.414 → prob = 0.0
-
-        With L1 norm and normalized embeddings:
-        - distance ∈ [0, 2]
-        - score ∈ [-2, 0]
-
-        Map linearly to [0, 1]:
-        - distance = 0 (perfect match) → score = 0 → prob = 1.0
-        - distance = 2 (max) → score = -2 → prob = 0.0
-
-        Parameters
-        ----------
-        scores : torch.Tensor
-            Raw TransE scores (negative distances)
-
-        Returns
-        -------
-        torch.Tensor
-            Probabilities in [0, 1]
-        """
-        if self.norm == 1:
-            return 1.0 + scores / 2.0  # L1: max distance = 2
-        else:
-            return 1.0 + scores / 1.414  # L2: max distance = sqrt(2)
+        return normalized_distances_to_probs(scores)
 
 
 class Decoder(nn.Module):
@@ -1258,6 +1411,9 @@ class Decoder(nn.Module):
         Type of head to create (dot_product, mlp, attention, node_classification)
     num_relations : int, optional
         Number of relation types (required for relation-aware heads)
+    symmetric_relation_indices : List[int], optional
+        List of relation type indices that are symmetric.
+        This is required for heads that support special symmetry handling.
     num_classes : int, optional
         Number of output classes for node classification head
     init_head_as_identity : bool, optional
@@ -1296,6 +1452,7 @@ class Decoder(nn.Module):
         hidden_channels: int,
         head_type: str = HEADS.DOT_PRODUCT,
         num_relations: Optional[int] = None,
+        symmetric_relation_indices: Optional[List[int]] = None,
         num_classes: Optional[int] = None,
         init_head_as_identity: bool = HEAD_DEFS.DEFAULT_INIT_HEAD_AS_IDENTITY,
         mlp_hidden_dim: int = HEAD_DEFS.DEFAULT_MLP_HIDDEN_DIM,
@@ -1314,6 +1471,7 @@ class Decoder(nn.Module):
             MODEL_DEFS.HIDDEN_CHANNELS: hidden_channels,
             MODEL_DEFS.HEAD_TYPE: head_type,
             MODEL_DEFS.NUM_RELATIONS: num_relations,
+            MODEL_DEFS.SYMMETRIC_RELATION_INDICES: symmetric_relation_indices,
             MODEL_DEFS.NUM_CLASSES: num_classes,
             HEAD_SPECIFIC_ARGS.INIT_HEAD_AS_IDENTITY: init_head_as_identity,
             HEAD_SPECIFIC_ARGS.MLP_HIDDEN_DIM: mlp_hidden_dim,
@@ -1406,6 +1564,14 @@ class Decoder(nn.Module):
                 num_relations=num_relations,
                 margin=rotate_margin,
                 init_as_identity=init_head_as_identity,
+            )
+        elif head_type == HEADS.CONDITIONAL_ROTATE:
+            self.head = ConditionalRotatEHead(
+                embedding_dim=self.hidden_channels,
+                num_relations=num_relations,
+                margin=rotate_margin,
+                init_as_identity=init_head_as_identity,
+                symmetric_relation_indices=symmetric_relation_indices,
             )
         elif head_type == HEADS.TRANSE:
             self.head = TransEHead(
@@ -1597,6 +1763,7 @@ class Decoder(nn.Module):
         config: ModelConfig,
         num_relations: Optional[int] = None,
         num_classes: Optional[int] = None,
+        symmetric_relation_indices: Optional[List[int]] = None,
     ):
         """
         Create a Decoder from a configuration object.
@@ -1611,6 +1778,9 @@ class Decoder(nn.Module):
         num_classes : int, optional
             Number of output classes for node classification head (required for node classification head).
             This should be inferred from the data.
+        symmetric_relation_indices : List[int], optional
+            List of relation type indices that are symmetric.
+            This is required for heads that support special symmetry handling.
 
         Returns
         -------
@@ -1622,6 +1792,7 @@ class Decoder(nn.Module):
             MODEL_DEFS.HIDDEN_CHANNELS: getattr(config, MODEL_DEFS.HIDDEN_CHANNELS),
             MODEL_DEFS.HEAD_TYPE: getattr(config, MODEL_CONFIG.HEAD),
             MODEL_DEFS.NUM_RELATIONS: num_relations,
+            MODEL_DEFS.SYMMETRIC_RELATION_INDICES: symmetric_relation_indices,
             MODEL_DEFS.NUM_CLASSES: num_classes,
             HEAD_SPECIFIC_ARGS.INIT_HEAD_AS_IDENTITY: getattr(
                 config,

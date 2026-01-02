@@ -38,7 +38,10 @@ from napistu_torch.ml.wandb import (
     resume_wandb_logger,
     setup_wandb_logger,
 )
-from napistu_torch.models.constants import RELATION_AWARE_HEADS
+from napistu_torch.models.constants import (
+    HEADS_W_SPECIAL_SYMMETRY_HANDLING,
+    RELATION_AWARE_HEADS,
+)
 from napistu_torch.models.heads import Decoder
 from napistu_torch.models.message_passing_encoder import MessagePassingEncoder
 from napistu_torch.tasks.edge_prediction import (
@@ -730,10 +733,24 @@ def _create_model(
             logger.info(
                 f"Using relation-aware head '{config.model.head}' with {num_relations} relations"
             )
+
+        if config.model.head in HEADS_W_SPECIAL_SYMMETRY_HANDLING:
+            symmetric_relation_indices = (
+                data_module.napistu_data.get_symmetrical_relation_indices()
+            )
+            if verbose:
+                logger.info(
+                    f"Using special symmetry handling for head '{config.model.head}' with {len(symmetric_relation_indices)} symmetric relation types"
+                )
+
     else:
         num_relations = None
 
-    head = Decoder.from_config(config.model, num_relations=num_relations)
+    head = Decoder.from_config(
+        config.model,
+        num_relations=num_relations,
+        symmetric_relation_indices=symmetric_relation_indices,
+    )
     task = EdgePredictionTask(
         encoder,
         head,

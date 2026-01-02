@@ -116,7 +116,7 @@ class NapistuData(Data):
         Get a feature by name from the NapistuData object
     get_summary(summary_type="basic")
         Get a summary of the NapistuData object
-    get_symmetrical_relation_types()
+    get_symmetrical_relation_indices()
         Get the indices of symmetric relation types
     get_vertex_feature_names()
         Get the names of vertex features
@@ -720,7 +720,7 @@ class NapistuData(Data):
 
         return summary_dict
 
-    def get_symmetrical_relation_types(self) -> List[int]:
+    def get_symmetrical_relation_indices(self) -> List[int]:
         """
         Analyze relation type names to detect symmetric ones.
 
