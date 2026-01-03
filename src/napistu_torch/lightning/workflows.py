@@ -725,6 +725,7 @@ def _create_model(
     )
 
     # b. decoder/head
+    symmetric_relation_indices = None
     if verbose:
         logger.info("Creating Decoder from config...")
     if config.model.head in RELATION_AWARE_HEADS:

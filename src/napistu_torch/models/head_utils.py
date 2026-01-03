@@ -79,7 +79,7 @@ def compute_rotate_distance(
 
 def normalized_distances_to_probs(scores: Tensor) -> Tensor:
     """
-    Convert normalized distances to probabilities.
+    Convert distances between softmax-normalized vectors to probabilities.
 
     Parameters
     ----------
