@@ -23,6 +23,7 @@ from napistu_torch.constants import (
     NAPISTU_DATA_SUMMARY_TYPES,
     PYG,
 )
+from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.napistu_data import NapistuData
 
 
@@ -517,3 +518,132 @@ def test_estimate_memory_footprint(napistu_data):
 
     # Call show_memory_footprint (just verify it doesn't raise, don't validate prints)
     napistu_data.show_memory_footprint()
+
+
+def test_get_symmetrical_relation_indices():
+    """Test get_symmetrical_relation_types returns symmetric relation type indices."""
+    # Create a LabelingManager with both symmetric and asymmetric relations
+    # Symmetric: source_type == target_type
+    # Asymmetric: source_type != target_type
+    mixed_relation_manager = LabelingManager(
+        label_attribute="test",
+        label_names={
+            0: "gene -> gene",  # symmetric
+            1: "protein -> protein",  # symmetric
+            2: "gene -> protein",  # asymmetric
+            3: "protein -> metabolite",  # asymmetric
+            4: "metabolite -> gene",  # asymmetric
+        },
+    )
+
+    # Create a NapistuData instance with relation types
+    num_nodes = 10
+    num_edges = 20
+    data = NapistuData(
+        x=torch.zeros(num_nodes, 5),
+        edge_index=torch.randint(0, num_nodes, (2, num_edges), dtype=torch.long),
+        edge_attr=torch.zeros(num_edges, 3),
+        relation_type=torch.randint(
+            0, 5, (num_edges,), dtype=torch.long
+        ),  # 5 relation types
+        relation_manager=mixed_relation_manager,
+    )
+
+    # Get symmetric relation types
+    symmetric_indices = data.get_symmetrical_relation_indices()
+
+    # Verify return type
+    assert isinstance(symmetric_indices, list)
+    assert all(isinstance(idx, int) for idx in symmetric_indices)
+
+    # Verify we have symmetric relations (should be indices 0 and 1)
+    assert (
+        len(symmetric_indices) == 2
+    ), f"Expected 2 symmetric relations, got {len(symmetric_indices)}"
+    assert 0 in symmetric_indices, "Index 0 (gene -> gene) should be symmetric"
+    assert 1 in symmetric_indices, "Index 1 (protein -> protein) should be symmetric"
+    assert 2 not in symmetric_indices, "Index 2 (gene -> protein) should be asymmetric"
+    assert (
+        3 not in symmetric_indices
+    ), "Index 3 (protein -> metabolite) should be asymmetric"
+    assert (
+        4 not in symmetric_indices
+    ), "Index 4 (metabolite -> gene) should be asymmetric"
+
+    # Verify symmetric relations have source == target
+    label_names = data.relation_manager.label_names
+    for idx in symmetric_indices:
+        assert idx in label_names
+        name = label_names[idx]
+        # Handle spaces around arrow - split and strip
+        parts = name.split("->")
+        if len(parts) == 1:
+            parts = name.split(" -> ")
+        source_type = parts[0].strip()
+        target_type = parts[1].strip()
+        assert source_type == target_type, f"Index {idx} ({name}) should be symmetric"
+
+
+def test_get_symmetrical_relation_indices_failure_cases(edge_masked_napistu_data):
+    """Test get_symmetrical_relation_types raises errors for invalid cases."""
+
+    # Test case 1: No relation_manager (using edge_masked_napistu_data fixture)
+    assert not hasattr(edge_masked_napistu_data, NAPISTU_DATA.RELATION_MANAGER)
+    with pytest.raises(ValueError, match="relation_manager is missing"):
+        edge_masked_napistu_data.get_symmetrical_relation_indices()
+
+    # Test case 2: All symmetric relations
+    all_symmetric_manager = LabelingManager(
+        label_attribute="test",
+        label_names={
+            0: "gene->gene",
+            1: "protein->protein",
+            2: "metabolite->metabolite",
+        },
+    )
+    data_all_symmetric = NapistuData(
+        x=torch.zeros(10, 5),
+        edge_index=torch.zeros(2, 10, dtype=torch.long),
+        edge_attr=torch.zeros(10, 3),
+        relation_manager=all_symmetric_manager,
+    )
+    with pytest.raises(ValueError, match="All .* relations are symmetric"):
+        data_all_symmetric.get_symmetrical_relation_indices()
+
+    # Test case 3: All asymmetric relations
+    all_asymmetric_manager = LabelingManager(
+        label_attribute="test",
+        label_names={
+            0: "gene->protein",
+            1: "protein->metabolite",
+            2: "metabolite->gene",
+        },
+    )
+    data_all_asymmetric = NapistuData(
+        x=torch.zeros(10, 5),
+        edge_index=torch.zeros(2, 10, dtype=torch.long),
+        edge_attr=torch.zeros(10, 3),
+        relation_manager=all_asymmetric_manager,
+    )
+    with pytest.raises(ValueError, match="All .* relations are asymmetric"):
+        data_all_asymmetric.get_symmetrical_relation_indices()
+
+    # Test case 4: Malformed relation names (don't match expected pattern)
+    malformed_manager = LabelingManager(
+        label_attribute="test",
+        label_names={
+            0: "valid->relation",
+            1: "invalid_format",  # Missing ->
+            2: "also->invalid->format",  # Too many ->
+            3: "->missing_source",  # Missing source
+            4: "missing_target->",  # Missing target
+        },
+    )
+    data_malformed = NapistuData(
+        x=torch.zeros(10, 5),
+        edge_index=torch.zeros(2, 10, dtype=torch.long),
+        edge_attr=torch.zeros(10, 3),
+        relation_manager=malformed_manager,
+    )
+    with pytest.raises(ValueError, match="malformed relation names"):
+        data_malformed.get_symmetrical_relation_indices()

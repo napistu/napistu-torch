@@ -9,7 +9,7 @@ import copy
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 import torch
@@ -35,6 +35,7 @@ from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
+    MERGE_RARE_STRATA_DEFS,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
 )
@@ -116,6 +117,8 @@ class NapistuData(Data):
         Get a feature by name from the NapistuData object
     get_summary(summary_type="basic")
         Get a summary of the NapistuData object
+    get_symmetrical_relation_indices()
+        Get the indices of symmetric relation types
     get_vertex_feature_names()
         Get the names of vertex features
     get_vertex_names()
@@ -717,6 +720,97 @@ class NapistuData(Data):
             )
 
         return summary_dict
+
+    def get_symmetrical_relation_indices(
+        self,
+        treat_asymmetrically: Set[str] = {MERGE_RARE_STRATA_DEFS.OTHER_RELATION},
+    ) -> List[int]:
+        """
+        Analyze relation type names to detect symmetric ones.
+
+        Parses relation names in the format "{source_type} -> {target_type}" (spaces
+        around the arrow are optional) and categorizes them based on whether
+        source_type == target_type.
+
+        Parameters
+        ----------
+        treat_asymmetrically : Set[str], optional
+            Set of relation names to treat as asymmetric even if they don't match
+            the standard pattern. Defaults to {MERGE_RARE_STRATA_DEFS.OTHER_RELATION}.
+
+        Returns
+        -------
+        List[int]
+            List of relation type indices that are symmetric
+
+        Raises
+        ------
+        ValueError
+            If relation_manager is missing or all relations are same type
+        """
+
+        relation_manager = getattr(self, NAPISTU_DATA.RELATION_MANAGER, None)
+        if relation_manager is None:
+            raise ValueError(
+                "Cannot analyze relation symmetry - relation_manager is missing. "
+                "This NapistuData object was not created with relation types."
+            )
+
+        # Get relation names from manager
+        label_names = relation_manager.label_names  # Dict[int, str]
+        if not label_names:
+            raise ValueError("relation_manager has no label_names")
+
+        # Analyze each relation name
+        RELATION_NAME_PATTERN = re.compile(
+            r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*->\s*([a-zA-Z_][a-zA-Z0-9_]*)$"
+        )
+
+        symmetric_indices = []
+        asymmetric_indices = []
+        malformed_names = []
+
+        for idx, name in label_names.items():
+            # Treat special relation names as asymmetric
+            if name in treat_asymmetrically:
+                asymmetric_indices.append(idx)
+                continue
+
+            match = RELATION_NAME_PATTERN.match(name)
+
+            if not match:
+                malformed_names.append(name)
+                continue
+
+            source_type = match.group(1)
+            target_type = match.group(2)
+
+            if source_type == target_type:
+                symmetric_indices.append(idx)
+            else:
+                asymmetric_indices.append(idx)
+
+        # Validation
+        if malformed_names:
+            raise ValueError(
+                f"Found {len(malformed_names)} malformed relation names. "
+                f"Expected format: '{{source_type}} -> {{target_type}}' (spaces optional). "
+                f"Malformed: {malformed_names}"
+            )
+
+        if not symmetric_indices:
+            raise ValueError(
+                f"All {len(label_names)} relations are asymmetric. "
+                f"ConditionalRotateHead requires a mix. Use RotatE instead."
+            )
+
+        if not asymmetric_indices:
+            raise ValueError(
+                f"All {len(label_names)} relations are symmetric. "
+                f"ConditionalRotateHead requires a mix. Use DotProduct/DistMult instead."
+            )
+
+        return symmetric_indices
 
     def get_vertex_feature_names(self) -> Optional[List[str]]:
         """
