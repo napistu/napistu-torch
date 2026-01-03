@@ -174,15 +174,23 @@ class TestDecoderWithRelationAware:
     def test_all_relation_aware_heads(self):
         """Test that all relation-aware heads work through Decoder."""
         for head_type in RELATION_AWARE_HEADS:
-            # Skip RotatE with odd dimensions
-            hidden_channels = 256 if head_type == HEADS.ROTATE else 255
+            # Skip RotatE and ConditionalRotatE with odd dimensions
+            rotate_heads = {HEADS.ROTATE, HEADS.CONDITIONAL_ROTATE}
+            hidden_channels = 256 if head_type in rotate_heads else 255
 
-            if head_type == HEADS.ROTATE and hidden_channels % 2 != 0:
+            if head_type in rotate_heads and hidden_channels % 2 != 0:
                 continue
 
-            decoder = Decoder(
-                hidden_channels=hidden_channels, head_type=head_type, num_relations=4
-            )
+            # ConditionalRotatE requires symmetric_relation_indices
+            decoder_kwargs = {
+                "hidden_channels": hidden_channels,
+                "head_type": head_type,
+                "num_relations": 4,
+            }
+            if head_type == HEADS.CONDITIONAL_ROTATE:
+                decoder_kwargs["symmetric_relation_indices"] = [0, 1]
+
+            decoder = Decoder(**decoder_kwargs)
 
             node_embeddings = torch.randn(100, hidden_channels)
             edge_index = torch.randint(0, 100, (2, 50))

@@ -35,6 +35,8 @@ def test_compute_rotate_distance():
     tail_same = head_same.clone()
     phase_zero = torch.zeros(3, embedding_dim // 2)
     distance_zero = compute_rotate_distance(head_same, tail_same, phase_zero)
+    # Note: eps=1e-10 in compute_rotate_distance means sqrt(eps) ≈ 1e-5 is expected
+    # when difference is exactly zero, so we use a tolerance that accounts for this
     assert torch.allclose(distance_zero, torch.zeros(3), atol=1e-5)
 
 

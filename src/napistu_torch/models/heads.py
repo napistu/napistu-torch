@@ -1497,9 +1497,10 @@ class Decoder(nn.Module):
                     f"num_relations is required for {head_type} head. "
                     f"This should be inferred from edge_strata."
                 )
-            if head_type == HEADS.ROTATE and hidden_channels % 2 != 0:
+            rotate_heads = {HEADS.ROTATE, HEADS.CONDITIONAL_ROTATE}
+            if head_type in rotate_heads and hidden_channels % 2 != 0:
                 raise ValueError(
-                    f"RotatE requires even hidden_channels for complex space, "
+                    f"{head_type} requires even hidden_channels for complex space, "
                     f"got {hidden_channels}"
                 )
 

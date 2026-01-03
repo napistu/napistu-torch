@@ -9,7 +9,7 @@ def compute_rotate_distance(
     head_embeddings: Tensor,
     tail_embeddings: Tensor,
     relation_phase: Tensor,
-    eps: float = 1e-8,
+    eps: float = 1e-10,
 ) -> Tensor:
     """
     Compute RotatE distance in complex space.
@@ -29,7 +29,7 @@ def compute_rotate_distance(
         Rotation phase angles [num_edges, embedding_dim/2]
         Angles in radians for complex rotation
     eps : float, optional
-        Small constant for numerical stability, by default 1e-8
+        Small constant for numerical stability, by default 1e-10
 
     Returns
     -------
