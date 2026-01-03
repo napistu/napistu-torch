@@ -9,7 +9,7 @@ import copy
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 import torch
@@ -35,6 +35,7 @@ from napistu_torch.labels.labeling_manager import LabelingManager
 from napistu_torch.load.constants import (
     EDGE_DEFAULT_TRANSFORMS,
     ENCODING_MANAGER,
+    MERGE_RARE_STRATA_DEFS,
     VALID_SPLITTING_STRATEGIES,
     VERTEX_DEFAULT_TRANSFORMS,
 )
@@ -720,13 +721,22 @@ class NapistuData(Data):
 
         return summary_dict
 
-    def get_symmetrical_relation_indices(self) -> List[int]:
+    def get_symmetrical_relation_indices(
+        self,
+        treat_asymmetrically: Set[str] = {MERGE_RARE_STRATA_DEFS.OTHER_RELATION},
+    ) -> List[int]:
         """
         Analyze relation type names to detect symmetric ones.
 
         Parses relation names in the format "{source_type} -> {target_type}" (spaces
         around the arrow are optional) and categorizes them based on whether
         source_type == target_type.
+
+        Parameters
+        ----------
+        treat_asymmetrically : Set[str], optional
+            Set of relation names to treat as asymmetric even if they don't match
+            the standard pattern. Defaults to {MERGE_RARE_STRATA_DEFS.OTHER_RELATION}.
 
         Returns
         -------
@@ -738,6 +748,7 @@ class NapistuData(Data):
         ValueError
             If relation_manager is missing or all relations are same type
         """
+
         relation_manager = getattr(self, NAPISTU_DATA.RELATION_MANAGER, None)
         if relation_manager is None:
             raise ValueError(
@@ -760,6 +771,11 @@ class NapistuData(Data):
         malformed_names = []
 
         for idx, name in label_names.items():
+            # Treat special relation names as asymmetric
+            if name in treat_asymmetrically:
+                asymmetric_indices.append(idx)
+                continue
+
             match = RELATION_NAME_PATTERN.match(name)
 
             if not match:

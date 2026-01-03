@@ -26,6 +26,7 @@ from napistu_torch.models.constants import (
 from napistu_torch.models.head_utils import (
     compute_rotate_distance,
     normalized_distances_to_probs,
+    validate_symmetric_relation_indices,
 )
 
 
@@ -223,9 +224,7 @@ class ConditionalRotatEHead(nn.Module):
             )
 
         # Validate symmetric relation indices
-        self._validate_symmetric_relation_indices(
-            symmetric_relation_indices, num_relations
-        )
+        validate_symmetric_relation_indices(symmetric_relation_indices, num_relations)
 
         self.embedding_dim = embedding_dim
         self.num_relations = num_relations
@@ -255,9 +254,9 @@ class ConditionalRotatEHead(nn.Module):
 
         # Initialize embeddings
         with torch.no_grad():
-            # Initialize symmetric relations to NaN (unused, will error if accessed)
+            # Initialize symmetric relations to -1 (unused)
             for idx in symmetric_relation_indices:
-                self.relation_emb.weight[idx] = float("nan")
+                self.relation_emb.weight[idx] = float(-1.0)
 
             # Initialize asymmetric relations for RotatE
             if init_asymmetric_as_identity:
@@ -1570,7 +1569,7 @@ class Decoder(nn.Module):
                 embedding_dim=self.hidden_channels,
                 num_relations=num_relations,
                 margin=rotate_margin,
-                init_as_identity=init_head_as_identity,
+                init_asymmetric_as_identity=init_head_as_identity,
                 symmetric_relation_indices=symmetric_relation_indices,
             )
         elif head_type == HEADS.TRANSE:
