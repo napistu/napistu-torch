@@ -1,19 +1,21 @@
 """Torch-accelerated versions of matrix operations."""
 
-from typing import Union
+from typing import Optional, Tuple, Union
 
 import numpy as np
 import torch
 from scipy.stats import pearsonr, spearmanr
 from sklearn.metrics import confusion_matrix
+from torch import Tensor
+from torch import device as torch_device
 
 from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.torch_utils import ensure_device, memory_manager
 
 
 def compute_confusion_matrix(
-    predictions: torch.Tensor | np.ndarray,
-    true_labels: torch.Tensor | np.ndarray,
+    predictions: Tensor | np.ndarray,
+    true_labels: Tensor | np.ndarray,
     normalize: str | None = None,
 ) -> np.ndarray:
     """
@@ -81,9 +83,9 @@ def compute_confusion_matrix(
     represent misclassifications.
     """
     # Convert to numpy if torch tensor
-    if isinstance(predictions, torch.Tensor):
+    if isinstance(predictions, Tensor):
         predictions = predictions.cpu().numpy()
-    if isinstance(true_labels, torch.Tensor):
+    if isinstance(true_labels, Tensor):
         true_labels = true_labels.cpu().numpy()
 
     # Get predicted labels (argmax over class dimension)
@@ -96,7 +98,7 @@ def compute_confusion_matrix(
 
 
 def compute_correlation_matrix(
-    data: torch.Tensor | np.ndarray,
+    data: Tensor | np.ndarray,
     method: str = CORRELATION_METHODS.SPEARMAN,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
@@ -165,7 +167,7 @@ def compute_correlation_matrix(
     with mask_upper_triangle=True to avoid redundant display.
     """
     # Convert to numpy if torch tensor
-    if isinstance(data, torch.Tensor):
+    if isinstance(data, Tensor):
         data = data.cpu().numpy()
 
     n_features = data.shape[1]
@@ -198,7 +200,8 @@ def compute_correlation_matrix(
 
 
 def compute_cosine_distances_torch(
-    tensor_like: Union[np.ndarray, torch.Tensor], device: torch.device
+    tensor_like: Union[np.ndarray, Tensor],
+    device: Optional[Union[str, torch_device]] = None,
 ) -> np.ndarray:
     """
     Compute cosine distance matrix using PyTorch with proper memory management
@@ -207,8 +210,8 @@ def compute_cosine_distances_torch(
     ----------
     tensor_like : Union[np.ndarray, torch.Tensor]
         The tensor to compute the cosine distances for
-    device : torch.device
-        The device to use for the computation
+    device : Optional[Union[str, torch_device]]
+        The device to use for the computation. If None, the device will be automatically selected.
 
     Returns
     -------
@@ -216,7 +219,7 @@ def compute_cosine_distances_torch(
         The cosine distance matrix
     """
 
-    device = ensure_device(device)
+    device = ensure_device(device, allow_autoselect=True)
     with memory_manager(device):
         # convert the embedding to a tensor and move it to the device
         if isinstance(tensor_like, np.ndarray):
@@ -239,7 +242,7 @@ def compute_cosine_distances_torch(
         return result
 
 
-def compute_effective_dimensionality(vectors: torch.Tensor) -> np.ndarray:
+def compute_effective_dimensionality(vectors: Tensor) -> np.ndarray:
     """
     Compute effective dimensionality (inverse participation ratio) for each vector.
 
@@ -271,10 +274,51 @@ def compute_effective_dimensionality(vectors: torch.Tensor) -> np.ndarray:
     return eff_dim.numpy()
 
 
+def compute_max_abs_across_layers(
+    attention_3d: Tensor,
+    return_indices: bool = False,
+) -> Tensor:
+    """
+    Find maximum absolute attention values across layers, preserving sign.
+
+    For each gene pair (i, j), finds the layer with max |attention| and
+    returns that attention value with its original sign.
+
+    Parameters
+    ----------
+    attention_3d : torch.Tensor
+        Attention scores of shape (n_layers, n_genes, n_genes)
+    return_indices : bool, optional
+        If True, also return the layer indices where max occurred
+
+    Returns
+    -------
+    torch.Tensor
+        Max absolute attention with sign preserved, shape (n_genes, n_genes)
+    torch.Tensor (optional)
+        Layer indices where max occurred, shape (n_genes, n_genes)
+    """
+    _, n_genes, _ = attention_3d.shape
+
+    # Find layer with max absolute value for each gene pair
+    max_abs_indices = torch.abs(attention_3d).argmax(dim=0)  # (n_genes, n_genes)
+
+    # Create index grids for gene dimensions
+    gene_i_idx = torch.arange(n_genes).unsqueeze(1).expand(n_genes, n_genes)
+    gene_j_idx = torch.arange(n_genes).unsqueeze(0).expand(n_genes, n_genes)
+
+    # Index into all_attention to get signed values
+    max_abs_signed = attention_3d[max_abs_indices, gene_i_idx, gene_j_idx]
+
+    if return_indices:
+        return max_abs_signed, max_abs_indices
+    return max_abs_signed
+
+
 def compute_spearman_correlation_torch(
-    x: Union[np.ndarray, torch.Tensor],
-    y: Union[np.ndarray, torch.Tensor],
-    device: torch.device,
+    x: Union[np.ndarray, Tensor],
+    y: Union[np.ndarray, Tensor],
+    device: Optional[Union[str, torch_device]] = None,
 ) -> float:
     """
     Compute Spearman correlation using PyTorch with proper memory management
@@ -285,8 +329,8 @@ def compute_spearman_correlation_torch(
         First vector (numpy array or similar)
     y : array-like
         Second vector (numpy array or similar)
-    device : torch.device
-        The device to use for the computation
+    device : Optional[Union[str, torch_device]]
+        The device to use for the computation. If None, the device will be automatically selected.
 
     Returns
     -------
@@ -294,7 +338,7 @@ def compute_spearman_correlation_torch(
         Spearman correlation coefficient
     """
 
-    device = ensure_device(device)
+    device = ensure_device(device, allow_autoselect=True)
     with memory_manager(device):
         # Convert to torch tensors if needed
         if isinstance(x, np.ndarray):
@@ -324,8 +368,93 @@ def compute_spearman_correlation_torch(
         return result
 
 
-def validate_tensor_for_nan_inf(
+def find_top_k(
     tensor: torch.Tensor,
+    k: int,
+    by_absolute_value: bool = True,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Extract top-k values and indices from a 2D tensor.
+
+    Flattens the tensor and finds the k largest values (optionally by absolute value),
+    then converts the flattened indices back to 2D row/column indices. When there are
+    tied values at the k-th position, includes ALL values >= the k-th value, which may
+    result in more than k results.
+
+    Parameters
+    ----------
+    tensor : torch.Tensor
+        2D tensor of shape (n_rows, n_cols)
+    k : int
+        Number of top values to extract
+    by_absolute_value : bool, optional
+        If True, rank by absolute value but return original signed values (default: True).
+        If False, rank by raw values (largest values).
+
+    Returns
+    -------
+    row_indices : torch.Tensor
+        Row indices of top-k values, shape (k,) or larger if ties exist
+    col_indices : torch.Tensor
+        Column indices of top-k values, shape (k,) or larger if ties exist
+    values : torch.Tensor
+        Top-k values with original sign preserved, shape (k,) or larger if ties exist
+
+    Notes
+    -----
+    When ties exist at the k-th position, this function includes ALL tied values,
+    which means the returned tensors may have length > k. This ensures no high-scoring
+    edges are randomly excluded.
+
+    Examples
+    --------
+    >>> # Get top 100 by absolute value
+    >>> attention = torch.randn(1000, 1000)
+    >>> row_idx, col_idx, values = find_top_k(attention, k=100)
+    >>>
+    >>> # With ties, may return more than k
+    >>> tensor = torch.tensor([[1.0, 5.0], [5.0, 2.0]])
+    >>> row_idx, col_idx, values = find_top_k(tensor, k=2)
+    >>> len(values)  # May be 3 if both 5.0 values are in top-2
+    3
+    """
+    if tensor.ndim != 2:
+        raise ValueError(f"Expected 2D tensor, got shape {tensor.shape}")
+
+    # Get values to rank by
+    if by_absolute_value:
+        ranking_tensor = torch.abs(tensor)
+    else:
+        ranking_tensor = tensor
+
+    # Get the k-th largest value (the threshold)
+    k_actual = min(k, ranking_tensor.numel())
+    kth_value = torch.topk(ranking_tensor.flatten(), k_actual).values[-1]
+
+    # Find ALL positions where value >= kth_value (work on 2D tensor directly!)
+    mask = ranking_tensor >= kth_value
+    row_indices, col_indices = torch.where(mask)
+
+    # Get original signed values at those positions
+    values = tensor[row_indices, col_indices]
+
+    # Sort by absolute value descending to maintain top-k ordering
+    if by_absolute_value:
+        sort_idx = torch.argsort(torch.abs(values), descending=True)
+    else:
+        sort_idx = torch.argsort(values, descending=True)
+
+    sorted_row_indices = row_indices[sort_idx]
+    sorted_col_indices = col_indices[sort_idx]
+    sorted_values = values[sort_idx]
+
+    del row_indices, col_indices, values, sort_idx
+
+    return sorted_row_indices, sorted_col_indices, sorted_values
+
+
+def validate_tensor_for_nan_inf(
+    tensor: Tensor,
     name: str,
 ) -> None:
     """
