@@ -1128,7 +1128,7 @@ class FoundationModels(BaseModel):
         Compute maximum attention scores across all models for common genes.
     get_model(full_name)
         Get a specific model by its full_name attribute.
-    get_top_attentions(top_k=10000, apply_softmax=False, verbose=False)
+    get_top_attentions(k=10000, apply_softmax=False, verbose=False)
         Extract top-k attention edges across all models for common genes.
     load_multiple(output_dir, prefixes)
         Load multiple foundation models from saved files (classmethod).
@@ -1243,7 +1243,7 @@ class FoundationModels(BaseModel):
 
     def get_top_attentions(
         self,
-        top_k: int = 10000,
+        k: int = 10000,
         apply_softmax: bool = False,
         verbose: bool = False,
     ) -> pd.DataFrame:
@@ -1257,7 +1257,7 @@ class FoundationModels(BaseModel):
 
         Parameters
         ----------
-        top_k : int, optional
+        k : int, optional
             Number of top edges to extract per layer per model (default: 10000)
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
@@ -1306,7 +1306,7 @@ class FoundationModels(BaseModel):
             logger.info(f"Computing top-k attention for {model_name}...")
 
             model_top_k_attention = model.find_top_k_attention_edges(
-                k=top_k,
+                k=k,
                 target_ids=common_ids,
                 apply_softmax=apply_softmax,
                 verbose=verbose,
