@@ -1,17 +1,20 @@
 import numpy as np
 import torch
 
+from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.tensor_utils import (
     compute_confusion_matrix,
     compute_correlation_matrix,
     compute_cosine_distances_torch,
+    compute_max_abs_across_layers,
     compute_spearman_correlation_torch,
+    find_top_k,
 )
 
 
 def test_compute_cosine_distances_torch_basic_properties():
-    device = torch.device("cpu")
+    device = torch.device(DEVICE.CPU)
     embeddings = torch.tensor(
         [[1.0, 0.0, 0.0], [0.5, 0.5, 0.0], [0.0, 1.0, 0.0]], dtype=torch.float32
     )
@@ -26,7 +29,7 @@ def test_compute_cosine_distances_torch_basic_properties():
 
 def test_cosine_distances_spearman_correlation_agreement():
     torch.manual_seed(42)
-    device = torch.device("cpu")
+    device = torch.device(DEVICE.CPU)
 
     base = torch.randn(6, 3)
     expanded = torch.cat(
@@ -145,3 +148,121 @@ def test_compute_correlation_matrix_numpy_input():
 
     assert isinstance(corr_matrix, np.ndarray)
     assert isinstance(p_values, np.ndarray)
+
+
+def test_max_abs_across_layers():
+    """Test that max_abs_across_layers preserves sign correctly."""
+    # Create simple test case: 3 layers, 2 genes
+    attention_3d = torch.tensor(
+        [
+            # Layer 0
+            [[1.0, -2.0], [0.5, 1.5]],
+            # Layer 1
+            [[0.5, 1.0], [-3.0, 0.8]],
+            # Layer 2
+            [[2.5, 0.3], [1.0, -4.0]],
+        ]
+    )
+
+    result, indices = compute_max_abs_across_layers(attention_3d, return_indices=True)
+
+    # Expected results:
+    # [0,0]: max(|1.0|, |0.5|, |2.5|) = 2.5 from layer 2 → result = 2.5
+    # [0,1]: max(|-2.0|, |1.0|, |0.3|) = 2.0 from layer 0 → result = -2.0
+    # [1,0]: max(|0.5|, |-3.0|, |1.0|) = 3.0 from layer 1 → result = -3.0
+    # [1,1]: max(|1.5|, |0.8|, |-4.0|) = 4.0 from layer 2 → result = -4.0
+
+    expected_result = torch.tensor([[2.5, -2.0], [-3.0, -4.0]])
+    expected_indices = torch.tensor([[2, 0], [1, 2]])
+
+    assert torch.allclose(
+        result, expected_result
+    ), f"Expected {expected_result}, got {result}"
+    assert torch.equal(
+        indices, expected_indices
+    ), f"Expected {expected_indices}, got {indices}"
+
+
+def test_find_top_k():
+    """Test find_top_k extracts correct top-k values and indices."""
+    tensor = torch.tensor(
+        [
+            [1.0, -5.0, 3.0],
+            [-2.0, 4.0, -1.0],
+            [0.5, 2.0, -3.0],
+        ]
+    )
+
+    row_idx, col_idx, values = find_top_k(tensor, k=3, by_absolute_value=True)
+
+    # Top 3 by absolute value: |-5.0|=5, |4.0|=4, |3.0|=3, |-3.0|=3
+    # Because |-3.0| ties with |3.0| at k=3, we get 4 results (includes all ties)
+    assert len(row_idx) == 4
+    assert len(col_idx) == 4
+    assert len(values) == 4
+
+    # Check all (row, col) pairs are unique
+    pairs = set(zip(row_idx.tolist(), col_idx.tolist()))
+    assert len(pairs) == 4, "All pairs should be unique"
+
+    # Top values should be -5.0, 4.0, 3.0, -3.0 (in descending absolute value order)
+    expected_abs_values = torch.tensor([5.0, 4.0, 3.0, 3.0])
+    assert torch.allclose(torch.abs(values), expected_abs_values)
+
+    # Verify the actual values (sign preserved)
+    assert values[0].item() == -5.0  # Highest absolute value
+    assert values[1].item() == 4.0  # Second highest
+    # positions 2 and 3 are 3.0 and -3.0 (order not guaranteed for ties)
+    assert set([values[2].item(), values[3].item()]) == {3.0, -3.0}
+
+
+def test_find_top_k_with_ties():
+    """Test find_top_k behavior when there are tied values."""
+    # Create tensor with multiple identical values
+    tensor = torch.tensor(
+        [
+            [1.0, 5.0, 3.0, 5.0],
+            [5.0, 2.0, 5.0, 1.0],
+            [0.5, 5.0, 4.0, 2.0],
+            [5.0, 1.0, 5.0, 0.5],
+        ]
+    )
+
+    # There are 7 values with |5.0|, which is the maximum
+    # Top 10 should include all 7 unique positions with value 5.0,
+    # plus values with next highest: 4.0, 3.0, 2.0, 2.0
+    # Since 2.0 appears at k=10, we include ALL 2.0s (both of them), giving us 11 total
+    row_idx, col_idx, values = find_top_k(tensor, k=10, by_absolute_value=True)
+
+    # Check we got 11 results (10 requested, but 2.0 ties at position 10, so we get both)
+    assert len(row_idx) == 11
+    assert len(col_idx) == 11
+    assert len(values) == 11
+
+    # Check that all (row, col) pairs are unique
+    pairs = set(zip(row_idx.tolist(), col_idx.tolist()))
+    assert len(pairs) == 11, f"Expected 11 unique pairs, got {len(pairs)}"
+
+    # Top values should be the 7 copies of 5.0, then 4.0, 3.0, then 2 copies of 2.0
+    expected_value_counts = {5.0: 7, 4.0: 1, 3.0: 1, 2.0: 2}
+    actual_value_counts = {}
+    for v in values.tolist():
+        actual_value_counts[v] = actual_value_counts.get(v, 0) + 1
+
+    assert (
+        actual_value_counts == expected_value_counts
+    ), f"Expected {expected_value_counts}, got {actual_value_counts}"
+
+    # Verify all the 5.0 positions are captured
+    positions_with_5 = [(0, 1), (0, 3), (1, 0), (1, 2), (2, 1), (3, 0), (3, 2)]
+    found_positions_with_5 = [
+        (r.item(), c.item())
+        for r, c, v in zip(row_idx, col_idx, values)
+        if abs(v.item() - 5.0) < 1e-6
+    ]
+    assert (
+        len(found_positions_with_5) == 7
+    ), f"Expected 7 positions with value 5.0, got {len(found_positions_with_5)}"
+    assert set(found_positions_with_5) == set(
+        positions_with_5
+    ), "Did not capture all unique positions with value 5.0"

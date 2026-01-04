@@ -1,21 +1,50 @@
 """Utility functions for managing torch devices and memory."""
 
 import gc
-import logging
 from contextlib import contextmanager
-from typing import Union
+from typing import Optional, Union
 
-import torch
+from torch import backends, cuda, mps
+from torch import device as torch_device
 
 from napistu_torch.ml.constants import DEVICE
-
-logger = logging.getLogger(__name__)
 
 # memory management utilities
 
 
+def cleanup_tensors(*tensors) -> None:
+    """
+    Explicitly clean up one or more tensors and free their memory.
+
+    Parameters
+    ----------
+    *tensors : torch.Tensor
+        One or more tensors to clean up
+    """
+    for tensor in tensors:
+        if tensor is not None:
+            del tensor
+
+
+def empty_cache(device: torch_device) -> None:
+    """
+    Empty the cache for a given device. If the device is not MPS or GPU, do nothing.
+
+    Parameters
+    ----------
+    device : torch.device
+        The device to empty the cache for
+    """
+    if device.type == DEVICE.MPS and backends.mps.is_available():
+        mps.empty_cache()
+    elif device.type == DEVICE.GPU and cuda.is_available():
+        cuda.empty_cache()
+
+    return None
+
+
 @contextmanager
-def memory_manager(device: torch.device = torch.device(DEVICE.CPU)):
+def memory_manager(device: torch_device = torch_device(DEVICE.CPU)):
     """
     Context manager for general memory management.
 
@@ -34,42 +63,23 @@ def memory_manager(device: torch.device = torch.device(DEVICE.CPU)):
             pass
     """
     # Clear cache before starting
-    if device.type == "mps" and torch.backends.mps.is_available():
-        torch.mps.empty_cache()
-    elif device.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    empty_cache(device)
 
     try:
         yield
     finally:
         # Clear cache after operations
-        if device.type == "mps" and torch.backends.mps.is_available():
-            torch.mps.empty_cache()
-        elif device.type == "cuda" and torch.cuda.is_available():
-            torch.cuda.empty_cache()
-
+        empty_cache(device)
         # Force garbage collection
         gc.collect()
-
-
-def cleanup_tensors(*tensors) -> None:
-    """
-    Explicitly clean up one or more tensors and free their memory.
-
-    Parameters
-    ----------
-    *tensors : torch.Tensor
-        One or more tensors to clean up
-    """
-    for tensor in tensors:
-        if tensor is not None:
-            del tensor
 
 
 # torch utils
 
 
-def ensure_device(device: Union[str, torch.device]) -> torch.device:
+def ensure_device(
+    device: Optional[Union[str, torch_device]], allow_autoselect: bool = False
+) -> torch_device:
     """
     Ensure the device is a torch.device.
 
@@ -77,11 +87,19 @@ def ensure_device(device: Union[str, torch.device]) -> torch.device:
     ----------
     device : Union[str, torch.device]
         The device to ensure
+    allow_autoselect : bool
+        Whether to allow automatic selection of the device if the device is not specified
     """
 
+    if device is None:
+        if allow_autoselect:
+            return select_device()
+        else:
+            raise ValueError("An explicit device is required but was not specified")
+
     if isinstance(device, str):
-        return torch.device(device)
-    elif isinstance(device, torch.device):
+        return torch_device(device)
+    elif isinstance(device, torch_device):
         return device
     else:
         raise ValueError(
@@ -107,9 +125,9 @@ def select_device(mps_valid: bool = True):
         The device to use for the model.
     """
 
-    if mps_valid and torch.backends.mps.is_available():
-        return torch.device(DEVICE.MPS)
-    elif torch.cuda.is_available():
-        return torch.device(DEVICE.GPU)
+    if mps_valid and backends.mps.is_available():
+        return torch_device(DEVICE.MPS)
+    elif cuda.is_available():
+        return torch_device(DEVICE.GPU)
     else:
-        return torch.device(DEVICE.CPU)
+        return torch_device(DEVICE.CPU)

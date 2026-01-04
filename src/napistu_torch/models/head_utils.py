@@ -1,8 +1,10 @@
 """Utility functions supporting a subset of heads."""
 
-from typing import List
+from typing import List, Union
 
 from torch import Tensor, chunk, cos, sin, sqrt
+
+from napistu_torch.utils.base_utils import normalize_and_validate_indices
 
 
 def compute_rotate_distance(
@@ -97,7 +99,7 @@ def normalized_distances_to_probs(scores: Tensor) -> Tensor:
 
 
 def validate_symmetric_relation_indices(
-    symmetric_relation_indices: List[int],
+    symmetric_relation_indices: Union[List[int], tuple, range],
     num_relations: int,
 ) -> None:
     """
@@ -115,6 +117,8 @@ def validate_symmetric_relation_indices(
     ValueError
         If indices are invalid (duplicates, out of range, or all/none symmetric)
     """
+
+    # Check that indices are not empty
     if not symmetric_relation_indices:
         raise ValueError(
             "symmetric_relation_indices cannot be empty. "
@@ -122,29 +126,15 @@ def validate_symmetric_relation_indices(
             "Use RotatE head if all relations are asymmetric."
         )
 
-    # Check for duplicates
-    if len(symmetric_relation_indices) != len(set(symmetric_relation_indices)):
-        duplicates = [
-            idx
-            for idx in set(symmetric_relation_indices)
-            if symmetric_relation_indices.count(idx) > 1
-        ]
-        raise ValueError(
-            f"symmetric_relation_indices contains duplicates: {duplicates}"
-        )
-
-    # Check all values are valid indices
-    invalid = [
-        idx for idx in symmetric_relation_indices if idx >= num_relations or idx < 0
-    ]
-    if invalid:
-        raise ValueError(
-            f"symmetric_relation_indices contains invalid values: {invalid}. "
-            f"All indices must be in range [0, {num_relations})"
-        )
+    # Normalize and validate indices using utility function
+    normalized_indices = normalize_and_validate_indices(
+        indices=symmetric_relation_indices,
+        max_value=num_relations,
+        param_name="symmetric_relation_indices",
+    )
 
     # Check we have both symmetric and asymmetric relations
-    if len(symmetric_relation_indices) >= num_relations:
+    if len(normalized_indices) >= num_relations:
         raise ValueError(
             f"All {num_relations} relations are symmetric. "
             "ConditionalRotateHead requires both symmetric and asymmetric relations. "
