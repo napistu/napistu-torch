@@ -42,6 +42,9 @@ def normalize_and_validate_indices(
     # Normalize to list
     indices = list(indices)
 
+    if len(indices) == 0:
+        raise ValueError(f"{param_name} cannot be empty")
+
     # Validate all are integers
     if not all(isinstance(i, int) for i in indices):
         raise ValueError(f"{param_name} must be a list of integers")

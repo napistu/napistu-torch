@@ -117,20 +117,21 @@ def validate_symmetric_relation_indices(
     ValueError
         If indices are invalid (duplicates, out of range, or all/none symmetric)
     """
+
+    # Check that indices are not empty
+    if not symmetric_relation_indices:
+        raise ValueError(
+            "symmetric_relation_indices cannot be empty. "
+            "At least one symmetric relation required. "
+            "Use RotatE head if all relations are asymmetric."
+        )
+
     # Normalize and validate indices using utility function
     normalized_indices = normalize_and_validate_indices(
         indices=symmetric_relation_indices,
         max_value=num_relations,
         param_name="symmetric_relation_indices",
     )
-
-    # Check that indices are not empty
-    if not normalized_indices:
-        raise ValueError(
-            "symmetric_relation_indices cannot be empty. "
-            "At least one symmetric relation required. "
-            "Use RotatE head if all relations are asymmetric."
-        )
 
     # Check we have both symmetric and asymmetric relations
     if len(normalized_indices) >= num_relations:
