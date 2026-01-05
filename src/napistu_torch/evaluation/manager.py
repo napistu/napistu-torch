@@ -119,12 +119,18 @@ class EvaluationManager(ABC):
     # Concrete methods (work identically for both Local and Remote)
 
     @require_lightning
-    def get_experiment_dict(self) -> dict:
+    def get_experiment_dict(self, skip_wandb: bool = False) -> dict:
         """
         Get the experiment dictionary with all experiment components.
 
         The experiment dictionary contains the model, data module, trainer,
         run manifest, and WandB logger. This is lazily loaded and cached.
+
+        Parameters
+        ----------
+        skip_wandb : bool, optional
+            If True, skip creating WandB logger. Useful for remote models to avoid
+            creating directories. Default is False.
 
         Returns
         -------
@@ -147,7 +153,7 @@ class EvaluationManager(ABC):
         )
 
         if self.experiment_dict is None:
-            self.experiment_dict = resume_experiment(self)
+            self.experiment_dict = resume_experiment(self, skip_wandb=skip_wandb)
 
         return self.experiment_dict
 
@@ -747,6 +753,11 @@ class RemoteEvaluationManager(EvaluationManager):
         # Reconstruct manifest from HuggingFace artifacts
         self.manifest = RunManifest.from_huggingface(model_loader, repo_id)
 
+        # Patch experiment_config.data.store_dir to use the actual loaded store directory
+        # This prevents creating/downloading a new store based on the original training config
+        if data_store is not None:
+            self.manifest.experiment_config.data.store_dir = data_store.store_dir
+
         # Initialize base class attributes
         self.napistu_data_store = data_store
         self.experiment_dict = None
@@ -950,7 +961,7 @@ class RemoteEvaluationManager(EvaluationManager):
                 f"Attempted to load: {checkpoint_name}"
             )
 
-        experiment_dict = self.get_experiment_dict()
+        experiment_dict = self.get_experiment_dict(skip_wandb=True)
 
         # Load state dict from the checkpoint we already have
         checkpoint_dict = torch.load(self.checkpoint_path, weights_only=False)
