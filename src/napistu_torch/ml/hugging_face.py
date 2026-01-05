@@ -268,12 +268,12 @@ class HFClient:
         """Verify HuggingFace authentication is working."""
         try:
             # Simple check: attempt to get user info
-            self.api.whoami()
+            self.api.whoami(cache=True)
             logger.info("✓ HuggingFace authentication verified")
         except Exception as e:
             raise RuntimeError(
-                "HuggingFace authentication failed. Please run:\n"
-                "  huggingface-cli login\n"
+                "HuggingFace authentication failed. You may need to run:\n"
+                "  huggingface-cli login or hf auth login\n"
                 f"Error: {e}"
             )
 
@@ -1019,6 +1019,9 @@ class HFModelLoader(HFClient):
         """
         Download a file from HuggingFace Hub and cache it.
 
+        Uses HuggingFace's default caching mechanism - if the file already exists
+        in the cache, it will be reused without re-downloading.
+
         Parameters
         ----------
         filename : str
@@ -1031,22 +1034,20 @@ class HFModelLoader(HFClient):
         Returns
         -------
         Path
-            Path to the downloaded file
+            Path to the downloaded or cached file
         """
         # Get current cached path
         cached_path = getattr(self, cache_attr)
 
         if cached_path is None:
-            logger.info(
-                f"Downloading {description} from {self.repo_id} (revision: {self.revision})..."
-            )
-
+            # hf_hub_download automatically checks cache and only downloads if needed
+            # If cache_dir is None, uses HF's default cache (~/.cache/huggingface/hub/)
             downloaded_path = Path(
                 hf_hub_download(
                     repo_id=self.repo_id,
                     filename=filename,
                     revision=self.revision,
-                    cache_dir=self.cache_dir,
+                    cache_dir=self.cache_dir,  # None = use default HF cache
                     repo_type=HUGGING_FACE_REPOS.MODEL,
                     token=self._token,
                 )
@@ -1055,7 +1056,10 @@ class HFModelLoader(HFClient):
             # Set the cache attribute
             setattr(self, cache_attr, downloaded_path)
 
-            logger.info(f"{description.capitalize()} cached at: {downloaded_path}")
+            logger.info(
+                f"{description.capitalize()} available at: {downloaded_path} "
+                f"(using {'custom' if self.cache_dir else 'default'} cache)"
+            )
             return downloaded_path
 
         return cached_path

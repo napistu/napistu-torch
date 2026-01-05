@@ -504,6 +504,7 @@ def resume_experiment(
     mode: str = TRAINER_MODES.EVAL,
     logger: logging.Logger = logger,
     verbose: bool = False,
+    skip_wandb: bool = False,
 ) -> Dict[str, Any]:
     """
     Resume an experiment using its run manifest.
@@ -518,6 +519,8 @@ def resume_experiment(
         Logger instance to use
     verbose: bool, default=False
         Whether to log verbose information
+    skip_wandb: bool, default=False
+        If True, skip creating WandB logger (useful for evaluating remote models)
 
     Returns
     -------
@@ -527,13 +530,16 @@ def resume_experiment(
         - model : pl.LightningModule (e.g., EdgePredictionLightning)
         - run_manifest : RunManifest
         - trainer : NapistuTrainer
-        - wandb_logger : Optional[WandbLogger] (None when wandb is disabled)
+        - wandb_logger : Optional[WandbLogger] (None when wandb is disabled or skipped)
     """
 
     experiment_config = run_manifest.experiment_config
 
-    # 1. Resume W&B Logger
-    wandb_logger = resume_wandb_logger(run_manifest)
+    # 1. Resume W&B Logger (skip if requested)
+    if skip_wandb:
+        wandb_logger = None
+    else:
+        wandb_logger = resume_wandb_logger(run_manifest)
 
     # 2. Create Data Module
     data_module = _create_data_module(experiment_config, logger=logger)
@@ -820,8 +826,11 @@ def _load_pretrained_checkpoint(
                 f"Loading pretrained checkpoint from HuggingFace: {pretrained_model_path} "
                 f"(revision: {pretrained_model_revision})"
             )
+        # HFModelLoader defaults to cache_dir=None, which uses HuggingFace's default cache
+        # (~/.cache/huggingface/hub/). hf_hub_download automatically checks cache before downloading.
         hf_loader = HFModelLoader(
-            repo_id=pretrained_model_path, revision=pretrained_model_revision
+            repo_id=pretrained_model_path,
+            revision=pretrained_model_revision,
         )
         checkpoint = hf_loader.load_checkpoint(raw_checkpoint=False)
     elif pretrained_model_source == PRETRAINED_COMPONENT_SOURCES.LOCAL:

@@ -1,6 +1,6 @@
 """Advanced metrics like summaries of relation-type-specific AUCs."""
 
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Union
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -23,6 +23,7 @@ def plot_combined_grouped_barplot(
     attribute_label: Optional[str] = None,
     value_label: str = "AUC",
     titles: Optional[List[str]] = None,
+    palette: Optional[Union[str, List[str]]] = "Set2",
     value_lim: Optional[Tuple[float, float]] = None,
     legend_loc: str = "lower left",
 ) -> Tuple[plt.Figure, List[plt.Axes]]:
@@ -43,8 +44,10 @@ def plot_combined_grouped_barplot(
         Label for legend (defaults to attribute column name)
     value_label : str
         Label for value axis
-    title : Optional[str]
-        Plot title
+    titles : Optional[List[str]]
+        Plot titles for each value variable
+    palette : str
+        Color palette to use. Can be a string (e.g., "Set2") or a list of colors.
     value_lim : Optional[Tuple[float, float]]
         Limits for value axis (e.g., (0.7, 1.0))
     legend_loc : str
@@ -105,6 +108,7 @@ def plot_combined_grouped_barplot(
             category_label=category_label,
             attribute_label=attribute_label,
             title=titles_dict[metric],
+            palette=palette,
             value_lim=value_lim,
             legend_loc=legend_loc,
             category_order=category_order,
@@ -128,6 +132,7 @@ def plot_grouped_barplot(
     category_label: Optional[str] = None,
     attribute_label: Optional[str] = None,
     title: Optional[str] = None,
+    palette: Optional[Union[str, List[str]]] = "Set2",
     value_lim: Optional[Tuple[float, float]] = None,
     legend_loc: str = "lower right",
     category_order: Optional[List[str]] = None,
@@ -160,6 +165,8 @@ def plot_grouped_barplot(
         Label for legend (defaults to attribute column name)
     title : str, optional
         Plot title
+    palette : Union[str, List[str]]
+        Color palette to use. Can be a string (e.g., "Set2") or a list of colors.
     value_lim : tuple, optional
         Limits for value axis (e.g., (0.7, 1.0))
     legend_loc : str
@@ -212,6 +219,7 @@ def plot_grouped_barplot(
             orient="h",
             order=category_order,
             hue_order=attribute_order,
+            palette=palette,
         )
         ax.set_ylabel(category_label, fontsize=12)
         ax.set_xlabel(value_label, fontsize=12)
@@ -226,6 +234,7 @@ def plot_grouped_barplot(
             ax=ax,
             order=category_order,
             hue_order=attribute_order,
+            palette=palette,
         )
         ax.set_xlabel(category_label, fontsize=12)
         ax.set_ylabel(value_label, fontsize=12)

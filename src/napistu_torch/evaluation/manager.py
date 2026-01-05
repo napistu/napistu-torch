@@ -119,12 +119,18 @@ class EvaluationManager(ABC):
     # Concrete methods (work identically for both Local and Remote)
 
     @require_lightning
-    def get_experiment_dict(self) -> dict:
+    def get_experiment_dict(self, skip_wandb: bool = False) -> dict:
         """
         Get the experiment dictionary with all experiment components.
 
         The experiment dictionary contains the model, data module, trainer,
         run manifest, and WandB logger. This is lazily loaded and cached.
+
+        Parameters
+        ----------
+        skip_wandb : bool, optional
+            If True, skip creating WandB logger. Useful for remote models to avoid
+            creating directories. Default is False.
 
         Returns
         -------
@@ -147,7 +153,7 @@ class EvaluationManager(ABC):
         )
 
         if self.experiment_dict is None:
-            self.experiment_dict = resume_experiment(self)
+            self.experiment_dict = resume_experiment(self, skip_wandb=skip_wandb)
 
         return self.experiment_dict
 
@@ -747,9 +753,69 @@ class RemoteEvaluationManager(EvaluationManager):
         # Reconstruct manifest from HuggingFace artifacts
         self.manifest = RunManifest.from_huggingface(model_loader, repo_id)
 
+        # Patch experiment_config.data.store_dir to use the actual loaded store directory
+        # This prevents creating/downloading a new store based on the original training config
+        if data_store is not None:
+            self.manifest.experiment_config.data.store_dir = data_store.store_dir
+
         # Initialize base class attributes
         self.napistu_data_store = data_store
         self.experiment_dict = None
+
+    def get_run_summary(self, from_wandb: bool = False) -> dict:
+        """
+        Get summary metrics from HuggingFace (default) or WandB for this experiment.
+
+        By default, retrieves the summary metrics from the HuggingFace repository
+        by loading the wandb_run_info.yaml file. This avoids needing WandB API access
+        for remote models. Optionally, can load directly from WandB if from_wandb=True.
+
+        Parameters
+        ----------
+        from_wandb : bool, optional
+            If True, load summary from WandB API instead of HuggingFace.
+            Default is False (load from HuggingFace).
+
+        Returns
+        -------
+        dict
+            Dictionary containing summary metrics (e.g., final validation AUC,
+            training loss, etc.)
+
+        Raises
+        ------
+        RuntimeError
+            If HuggingFace API access fails or run info is not available
+        ValueError
+            If from_wandb=True but WandB run ID is not available
+        RuntimeError
+            If WandB API access fails when from_wandb=True
+
+        Examples
+        --------
+        >>> manager = RemoteEvaluationManager.from_huggingface(
+        ...     repo_id="shackett/sage-octopus",
+        ...     data_store_dir=Path("./store")
+        ... )
+        >>> # Load from HuggingFace (default)
+        >>> summary = manager.get_run_summary()
+        >>> print(summary["val_auc"])  # Final validation AUC
+        >>>
+        >>> # Load from WandB instead
+        >>> summary = manager.get_run_summary(from_wandb=True)
+        """
+        if from_wandb:
+            # Load from WandB API (same as base class implementation)
+            return self.manifest.get_run_summary()
+        else:
+            # Load from HuggingFace (default)
+            try:
+                run_info = self._model_loader.load_run_info()
+                return run_info.run_summaries
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to load run summary from HuggingFace repository '{self.repo_id}': {e}"
+                ) from e
 
     @classmethod
     def from_huggingface(
@@ -895,7 +961,7 @@ class RemoteEvaluationManager(EvaluationManager):
                 f"Attempted to load: {checkpoint_name}"
             )
 
-        experiment_dict = self.get_experiment_dict()
+        experiment_dict = self.get_experiment_dict(skip_wandb=True)
 
         # Load state dict from the checkpoint we already have
         checkpoint_dict = torch.load(self.checkpoint_path, weights_only=False)
