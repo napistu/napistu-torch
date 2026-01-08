@@ -1,3 +1,30 @@
+"""DataFrame encoding and transformation utilities.
+
+This module provides functions for automatically selecting encodings, fitting
+transformers, and transforming DataFrames for use in machine learning pipelines.
+
+Public Functions
+----------------
+auto_encode(graph_df, existing_encodings, encoders=DEFAULT_ENCODERS)
+    Select appropriate encodings for each column in a graph dataframe.
+classify_encoding(series, max_categories=50)
+    Classify the appropriate encoding type for a pandas Series.
+compose_encoding_configs(config1, config2)
+    Compose two encoding configurations.
+deduplicate_features(feature_names)
+    Deduplicate feature names by grouping identical features.
+config_to_column_transformer(config, encoders=DEFAULT_ENCODERS)
+    Convert encoding config to sklearn ColumnTransformer.
+encode_dataframe(df, config, encoders=DEFAULT_ENCODERS, fit=True)
+    Encode a DataFrame using the specified configuration.
+expand_deduplicated_features(feature_names, feature_name_aliases)
+    Expand deduplicated feature names using aliases.
+fit_encoders(df, config, encoders=DEFAULT_ENCODERS)
+    Fit encoders on a DataFrame using the specified configuration.
+transform_dataframe(df, preprocessor, feature_names)
+    Transform a DataFrame using a fitted preprocessor.
+"""
+
 import logging
 from typing import Dict, List, Optional, Tuple, Union
 

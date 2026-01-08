@@ -1,3 +1,20 @@
+"""Stratification utilities for edge splitting.
+
+This module provides functions for creating composite edge strata and managing
+stratification for train/test/val splitting.
+
+Public Functions
+----------------
+create_composite_edge_strata(napistu_graph, stratify_by=STRATIFY_BY.NODE_SPECIES_TYPE)
+    Create a composite edge attribute by concatenating the endpoint attributes.
+ensure_strata_series(edge_strata)
+    Ensure edge_strata is a pandas Series, converting from DataFrame if needed.
+merge_rare_strata(edge_strata, min_count, other_category_name='rare')
+    Merge rare strata into a single category.
+validate_edge_strata_alignment(napistu_data, edge_strata)
+    Validate that strata series is aligned with NapistuData edge_index.
+"""
+
 import logging
 from typing import Optional, Union
 

@@ -1,8 +1,13 @@
 """
 NapistuData - A PyTorch Geometric Data subclass for Napistu networks.
 
-This class extends PyG's Data class with Napistu-specific functionality
-including safe save/load methods and additional utilities.
+This module provides a PyTorch Geometric Data subclass with Napistu-specific
+functionality including safe save/load methods and additional utilities.
+
+Classes
+-------
+NapistuData
+    A PyTorch Geometric Data subclass for Napistu biological networks.
 """
 
 import copy

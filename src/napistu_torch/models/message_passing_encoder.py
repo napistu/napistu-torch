@@ -1,8 +1,13 @@
 """
-Graph Neural Network models for Napistu-Torch
+Graph Neural Network models for Napistu-Torch.
 
-Removed edge_weight parameter since it's not used for message passing.
-Edge weights are stored in edge attributes for supervision, not encoding.
+This module provides a unified Graph Neural Network encoder supporting multiple
+architectures (GCN, GAT, SAGE, GraphConv) with consistent behavior and configuration.
+
+Classes
+-------
+MessagePassingEncoder
+    Unified Graph Neural Network encoder supporting multiple architectures.
 """
 
 import logging

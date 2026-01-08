@@ -1,4 +1,18 @@
-"""Custom transformations for NapistuGraph vertex and edge features"""
+"""Custom transformations for NapistuGraph vertex and edge features.
+
+This module provides custom sklearn-compatible transformers for encoding
+sparse continuous features and other specialized transformations.
+
+Classes
+-------
+SparseContScaler
+    Transformer for encoding sparse continuous features as indicator + standardized value pairs.
+
+Public Functions
+----------------
+encode_sparse_continuous(values, scaler=None, fit=True)
+    Encode sparse continuous features as indicator + standardized value pairs.
+"""
 
 import numpy as np
 import pandas as pd

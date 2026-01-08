@@ -1,3 +1,17 @@
+"""
+Edge prediction evaluation utilities.
+
+This module provides functions for evaluating edge prediction performance
+stratified by edge types or other edge attributes.
+
+Public Functions
+----------------
+summarize_edge_predictions_by_strata(edge_predictions, edge_strata)
+    Summarize edge prediction performance by strata.
+plot_edge_predictions_by_strata(df, x_col=None, y_col=None, y_lower_col=None, y_upper_col=None, count_col=None, figsize=(8, 6))
+    Create a scatter plot showing prediction probabilities vs. enrichment with error bars.
+"""
+
 from typing import List, Union
 
 import matplotlib.pyplot as plt

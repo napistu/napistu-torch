@@ -2,6 +2,11 @@
 Edge encoder for Napistu-Torch.
 
 This module provides a simple MLP-based edge encoder for learning edge importance weights.
+
+Classes
+-------
+EdgeEncoder
+    Learns edge importance weights from edge features.
 """
 
 from typing import Any, Dict

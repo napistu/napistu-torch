@@ -243,3 +243,13 @@ FM_DEFS = SimpleNamespace(
     WEIGHTS_TEMPLATE="{prefix}_weights.npz",
     METADATA_TEMPLATE="{prefix}_metadata.json",
 )
+
+FM_EDGELIST = SimpleNamespace(
+    FROM_GENE="from_gene",
+    TO_GENE="to_gene",
+    FROM_IDX="from_idx",
+    TO_IDX="to_idx",
+    LAYER="layer",
+    ATTENTION="attention",
+    MODEL="model",
+)

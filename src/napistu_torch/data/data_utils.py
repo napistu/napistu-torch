@@ -1,9 +1,14 @@
-# In src/napistu_torch/data/data_utils.py
-
 """
 Utility functions for data loading and batching.
 
 Contains shared helpers for DataLoaders and collate functions.
+
+Public Functions
+----------------
+identity_collate(batch)
+    Custom collate function that returns NapistuData unchanged.
+create_single_graph_dataloader(data, batch_size=1, shuffle=False, **kwargs)
+    Create a DataLoader for a single NapistuData object.
 """
 
 from typing import List

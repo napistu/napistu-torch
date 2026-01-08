@@ -1,3 +1,19 @@
+"""
+Node2Vec utilities for Napistu-Torch.
+
+This module provides utility functions for creating and training Node2Vec models
+for unsupervised node embedding learning.
+
+Public Functions
+----------------
+get_node2vec_model(napistu_data, device)
+    Create a Node2Vec model configured for Napistu data.
+get_node2vec_training_regime(model)
+    Get DataLoader and Optimizer for training a Node2Vec model.
+get_node2vec_training_loop(model, loader, optimizer, device)
+    Execute a single training epoch for Node2Vec.
+"""
+
 import sys
 
 import torch

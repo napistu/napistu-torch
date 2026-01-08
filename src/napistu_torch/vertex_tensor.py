@@ -1,3 +1,15 @@
+"""
+VertexTensor - Container for vertex-aligned tensors with metadata.
+
+This module provides a container class for storing vertex-aligned tensors
+with metadata to validate alignment and interpret features.
+
+Classes
+-------
+VertexTensor
+    Container for vertex-aligned tensors with metadata.
+"""
+
 import logging
 from pathlib import Path
 from typing import List, Optional, Union

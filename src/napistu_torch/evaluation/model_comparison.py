@@ -1,4 +1,14 @@
-"""Functions for comparing model's vertex embeddings."""
+"""
+Functions for comparing model's vertex embeddings.
+
+This module provides utilities for comparing vertex embeddings across
+different models using distance-based metrics.
+
+Public Functions
+----------------
+compare_embeddings(embeddings, device)
+    Compare the vertex embeddings of multiple models.
+"""
 
 import logging
 from itertools import combinations

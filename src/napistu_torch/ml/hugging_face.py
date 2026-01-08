@@ -81,7 +81,7 @@ class HFClient:
     _validate_repo_id(repo_id) : None
         Validate repository ID format
     """
-    
+
     # Class-level cache to avoid repeated authentication checks
     _auth_validated: bool = False
     _last_token: Optional[str] = None
