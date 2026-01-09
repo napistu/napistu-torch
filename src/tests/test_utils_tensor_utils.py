@@ -7,9 +7,21 @@ from napistu_torch.utils.tensor_utils import (
     compute_confusion_matrix,
     compute_correlation_matrix,
     compute_cosine_distances_torch,
-    compute_max_abs_across_layers,
+    compute_max_abs_over_z,
+    compute_max_over_z,
     compute_spearman_correlation_torch,
     find_top_k,
+)
+
+TENSOR_3D = torch.tensor(
+    [
+        # Position [0,0] across layers: [1.0, 0.5, 2.5]
+        # Position [0,1] across layers: [-2.0, 1.0, 0.3]
+        [[1.0, 0.5, 2.5], [-2.0, 1.0, 0.3]],
+        # Position [1,0] across layers: [0.5, -3.0, 1.0]
+        # Position [1,1] across layers: [1.5, 0.8, -4.0]
+        [[0.5, -3.0, 1.0], [1.5, 0.8, -4.0]],
+    ]
 )
 
 
@@ -150,21 +162,9 @@ def test_compute_correlation_matrix_numpy_input():
     assert isinstance(p_values, np.ndarray)
 
 
-def test_max_abs_across_layers():
-    """Test that max_abs_across_layers preserves sign correctly."""
-    # Create simple test case: 3 layers, 2 genes
-    attention_3d = torch.tensor(
-        [
-            # Layer 0
-            [[1.0, -2.0], [0.5, 1.5]],
-            # Layer 1
-            [[0.5, 1.0], [-3.0, 0.8]],
-            # Layer 2
-            [[2.5, 0.3], [1.0, -4.0]],
-        ]
-    )
-
-    result, indices = compute_max_abs_across_layers(attention_3d, return_indices=True)
+def test_compute_max_abs_over_z():
+    """Test that compute_max_abs_over_z preserves sign correctly."""
+    result, indices = compute_max_abs_over_z(TENSOR_3D, return_indices=True)
 
     # Expected results:
     # [0,0]: max(|1.0|, |0.5|, |2.5|) = 2.5 from layer 2 → result = 2.5
@@ -174,6 +174,27 @@ def test_max_abs_across_layers():
 
     expected_result = torch.tensor([[2.5, -2.0], [-3.0, -4.0]])
     expected_indices = torch.tensor([[2, 0], [1, 2]])
+
+    assert torch.allclose(
+        result, expected_result
+    ), f"Expected {expected_result}, got {result}"
+    assert torch.equal(
+        indices, expected_indices
+    ), f"Expected {expected_indices}, got {indices}"
+
+
+def test_compute_max_over_z():
+    """Test that compute_max_over_z finds maximum value (not absolute) correctly."""
+    result, indices = compute_max_over_z(TENSOR_3D, return_indices=True)
+
+    # Expected results (finding max without taking absolute value):
+    # [0,0]: max(1.0, 0.5, 2.5) = 2.5 from layer 2 → result = 2.5
+    # [0,1]: max(-2.0, 1.0, 0.3) = 1.0 from layer 1 → result = 1.0
+    # [1,0]: max(0.5, -3.0, 1.0) = 1.0 from layer 2 → result = 1.0
+    # [1,1]: max(1.5, 0.8, -4.0) = 1.5 from layer 0 → result = 1.5
+
+    expected_result = torch.tensor([[2.5, 1.0], [1.0, 1.5]])
+    expected_indices = torch.tensor([[2, 1], [2, 0]])
 
     assert torch.allclose(
         result, expected_result

@@ -33,11 +33,17 @@ from napistu.constants import ONTOLOGIES
 from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
-from napistu_torch.load.constants import FM_DEFS, FM_EDGELIST
+from napistu_torch.load.constants import (
+    FM_DEFS,
+    FM_EDGELIST,
+    FM_LAYER_CONSENSUS_METHODS,
+    VALID_FM_LAYER_CONSENSUS_METHODS,
+)
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
 from napistu_torch.utils.tensor_utils import (
     compute_cosine_distances_torch,
-    compute_max_abs_across_layers,
+    compute_max_abs_over_z,
+    compute_max_over_z,
     compute_spearman_correlation_torch,
     find_top_k,
 )
@@ -131,7 +137,7 @@ class AttentionLayer(BaseModel):
         Wq = torch.from_numpy(self.W_q).float().to(device)
         Wk = torch.from_numpy(self.W_k).float().to(device)
 
-        n_genes, d_model = emb.shape
+        d_model = emb.shape[1]
         d_k = d_model // n_heads
 
         if d_model % n_heads != 0:
@@ -479,8 +485,8 @@ class FoundationModel(BaseModel):
 
     Public Methods
     --------------
-    compute_max_attention(target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=False)
-        Compute maximum absolute attention across all layers for target genes.
+    compute_consensus_attention(target_ids, consensus_method='absolute-argmax', gene_annotation_target_var='ensembl_gene', apply_softmax=False)
+        Compute consensus attention across all layers for target genes.
     compute_reordered_attention(layer_idx, target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=True, return_tensor=False, device=None)
         Compute attention scores for a specific layer and reorder to match a target gene ordering.
     full_name
@@ -612,25 +618,35 @@ class FoundationModel(BaseModel):
             raise ValueError("ordered_vocabulary must contain only strings")
         return v
 
-    def compute_max_attention(
+    def compute_consensus_attention(
         self,
         target_ids: List[str],
+        consensus_method: str = "absolute-argmax",
         gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
         apply_softmax: bool = False,
         return_layer_indices: bool = False,
         device: Optional[Union[str, torch.device]] = None,
     ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
         """
-        Compute maximum absolute attention across all layers for target genes.
+        Compute consensus attention across all layers for target genes.
 
-        For each gene pair, finds the layer with the strongest attention (by absolute
-        value) and returns that attention value with its original sign preserved.
-        This identifies the most significant attention relationships across the model.
+        For each gene pair, aggregates attention values across layers using the
+        specified consensus method. The default method ("absolute-argmax") finds the layer
+        with the strongest attention (by absolute value) and returns that attention
+        value with its original sign preserved.
 
         Parameters
         ----------
         target_ids : List[str]
             Ordered list of gene identifiers to compute attention for
+        consensus_method : str, optional
+            Method for aggregating attention across layers to compute consensus.
+            Currently supported:
+            - "absolute-argmax" (default): Find layer with maximum absolute attention
+              and return that value with sign preserved
+            - "max": Find layer with maximum attention value (without taking absolute value)
+              and return that value
+            - "sum": Sum attention values across all layers
         gene_annotation_target_var : str, optional
             Column name in gene_annotations to match against target_ids
             (default: ONTOLOGIES.ENSEMBL_GENE)
@@ -646,8 +662,8 @@ class FoundationModel(BaseModel):
         Returns
         -------
         torch.Tensor
-            Maximum absolute attention with sign preserved, shape (len(target_ids), len(target_ids))
-            where result[i, j] is the strongest attention from target_ids[i] to target_ids[j]
+            Consensus attention, shape (len(target_ids), len(target_ids))
+            where result[i, j] is the consensus attention from target_ids[i] to target_ids[j]
             across all layers
         torch.Tensor (optional)
             If return_layer_indices=True, also returns layer indices where max occurred,
@@ -657,17 +673,17 @@ class FoundationModel(BaseModel):
         --------
         >>> # Find strongest attention relationships across all layers
         >>> common_genes = ['ENSG00000000003', 'ENSG00000000005', ...]
-        >>> max_attn = model.compute_max_attention(common_genes)
+        >>> consensus_attn = model.compute_consensus_attention(common_genes)
         >>> # Identify which layer had the strongest attention
-        >>> max_attn, layer_idx = model.compute_max_attention(common_genes, return_layer_indices=True)
-        >>> # Compare top attention across models
-        >>> top_attn1 = model1.compute_max_attention(common_genes)
-        >>> top_attn2 = model2.compute_max_attention(common_genes)
+        >>> consensus_attn, layer_idx = model.compute_consensus_attention(common_genes, return_layer_indices=True)
+        >>> # Compare consensus attention across models
+        >>> consensus_attn1 = model1.compute_consensus_attention(common_genes)
+        >>> consensus_attn2 = model2.compute_consensus_attention(common_genes)
         """
-        # Pre-allocate 3D tensor: (n_layers, n_genes, n_genes)
+        # Pre-allocate 3D tensor: (n_genes, n_genes, n_layers)
         n_genes = len(target_ids)
         all_attention = torch.zeros(
-            (self.n_layers, n_genes, n_genes), dtype=torch.float32
+            (n_genes, n_genes, self.n_layers), dtype=torch.float32
         )
 
         # Fill in layer by layer
@@ -680,12 +696,29 @@ class FoundationModel(BaseModel):
                 return_tensor=True,
                 device=device,
             )
-            all_attention[layer_idx] = attention
+            all_attention[:, :, layer_idx] = attention
 
-        # Find maximum absolute values across layers, preserving sign
-        return compute_max_abs_across_layers(
-            all_attention, return_indices=return_layer_indices
-        )
+        # Aggregate attention across layers using specified consensus method
+        if consensus_method == FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX:
+            return compute_max_abs_over_z(
+                all_attention, return_indices=return_layer_indices
+            )
+        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.MAX:
+            return compute_max_over_z(
+                all_attention, return_indices=return_layer_indices
+            )
+        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.SUM:
+            # Sum across layers (z dimension)
+            if return_layer_indices:
+                # For sum, indices don't make sense, but return zeros for consistency
+                return all_attention.sum(dim=2), torch.zeros(
+                    (n_genes, n_genes), dtype=torch.long
+                )
+            return all_attention.sum(dim=2)
+        else:
+            raise ValueError(
+                f"Unknown consensus_method '{consensus_method}'. Supported methods: {VALID_FM_LAYER_CONSENSUS_METHODS}"
+            )
 
     def compute_reordered_attention(
         self,
@@ -1598,8 +1631,9 @@ class FoundationModels(BaseModel):
         else:
             return all_top_edges
 
-    def get_max_attentions(
+    def get_consensus_attentions(
         self,
+        consensus_method: str = "absolute-argmax",
         apply_softmax: bool = False,
     ) -> Tensor:
         """
@@ -1641,8 +1675,9 @@ class FoundationModels(BaseModel):
             model = self.models[i]
             logger.info(f"Computing max-attention for {model.full_name}...")
 
-            attention = model.compute_max_attention(
+            attention = model.compute_consensus_attention(
                 target_ids=common_ids,
+                consensus_method=consensus_method,
                 apply_softmax=apply_softmax,
             )
 

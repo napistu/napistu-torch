@@ -253,3 +253,11 @@ FM_EDGELIST = SimpleNamespace(
     ATTENTION="attention",
     MODEL="model",
 )
+
+FM_LAYER_CONSENSUS_METHODS = SimpleNamespace(
+    ABSOLUTE_ARGMAX="absolute-argmax",
+    MAX="max",
+    SUM="sum",
+)
+
+VALID_FM_LAYER_CONSENSUS_METHODS = list(FM_LAYER_CONSENSUS_METHODS.__dict__.values())
