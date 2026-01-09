@@ -1,4 +1,23 @@
-"""Manager for organizing experiments' metadata, data, models, and evaluation results."""
+"""
+Manager for organizing experiments' metadata, data, models, and evaluation results.
+
+This module provides managers for accessing experiment artifacts, loading models,
+and managing experiment metadata for both local and remote (HuggingFace) experiments.
+
+Classes
+-------
+EvaluationManager
+    Base class for evaluation managers.
+LocalEvaluationManager
+    Manager for local experiments with file system access.
+RemoteEvaluationManager
+    Manager for remote experiments stored on HuggingFace Hub.
+
+Public Functions
+----------------
+find_best_checkpoint(checkpoint_dir)
+    Find the best checkpoint in a directory based on validation metrics.
+"""
 
 from __future__ import annotations
 

@@ -5,6 +5,24 @@ This module defines all standard artifacts that can be created from SBML_dfs
 and NapistuGraph objects. Each artifact has a creation function that encapsulates
 the ETL logic.
 
+Classes
+-------
+ArtifactDefinition
+    Definition of an artifact that can be created from SBML_dfs and NapistuGraph.
+
+Public Functions
+----------------
+create_artifact(name, sbml_dfs, napistu_graph, artifact_registry=None)
+    Create an artifact by name using the registry.
+ensure_stratify_by_artifact_name(stratify_by)
+    Ensure the stratify_by value is an artifact name.
+get_artifact_info(name, artifact_registry=None)
+    Get information about an artifact.
+list_available_artifacts(artifact_registry=None)
+    List all available artifact names in the registry.
+validate_artifact_registry(artifact_registry)
+    Validate the artifact registry.
+
 To add a new artifact:
 1. Create a creation function (e.g., create_my_artifact)
 2. Add an ArtifactDefinition to _ARTIFACTS list

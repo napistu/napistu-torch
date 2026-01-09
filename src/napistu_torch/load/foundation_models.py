@@ -3,6 +3,21 @@ Foundation model data structures and utilities for loading virtual cell models.
 
 This module provides Pydantic-based classes for working with foundation model weights,
 embeddings, and metadata in a standardized format.
+
+Classes
+-------
+AttentionLayer
+    Attention weights for a single transformer layer.
+FoundationModelWeights
+    Weight matrices from a foundation model.
+GeneAnnotations
+    Gene annotations DataFrame validator.
+ModelMetadata
+    Model metadata validator.
+FoundationModel
+    Complete foundation model including weights, annotations, and metadata.
+FoundationModels
+    Container for multiple foundation models with cross-model analysis capabilities.
 """
 
 import json
@@ -18,7 +33,7 @@ from napistu.constants import ONTOLOGIES
 from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
-from napistu_torch.load.constants import FM_DEFS
+from napistu_torch.load.constants import FM_DEFS, FM_EDGELIST
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
 from napistu_torch.utils.tensor_utils import (
     compute_cosine_distances_torch,
@@ -51,10 +66,10 @@ class AttentionLayer(BaseModel):
     W_o : np.ndarray
         Output projection weight matrix of shape (embed_dim, embed_dim)
 
-    Methods
-    -------
-    compute_attention_pattern(embeddings, n_heads, apply_softmax=True, device='cpu')
-        Compute attention pattern for this layer with multi-head handling.
+    Public Methods
+    --------------
+    compute_attention_pattern(embeddings, n_heads, apply_softmax=True, return_tensor=False, device=None)
+        Compute attention pattern for this layer with proper multi-head handling.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -178,8 +193,8 @@ class FoundationModelWeights(BaseModel):
 
     Public Methods
     --------------
-    compute_attention_from_weights(layer_idx, vocab_mask=None, apply_softmax=True, device='cpu')
-        Compute attention scores for a specific layer with optional vocabulary mask.
+    compute_attention_from_weights(layer_idx, n_heads, vocab_mask=None, apply_softmax=True, return_tensor=False, device=None)
+        Compute attention scores for a specific layer with proper multi-head handling.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -364,7 +379,7 @@ class ModelMetadata(BaseModel):
     ----------
     model_name : str
         Name of the foundation model (e.g., 'scGPT', 'AIDOCell', 'scPRINT')
-    model_varaints: Optional[str]
+    model_variant : Optional[str]
         Variant of the foundation model (e.g., 'aido_cell_3m', 'aido_cell_10m', 'aido_cell_100m')
     n_genes : int
         Number of actual genes (excluding special tokens)
@@ -464,19 +479,25 @@ class FoundationModel(BaseModel):
 
     Public Methods
     --------------
-    compute_reordered_attention(layer_idx, target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=True, device='cpu')
-        Compute attention scores for a specific layer and reorder to match a target gene ordering
+    compute_max_attention(target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=False)
+        Compute maximum absolute attention across all layers for target genes.
+    compute_reordered_attention(layer_idx, target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=True, return_tensor=False, device=None)
+        Compute attention scores for a specific layer and reorder to match a target gene ordering.
     full_name
-        Property returning full unique identifier (model_name with model_variant if present)
+        Property returning full unique identifier (model_name with model_variant if present).
+    get_specific_attentions(edge_list, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
+        Extract specific attention values across specified layers for given edges.
+    get_top_attentions(k, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
+        Extract top-k strongest attention edges across all layers.
     load(output_dir, prefix)
-        Load foundation model from saved files (classmethod)
+        Load foundation model from saved files (classmethod).
     save(output_dir, prefix)
         Save foundation model to files.
 
     Private Methods
     --------------
-    _compute_attention(layer_idx, device='cpu', vocab_mask=None)
-        Compute attention scores for a specific layer with optional vocabulary mask
+    _compute_attention(layer_idx, apply_softmax=True, vocab_mask=None, return_tensor=False, device=None)
+        Compute attention scores for a specific layer with optional vocabulary mask.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -789,7 +810,144 @@ class FoundationModel(BaseModel):
 
         return reordered_attention
 
-    def find_top_k_attention_edges(
+    def get_specific_attentions(
+        self,
+        edge_list: pd.DataFrame,
+        layer_indices: Optional[List[int]] = None,
+        target_ids: Optional[List[str]] = None,
+        gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
+        apply_softmax: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Extract specific attention values across layers for given edges.
+
+        This complements find_top_k_attention_edges() by extracting the exact
+        attention values for specific gene pairs across specified layers.
+        Useful for analyzing how specific relationships vary across layers.
+
+        Parameters
+        ----------
+        edge_list : pd.DataFrame
+            DataFrame with at minimum 'from_gene' and 'to_gene' columns containing
+            gene identifiers. Typically the output from find_top_k_attention_edges().
+        layer_indices : List[int], optional
+            Layers to extract from. If None, uses all layers.
+        target_ids : List[str], optional
+            Gene identifiers to use. If None, uses all genes in the model.
+        gene_annotation_target_var : str, optional
+            Column name in gene_annotations to match against target_ids
+            (default: ONTOLOGIES.ENSEMBL_GENE)
+        apply_softmax : bool, optional
+            If True, use softmax-normalized attention probabilities (default: False).
+            If False, use raw attention scores.
+        device : str or torch.device, optional
+            Device to perform computation on (default: None to automatically select)
+        verbose : bool, optional
+            Whether to print verbose output during computation (default: False)
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            - from_gene : str
+                Source gene identifier
+            - to_gene : str
+                Target gene identifier
+            - layer : int
+                Layer index
+            - attention : float
+                Attention value for this edge in this layer
+
+        Examples
+        --------
+        >>> # Get top edges from one layer, then extract from all layers
+        >>> top_edges = model.get_top_attentions(k=1000, layer_indices=[0,2,3])
+        >>> unique_edges = top_edges[['from_gene', 'to_gene']].drop_duplicates()
+        >>> all_layers = model.get_specific_attentions(unique_edges)
+        >>>
+        >>> # Analyze how attention varies across layers for same edges
+        >>> pivot = all_layers.pivot_table(
+        ...     values='attention',
+        ...     index=['from_gene', 'to_gene'],
+        ...     columns='layer'
+        ... )
+        """
+        device = ensure_device(device, allow_autoselect=True)
+
+        if target_ids is None:
+            target_ids = list(
+                self.gene_annotations[gene_annotation_target_var].unique()
+            )
+
+        # Convert edge list to indices ONCE
+        edge_df = _edgelist_to_indices(
+            edge_list=edge_list,
+            gene_ids=target_ids,
+            verbose=verbose,
+        )
+
+        if layer_indices is None:
+            layer_indices = list(range(self.n_layers))
+        else:
+            layer_indices = normalize_and_validate_indices(
+                indices=layer_indices,
+                max_value=self.n_layers,
+                param_name="layer_indices",
+            )
+
+        results = []
+
+        with memory_manager(device):
+            # Create index tensors on device inside memory_manager
+            from_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.FROM_IDX].values).long().to(device)
+            )
+            to_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.TO_IDX].values).long().to(device)
+            )
+
+            for layer_idx in layer_indices:
+                if verbose:
+                    logger.info(f"Extracting attentions from layer {layer_idx}...")
+
+                # Compute attention matrix - KEEP AS TENSOR
+                attention = self.compute_reordered_attention(
+                    layer_idx=layer_idx,
+                    target_ids=target_ids,
+                    gene_annotation_target_var=gene_annotation_target_var,
+                    apply_softmax=apply_softmax,
+                    return_tensor=True,  # ✅ Keep on device
+                    device=device,
+                )
+
+                # Extract edges ON GPU using tensor indexing
+                edge_attentions = attention[from_idx_tensor, to_idx_tensor]
+
+                # Move only the extracted values to CPU
+                layer_df = edge_df[[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]].copy()
+                layer_df[FM_EDGELIST.LAYER] = layer_idx
+                layer_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
+
+                results.append(layer_df)
+
+                # Clean up
+                del attention, edge_attentions
+                empty_cache(device)
+
+        # Combine all layers
+        all_attentions = pd.concat(results, ignore_index=True)
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(all_attentions)} total attention values "
+                f"({len(edge_df)} edges × {len(layer_indices)} layers)"
+            )
+
+        return all_attentions
+
+    def get_top_attentions(
         self,
         k: int,
         layer_indices: Optional[List[int]] = None,
@@ -1118,22 +1276,31 @@ class FoundationModels(BaseModel):
     models : List[FoundationModel]
         List of foundation model instances (minimum 2 required)
 
-    Methods
-    -------
+    Public Methods
+    --------------
+    compare_embeddings(device=None, verbose=False)
+        Compare embeddings of all models using Spearman correlation of distance matrices.
     get_common_identifiers(ontology='ensembl_gene', verbose=True)
         Get common identifiers across all models.
-    get_aligned_embeddings(common_identifiers, ontology='ensembl_gene')
-        Align gene embeddings across all models based on common identifiers.
-    get_max_attentions()
+    get_max_attentions(apply_softmax=False, verbose=False)
         Compute maximum attention scores across all models for common genes.
     get_model(full_name)
         Get a specific model by its full_name attribute.
-    get_top_attentions(k=10000, apply_softmax=False, verbose=False)
+    get_specific_attentions(edge_list, apply_softmax=False, verbose=False)
+        Extract specific attention values across all models and layers for given edges.
+    get_top_attentions(k=10000, apply_softmax=False, reextract_top_edges=False, verbose=False)
         Extract top-k attention edges across all models for common genes.
     load_multiple(output_dir, prefixes)
         Load multiple foundation models from saved files (classmethod).
     model_names
         Property returning list of model names.
+    __repr__()
+        String representation of the FoundationModels instance.
+
+    Private Methods
+    --------------
+    _align_embeddings(common_identifiers, ontology='ensembl_gene', verbose=False)
+        Align gene embeddings across all models based on common identifiers.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -1241,10 +1408,109 @@ class FoundationModels(BaseModel):
 
         return common_identifiers
 
+    def get_specific_attentions(
+        self,
+        edge_list: pd.DataFrame,
+        apply_softmax: bool = False,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """
+        Extract specific attention values across all models and layers for given edges.
+
+        This complements get_top_attentions() by extracting the exact attention values
+        for specific gene pairs across all models and layers. Useful for comparing how
+        different models represent the same biological relationships.
+
+        Parameters
+        ----------
+        edge_list : pd.DataFrame
+            DataFrame with at minimum 'from_gene' and 'to_gene' columns containing
+            gene identifiers. Typically the output from get_top_attentions().
+        apply_softmax : bool, optional
+            If True, use softmax-normalized attention probabilities (default: False).
+            If False, use raw attention scores.
+        verbose : bool, optional
+            Whether to print verbose output during computation (default: False)
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with columns:
+            - from_gene : str
+                Source gene identifier
+            - to_gene : str
+                Target gene identifier
+            - model : str
+                Model name
+            - layer : int
+                Layer index
+            - attention : float
+                Attention value for this edge in this model/layer
+
+        Examples
+        --------
+        >>> # Get top edges, then extract those same edges from all models/layers
+        >>> top_edges = models.get_top_attentions(k=1000)
+        >>> # Get unique edges (remove layer/model info)
+        >>> unique_edges = top_edges[['from_gene', 'to_gene']].drop_duplicates()
+        >>> # Extract these edges from all models and layers
+        >>> all_attentions = models.get_specific_attentions(unique_edges)
+        >>>
+        >>> # Now analyze how attention varies across models for same edges
+        >>> pivot = all_attentions.pivot_table(
+        ...     values='attention',
+        ...     index=['from_gene', 'to_gene', 'layer'],
+        ...     columns='model'
+        ... )
+        """
+        # Get common identifiers across all models
+        common_ids = self.get_common_identifiers(verbose=False)
+
+        results = []
+
+        # Iterate over models - delegate to FoundationModel method
+        for model in self.models:
+            model_name = model.full_name
+
+            if verbose:
+                logger.info(f"Extracting attentions from {model_name}...")
+
+            # Delegate to FoundationModel.get_specific_attentions()
+            model_attentions = model.get_specific_attentions(
+                edge_list=edge_list,
+                layer_indices=None,  # Extract from all layers
+                target_ids=common_ids,
+                apply_softmax=apply_softmax,
+                verbose=False,  # Suppress per-layer logging
+            )
+
+            # Add model name column
+            model_attentions[FM_EDGELIST.MODEL] = model_name
+
+            results.append(model_attentions)
+
+        # Combine all results
+        all_attentions = pd.concat(results, ignore_index=True)
+
+        if verbose:
+            n_edges = len(
+                edge_list[
+                    [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
+                ].drop_duplicates()
+            )
+            logger.info(
+                f"Extracted {len(all_attentions)} total attention values "
+                f"({n_edges} edges × {len(self.models)} models × "
+                f"{self.models[0].n_layers} layers)"
+            )
+
+        return all_attentions
+
     def get_top_attentions(
         self,
         k: int = 10000,
         apply_softmax: bool = False,
+        reextract_top_edges: bool = False,
         verbose: bool = False,
     ) -> pd.DataFrame:
         """
@@ -1262,13 +1528,16 @@ class FoundationModels(BaseModel):
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
             If False, use raw attention scores for ranking.
+        reextract_top_edges: bool, optional
+            If True, take the union of top edges and extract them from every model and layer.
+            If False, extract top edges from each model and layer separately.
         verbose : bool, optional
             Whether to print verbose output during computation (default: False)
 
         Returns
         -------
-        pd.DataFrame
-            DataFrame with columns:
+        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
+            If reextract_top_edges is False, returns a single DataFrame with columns:
             - layer : int
                 Layer index where attention was computed
             - from_idx : int
@@ -1285,11 +1554,15 @@ class FoundationModels(BaseModel):
                 Model name (e.g., 'scGPT', 'Geneformer')
             Sorted by model, then layer, then by descending absolute attention value.
 
+        If reextract_top_edges is True, returns a tuple of two DataFrames:
+        - The first DataFrame is the same as above.
+        - The second DataFrame is the same structure as the first, but with the attention for each top edge across all models and layers.
+
         Examples
         --------
         >>> # Get top 1000 attention edges per layer for all models
         >>> models = FoundationModels.load_multiple('/path/to/output', ['scGPT', 'Geneformer'])
-        >>> top_edges = models.get_top_attentions(top_k=1000)
+        >>> top_edges = models.get_top_attentions(k=1000)
         >>>
         >>> # Compare attention patterns between models
         >>> scgpt_edges = top_edges[top_edges['model'] == 'scGPT']
@@ -1305,7 +1578,7 @@ class FoundationModels(BaseModel):
 
             logger.info(f"Computing top-k attention for {model_name}...")
 
-            model_top_k_attention = model.find_top_k_attention_edges(
+            model_top_k_attention = model.get_top_attentions(
                 k=k,
                 target_ids=common_ids,
                 apply_softmax=apply_softmax,
@@ -1314,7 +1587,16 @@ class FoundationModels(BaseModel):
 
             top_attention_edges.append(model_top_k_attention)
 
-        return pd.concat(top_attention_edges, ignore_index=True)
+        all_top_edges = pd.concat(top_attention_edges, ignore_index=True)
+        if reextract_top_edges:
+            logger.info("Re-extracting top edges from every model and layer...")
+
+            reextracted_top_edges = self.get_specific_attentions(
+                all_top_edges, apply_softmax=apply_softmax, verbose=verbose
+            )
+            return all_top_edges, reextracted_top_edges
+        else:
+            return all_top_edges
 
     def get_max_attentions(
         self,
@@ -1596,6 +1878,63 @@ def _calculate_embedding_correlations(
     return comparisons
 
 
+def _edgelist_to_indices(
+    edge_list: pd.DataFrame,
+    gene_ids: List[str],
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Convert edge list with gene identifiers to indices.
+
+    Parameters
+    ----------
+    edge_list : pd.DataFrame
+        DataFrame with 'from_gene' and 'to_gene' columns
+    gene_ids : List[str]
+        Ordered list of gene identifiers (defines index mapping)
+    verbose : bool, optional
+        Whether to print warnings about filtered edges
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with 'from_gene', 'to_gene', 'from_idx', 'to_idx' columns,
+        filtered to only edges where both genes are in gene_ids
+    """
+    # Validate input
+    required_cols = [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
+    missing = [col for col in required_cols if col not in edge_list.columns]
+    if missing:
+        raise ValueError(f"edge_list must contain columns: {missing}")
+
+    # Get unique edges
+    unique_edges = edge_list[required_cols].drop_duplicates()
+    n_edges = len(unique_edges)
+
+    # Filter edges to only those in gene_ids
+    edges_in_common = unique_edges[
+        unique_edges[FM_EDGELIST.FROM_GENE].isin(gene_ids)
+        & unique_edges[FM_EDGELIST.TO_GENE].isin(gene_ids)
+    ].copy()
+
+    if len(edges_in_common) < n_edges and verbose:
+        logger.warning(
+            f"Filtered from {n_edges} to {len(edges_in_common)} edges "
+            f"(some genes not in gene_ids)"
+        )
+
+    # Create index mappings
+    gene_to_idx = {gene: idx for idx, gene in enumerate(gene_ids)}
+    edges_in_common[FM_EDGELIST.FROM_IDX] = edges_in_common[FM_EDGELIST.FROM_GENE].map(
+        gene_to_idx
+    )
+    edges_in_common[FM_EDGELIST.TO_IDX] = edges_in_common[FM_EDGELIST.TO_GENE].map(
+        gene_to_idx
+    )
+
+    return edges_in_common
+
+
 def _find_top_k_edges_in_attention_layer(
     attention: Tensor,
     k: int,
@@ -1659,9 +1998,9 @@ def _find_top_k_edges_in_attention_layer(
     # Build base DataFrame with indices and attention
     df = pd.DataFrame(
         {
-            "from_idx": from_indices.cpu().numpy(),
-            "to_idx": to_indices.cpu().numpy(),
-            "attention": top_values.cpu().numpy(),
+            FM_EDGELIST.FROM_IDX: from_indices.cpu().numpy(),
+            FM_EDGELIST.TO_IDX: to_indices.cpu().numpy(),
+            FM_EDGELIST.ATTENTION: top_values.cpu().numpy(),
         }
     )
 
@@ -1669,7 +2008,7 @@ def _find_top_k_edges_in_attention_layer(
 
     # Add layer if provided
     if layer_idx is not None:
-        df["layer"] = layer_idx
+        df[FM_EDGELIST.LAYER] = layer_idx
 
     # Add gene IDs via merge if provided
     if gene_ids is not None:
@@ -1678,26 +2017,30 @@ def _find_top_k_edges_in_attention_layer(
 
         # Merge for from_gene
         df = df.merge(
-            gene_lookup.rename(columns={"idx": "from_idx", "gene_id": "from_gene"}),
-            on="from_idx",
+            gene_lookup.rename(
+                columns={"idx": FM_EDGELIST.FROM_IDX, "gene_id": FM_EDGELIST.FROM_GENE}
+            ),
+            on=FM_EDGELIST.FROM_IDX,
             how="left",
         )
 
         # Merge for to_gene
         df = df.merge(
-            gene_lookup.rename(columns={"idx": "to_idx", "gene_id": "to_gene"}),
-            on="to_idx",
+            gene_lookup.rename(
+                columns={"idx": FM_EDGELIST.TO_IDX, "gene_id": FM_EDGELIST.TO_GENE}
+            ),
+            on=FM_EDGELIST.TO_IDX,
             how="left",
         )
 
     # Order columns
     col_order = []
-    if "layer" in df.columns:
-        col_order.append("layer")
-    col_order.extend(["from_idx", "to_idx"])
-    if "from_gene" in df.columns:
-        col_order.extend(["from_gene", "to_gene"])
-    col_order.append("attention")
+    if FM_EDGELIST.LAYER in df.columns:
+        col_order.append(FM_EDGELIST.LAYER)
+    col_order.extend([FM_EDGELIST.FROM_IDX, FM_EDGELIST.TO_IDX])
+    if FM_EDGELIST.FROM_GENE in df.columns:
+        col_order.extend([FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE])
+    col_order.append(FM_EDGELIST.ATTENTION)
 
     return df[col_order]
 

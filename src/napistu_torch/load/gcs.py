@@ -1,4 +1,13 @@
-"""Module for loading pathway representations from GCS"""
+"""Module for loading pathway representations from GCS.
+
+This module provides utilities for downloading Napistu models from Google Cloud Storage
+and initializing NapistuDataStore objects.
+
+Public Functions
+----------------
+gcs_model_to_store(napistu_data_dir, store_dir, asset_name=GCS_ASSETS_NAMES.HUMAN_CONSENSUS, asset_version=None, overwrite_data_dir=False, overwrite_store_dir=False)
+    Download a model from GCS and save it to a local directory to initialize a NapistuDataStore.
+"""
 
 import logging
 import os

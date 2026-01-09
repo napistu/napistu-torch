@@ -1,3 +1,19 @@
+"""
+Edge weight sensitivity analysis utilities.
+
+This module provides functions for analyzing how edge features influence
+learned edge weights through gradient-based sensitivity analysis.
+
+Public Functions
+----------------
+compute_edge_feature_sensitivity(edge_encoder, edge_attr, max_edges, device=None)
+    Compute mean edge-weight gradients with respect to edge features.
+format_edge_feature_sensitivity(sensitivity, feature_names, top_k=10)
+    Format sensitivity results as a DataFrame with feature names and rankings.
+plot_edge_feature_sensitivity(sensitivity, feature_names, top_k=10, figsize=(10, 6))
+    Create a horizontal bar plot showing top-k most sensitive edge features.
+"""
+
 from typing import Optional, Union
 
 import matplotlib.pyplot as plt

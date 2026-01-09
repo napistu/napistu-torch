@@ -1,3 +1,17 @@
+"""
+Pathway evaluation utilities.
+
+This module provides functions for evaluating how well learned embeddings
+capture biological pathway structure through similarity analysis.
+
+Public Functions
+----------------
+calculate_pathway_similarities(embedding_matrix, pathway_assignments, pathway_names, filtering_mask=None, priority_pathways=None, device=None)
+    Calculate pathway similarity based on average within-category cosine similarity.
+get_comprehensive_source_membership(sbml_dfs, napistu_graph, pathway_names=None, vertex_summaries=None)
+    Get comprehensive pathway membership information for vertices.
+"""
+
 from typing import Optional
 
 import numpy as np

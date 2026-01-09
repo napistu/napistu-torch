@@ -2,6 +2,25 @@
 Checkpoint loading and validation utilities.
 
 This module provides utilities for loading and validating pretrained Napistu-Torch models.
+
+Classes
+-------
+Checkpoint
+    Manager for PyTorch Lightning checkpoint loading and validation.
+DataMetadata
+    Metadata about the NapistuData used during training.
+EdgeEncoderMetadata
+    Metadata about the edge encoder component.
+EncoderMetadata
+    Metadata about the encoder component.
+HeadMetadata
+    Metadata about the head component.
+ModelMetadata
+    Metadata about the complete model architecture.
+CheckpointHyperparameters
+    Hyperparameters stored in the checkpoint.
+CheckpointStructure
+    Structure definition for checkpoint validation.
 """
 
 import logging

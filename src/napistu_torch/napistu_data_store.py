@@ -1,3 +1,15 @@
+"""
+NapistuDataStore - Management system for Napistu data objects.
+
+This module provides a store system for managing NapistuData, VertexTensor,
+and pandas DataFrame objects related to a single SBML_dfs/NapistuGraph pair.
+
+Classes
+-------
+NapistuDataStore
+    Manage data objects related to a single SBML_dfs/NapistuGraph pair.
+"""
+
 import json
 import logging
 import shutil

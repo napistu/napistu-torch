@@ -1,5 +1,16 @@
-# src/napistu_torch/data/dataset.py
-"""Datasets for edge prediction training."""
+"""
+Datasets for edge prediction training.
+
+This module provides PyTorch Dataset classes for working with NapistuData
+objects in training pipelines.
+
+Classes
+-------
+SingleGraphDataset
+    Wrapper to make a single NapistuData object work with DataLoader.
+EdgeBatchDataset
+    Dataset that splits edge indices into mini-batches for training.
+"""
 
 import torch
 from torch.utils.data import Dataset

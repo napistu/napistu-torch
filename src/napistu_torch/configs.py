@@ -1,3 +1,28 @@
+"""
+Configuration classes for Napistu-Torch experiments.
+
+This module provides Pydantic-based configuration classes for defining
+experiments, data loading, model architecture, tasks, training, and
+Weights & Biases integration.
+
+Classes
+-------
+DataConfig
+    Data loading and splitting configuration.
+ModelConfig
+    Model architecture and component configuration.
+TaskConfig
+    Task-specific configuration.
+TrainingConfig
+    Training hyperparameters and settings.
+WandBConfig
+    Weights & Biases integration configuration.
+ExperimentConfig
+    Complete experiment configuration combining all component configs.
+RunManifest
+    Manifest tracking experiment run metadata and artifacts.
+"""
+
 from __future__ import annotations
 
 import logging

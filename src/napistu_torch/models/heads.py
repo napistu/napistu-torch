@@ -3,6 +3,33 @@ Prediction heads for Napistu-Torch.
 
 This module provides implementations of different prediction heads for various tasks
 like edge prediction, node classification, etc. All heads follow a consistent interface.
+
+Classes
+-------
+AttentionHead
+    Lightweight attention head for edge prediction.
+ConditionalRotatEHead
+    Conditional RotatE head for relation-aware edge prediction.
+DistMultHead
+    DistMult head for relation-aware edge prediction.
+DotProductHead
+    Simple dot product head for edge prediction.
+EdgeMLPHead
+    MLP-based head for edge prediction.
+NodeClassificationHead
+    Head for node classification tasks.
+RelationAttentionHead
+    Relation-aware attention head for edge prediction.
+RelationGatedMLPHead
+    Relation-aware gated MLP head for edge prediction.
+RelationAttentionMLPHead
+    Relation-aware attention-MLP hybrid head for edge prediction.
+RotatEHead
+    RotatE head for relation-aware edge prediction.
+TransEHead
+    TransE head for relation-aware edge prediction.
+Decoder
+    Decoder combining encoder and head for complete model architecture.
 """
 
 from typing import Any, Dict, List, Optional

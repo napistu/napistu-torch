@@ -1,3 +1,20 @@
+"""NapistuGraph to NapistuData conversion utilities.
+
+This module provides functions for converting NapistuGraph objects to NapistuData
+objects with various configurations and masking strategies.
+
+Public Functions
+----------------
+augment_napistu_graph(sbml_dfs, napistu_graph, sbml_dfs_summary_types=None, ignored_attributes=None, ignored_if_constant_attributes=None, inplace=False)
+    Augment a NapistuGraph with additional vertex and edge attributes from SBML_dfs.
+construct_vertex_labeled_napistu_data(sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.VERTEX_MASK, label_type=LABEL_TYPE.SPECIES_TYPE, task_type=TASK_TYPES.CLASSIFICATION, name=None, **kwargs)
+    Construct a NapistuData object with vertex labels from a NapistuGraph.
+construct_unlabeled_napistu_data(sbml_dfs, napistu_graph, splitting_strategy=SPLITTING_STRATEGIES.NO_MASK, name=None, **kwargs)
+    Construct an unlabeled NapistuData object from a NapistuGraph.
+napistu_graph_to_napistu_data(napistu_graph, splitting_strategy, vertex_default_transforms=None, edge_default_transforms=None, labels=None, relation_type=None, name=None, **kwargs)
+    Convert a NapistuGraph to a NapistuData object with optional labels and transforms.
+"""
+
 import inspect
 import logging
 from typing import Any, Callable, Dict, Optional, Union

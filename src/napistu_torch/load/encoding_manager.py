@@ -1,4 +1,24 @@
-"""Configuration management for DataFrame encoding transformations."""
+"""Configuration management for DataFrame encoding transformations.
+
+This module provides configuration management for DataFrame encoding transformations,
+allowing flexible specification of how columns should be encoded.
+
+Classes
+-------
+EncodingManager
+    Configuration manager for DataFrame encoding transformations.
+TransformConfig
+    Configuration for a single transform.
+EncodingConfig
+    Complex encoding configuration format.
+SimpleEncodingConfig
+    Simple encoding configuration format.
+
+Public Functions
+----------------
+detect_config_format(config)
+    Detect whether a config dict is in simple or complex format.
+"""
 
 import logging
 from collections import defaultdict

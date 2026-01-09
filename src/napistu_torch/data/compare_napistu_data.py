@@ -4,6 +4,11 @@ Utilities for comparing and validating NapistuData compatibility.
 This module provides functions for validating that two NapistuData objects
 are compatible for training/inference, including feature alignment, split
 consistency, and structural compatibility checks.
+
+Public Functions
+----------------
+validate_same_data(current_summary, reference_summary, allow_missing_keys=None, verbose=False)
+    Validate that data summaries from reference and current data are compatible.
 """
 
 import logging

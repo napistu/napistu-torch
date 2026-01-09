@@ -1,4 +1,21 @@
-"""Evaluation functions for relation prediction and relation-stratified loss."""
+"""
+Evaluation functions for relation prediction and relation-stratified loss.
+
+This module provides functions for evaluating relation prediction performance,
+including confusion matrices, correlation analysis, and comparison with
+external truth datasets like PerturbSeq.
+
+Public Functions
+----------------
+calculate_relation_type_confusion_and_correlation(model, napistu_data, normalize='true')
+    Calculate the confusion matrix for the relation types in the test set.
+compare_relation_type_predictions_to_perturbseq_truth(model, relation_type_indices, perturbseq_edgelist_tensor, napistu_data, distinct_perturbseq_pairs, distinct_harmonizome_perturbseq_interactions, perturbseq_order, relation_type_order, normalize=None, device=None)
+    Compare model predictions to PerturbSeq truth data.
+get_perturbseq_edgelist_tensor(distinct_perturbseq_pairs, napistu_data)
+    Convert PerturbSeq edge list to tensor format aligned with NapistuData.
+summarize_relation_type_aucs(relation_type_aucs, relation_type_order)
+    Summarize relation type AUCs as a DataFrame.
+"""
 
 from typing import Any, Dict, List, Optional, Tuple
 

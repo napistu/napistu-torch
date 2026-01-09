@@ -1,4 +1,17 @@
-"""Utility functions supporting a subset of heads."""
+"""Utility functions supporting a subset of heads.
+
+This module provides utility functions for computing distances and probabilities
+used by various prediction heads, particularly relation-aware heads like RotatE.
+
+Public Functions
+----------------
+compute_rotate_distance(head_embeddings, tail_embeddings, relation_phase, eps=1e-10)
+    Compute RotatE distance in complex space.
+normalized_distances_to_probs(scores)
+    Convert distances between softmax-normalized vectors to probabilities.
+validate_symmetric_relation_indices(symmetric_relation_indices, num_relations)
+    Validate that symmetric relation indices are properly configured.
+"""
 
 from typing import List, Union
 

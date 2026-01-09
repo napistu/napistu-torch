@@ -82,6 +82,10 @@ class HFClient:
         Validate repository ID format
     """
 
+    # Class-level cache to avoid repeated authentication checks
+    _auth_validated: bool = False
+    _last_token: Optional[str] = None
+
     def __init__(self, token: Optional[str] = None):
         """
         Initialize HuggingFace client.
@@ -93,7 +97,11 @@ class HFClient:
         """
         self.api = HfApi(token=token)
         self._token = token
-        self._validate_authentication()
+        # Only validate authentication if we haven't validated with this token yet
+        if not HFClient._auth_validated or HFClient._last_token != token:
+            self._validate_authentication()
+            HFClient._auth_validated = True
+            HFClient._last_token = token
 
     def _check_repo_exists(
         self, repo_id: str, repo_type: str = HUGGING_FACE_REPOS.MODEL
