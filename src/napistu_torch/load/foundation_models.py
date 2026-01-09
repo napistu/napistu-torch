@@ -856,7 +856,7 @@ class FoundationModel(BaseModel):
         """
         Extract specific attention values across layers for given edges.
 
-        This complements get_top_attentions() by extracting the exact
+        This complements find_top_k_attention_edges() by extracting the exact
         attention values for specific gene pairs across specified layers.
         Useful for analyzing how specific relationships vary across layers.
 
@@ -864,7 +864,7 @@ class FoundationModel(BaseModel):
         ----------
         edge_list : pd.DataFrame
             DataFrame with at minimum 'from_gene' and 'to_gene' columns containing
-            gene identifiers. Typically the output from get_top_attentions().
+            gene identifiers. Typically the output from find_top_k_attention_edges().
         layer_indices : List[int], optional
             Layers to extract from. If None, uses all layers.
         target_ids : List[str], optional
@@ -930,37 +930,47 @@ class FoundationModel(BaseModel):
                 param_name="layer_indices",
             )
 
-        # Prepare attention tensors and metadata
-        attention_tensors = []
-        metadata = []
+        results = []
 
-        for layer_idx in layer_indices:
-            if verbose:
-                logger.info(f"Computing attention for layer {layer_idx}...")
-
-            # Compute attention matrix - KEEP AS TENSOR
-            attention = self.compute_reordered_attention(
-                layer_idx=layer_idx,
-                target_ids=target_ids,
-                gene_annotation_target_var=gene_annotation_target_var,
-                apply_softmax=apply_softmax,
-                return_tensor=True,
-                device=device,
+        with memory_manager(device):
+            # Create index tensors on device inside memory_manager
+            from_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.FROM_IDX].values).long().to(device)
+            )
+            to_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.TO_IDX].values).long().to(device)
             )
 
-            attention_tensors.append(attention)
-            metadata.append({FM_EDGELIST.LAYER: layer_idx})
+            for layer_idx in layer_indices:
+                if verbose:
+                    logger.info(f"Extracting attentions from layer {layer_idx}...")
 
-        # Use utility to extract edges, deleting tensors as they're processed
-        # This frees GPU memory immediately instead of keeping all tensors until the end
-        all_attentions = _extract_edges_from_attention_tensors(
-            edge_df=edge_df,
-            attention_tensors=attention_tensors,
-            metadata=metadata,
-            device=device,
-            verbose=verbose,
-            delete_as_processed=True,  # Free memory as we go
-        )
+                # Compute attention matrix
+                attention = self.compute_reordered_attention(
+                    layer_idx=layer_idx,
+                    target_ids=target_ids,
+                    gene_annotation_target_var=gene_annotation_target_var,
+                    apply_softmax=apply_softmax,
+                    return_tensor=True,
+                    device=device,
+                )
+
+                # Extract edges ON GPU using tensor indexing
+                edge_attentions = attention[from_idx_tensor, to_idx_tensor]
+
+                # Move only the extracted values to CPU
+                layer_df = edge_df[[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]].copy()
+                layer_df[FM_EDGELIST.LAYER] = layer_idx
+                layer_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
+
+                results.append(layer_df)
+
+                # Clean up
+                del attention, edge_attentions
+                empty_cache(device)
+
+        # Combine all layers
+        all_attentions = pd.concat(results, ignore_index=True)
 
         if verbose:
             logger.info(
