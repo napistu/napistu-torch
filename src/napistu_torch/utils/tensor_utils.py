@@ -274,45 +274,101 @@ def compute_effective_dimensionality(vectors: Tensor) -> np.ndarray:
     return eff_dim.numpy()
 
 
-def compute_max_abs_across_layers(
+def compute_max_abs_over_z(
     attention_3d: Tensor,
     return_indices: bool = False,
 ) -> Tensor:
     """
-    Find maximum absolute attention values across layers, preserving sign.
+    Find maximum absolute attention values across layers (z dimension), preserving sign.
 
-    For each gene pair (i, j), finds the layer with max |attention| and
+    For each feature pair (i, j), finds the layer with max |attention| and
     returns that attention value with its original sign.
 
     Parameters
     ----------
     attention_3d : torch.Tensor
-        Attention scores of shape (n_layers, n_genes, n_genes)
+        Attention scores of shape (n_x, n_y, n_z)
     return_indices : bool, optional
         If True, also return the layer indices where max occurred
 
     Returns
     -------
     torch.Tensor
-        Max absolute attention with sign preserved, shape (n_genes, n_genes)
+        Max absolute attention with sign preserved, shape (n_x, n_y)
     torch.Tensor (optional)
-        Layer indices where max occurred, shape (n_genes, n_genes)
+        Layer indices where max occurred, shape (n_x, n_y)
     """
-    _, n_genes, _ = attention_3d.shape
 
-    # Find layer with max absolute value for each gene pair
-    max_abs_indices = torch.abs(attention_3d).argmax(dim=0)  # (n_genes, n_genes)
+    # check for valid shape
+    if attention_3d.ndim != 3:
+        raise ValueError(f"Expected 3D tensor, got shape {attention_3d.shape}")
 
-    # Create index grids for gene dimensions
-    gene_i_idx = torch.arange(n_genes).unsqueeze(1).expand(n_genes, n_genes)
-    gene_j_idx = torch.arange(n_genes).unsqueeze(0).expand(n_genes, n_genes)
+    n_x, n_y, _ = attention_3d.shape
 
-    # Index into all_attention to get signed values
-    max_abs_signed = attention_3d[max_abs_indices, gene_i_idx, gene_j_idx]
+    if n_x != n_y:
+        raise ValueError(f"Expected square tensor, got shape {attention_3d.shape}")
+
+    # Find layer with max absolute value for each feature pair (across z dimension)
+    max_abs_indices = torch.abs(attention_3d).argmax(dim=2)  # (n_x, n_y)
+
+    # Create index grids for feature dimensions
+    feature_i_idx = torch.arange(n_x).unsqueeze(1).expand(n_x, n_y)
+    feature_j_idx = torch.arange(n_y).unsqueeze(0).expand(n_x, n_y)
+
+    # Index into attention_3d to get signed values
+    max_abs_signed = attention_3d[feature_i_idx, feature_j_idx, max_abs_indices]
 
     if return_indices:
         return max_abs_signed, max_abs_indices
     return max_abs_signed
+
+
+def compute_max_over_z(
+    attention_3d: Tensor,
+    return_indices: bool = False,
+) -> Tensor:
+    """
+    Find maximum attention values across layers (z dimension) without taking absolute value.
+
+    For each feature pair (i, j), finds the layer with max attention value and
+    returns that attention value.
+
+    Parameters
+    ----------
+    attention_3d : torch.Tensor
+        Attention scores of shape (n_x, n_y, n_z)
+    return_indices : bool, optional
+        If True, also return the layer indices where max occurred
+
+    Returns
+    -------
+    torch.Tensor
+        Max attention, shape (n_x, n_y)
+    torch.Tensor (optional)
+        Layer indices where max occurred, shape (n_x, n_y)
+    """
+    # check for valid shape
+    if attention_3d.ndim != 3:
+        raise ValueError(f"Expected 3D tensor, got shape {attention_3d.shape}")
+
+    n_x, n_y, _ = attention_3d.shape
+
+    if n_x != n_y:
+        raise ValueError(f"Expected square tensor, got shape {attention_3d.shape}")
+
+    # Find layer with max value for each feature pair (across z dimension)
+    max_indices = attention_3d.argmax(dim=2)  # (n_x, n_y)
+
+    # Create index grids for feature dimensions
+    feature_i_idx = torch.arange(n_x).unsqueeze(1).expand(n_x, n_y)
+    feature_j_idx = torch.arange(n_y).unsqueeze(0).expand(n_x, n_y)
+
+    # Index into attention_3d to get max values
+    max_values = attention_3d[feature_i_idx, feature_j_idx, max_indices]
+
+    if return_indices:
+        return max_values, max_indices
+    return max_values
 
 
 def compute_spearman_correlation_torch(
