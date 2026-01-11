@@ -40,15 +40,18 @@ from napistu_torch.load.constants import (
     VALID_FM_LAYER_CONSENSUS_METHODS,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
+from napistu_torch.utils.pd_utils import calculate_ranks
 from napistu_torch.utils.tensor_utils import (
     compute_cosine_distances_torch,
     compute_max_abs_over_z,
     compute_max_over_z,
     compute_spearman_correlation_torch,
+    compute_tensor_ranks,
+    compute_tensor_ranks_for_indices,
     find_top_k,
 )
 from napistu_torch.utils.torch_utils import (
-    empty_cache,
+    cleanup_tensors,
     ensure_device,
     memory_manager,
 )
@@ -176,15 +179,14 @@ class AttentionLayer(BaseModel):
                 avg_attention += attn / n_heads
 
             # Explicitly clean up intermediate tensors
-            del Q, K, attn_scores, attn
-
-            # Clear cache if using MPS or CUDA
-            empty_cache(device)
+            cleanup_tensors(Q, K, attn_scores, attn)
 
         if return_tensor:
             return avg_attention
         else:
-            return avg_attention.cpu().numpy()
+            out_attention = avg_attention.cpu().numpy()
+            cleanup_tensors(avg_attention)
+            return out_attention
 
 
 class FoundationModelWeights(BaseModel):
@@ -850,6 +852,8 @@ class FoundationModel(BaseModel):
         target_ids: Optional[List[str]] = None,
         gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
         apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        by_absolute_value: bool = True,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
     ) -> pd.DataFrame:
@@ -875,6 +879,12 @@ class FoundationModel(BaseModel):
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
             If False, use raw attention scores.
+        compute_ranks : bool, optional
+            If True, compute ranks of attention values relative to the full attention tensor
+            for each layer and add them to the output table (default: False)
+        by_absolute_value : bool, optional
+            If True, rank by absolute value when calculating ranks (default: True).
+            Only used if compute_ranks=True.
         device : str or torch.device, optional
             Device to perform computation on (default: None to automatically select)
         verbose : bool, optional
@@ -892,6 +902,8 @@ class FoundationModel(BaseModel):
                 Layer index
             - attention : float
                 Attention value for this edge in this layer
+            - attention_rank : int (if compute_ranks=True)
+                Integer rank compared to all attention values in the full tensor for this layer (rank 1 = highest)
 
         Examples
         --------
@@ -945,15 +957,20 @@ class FoundationModel(BaseModel):
                 if verbose:
                     logger.info(f"Extracting attentions from layer {layer_idx}...")
 
-                # Compute attention matrix - KEEP AS TENSOR
+                # Compute attention matrix
                 attention = self.compute_reordered_attention(
                     layer_idx=layer_idx,
                     target_ids=target_ids,
                     gene_annotation_target_var=gene_annotation_target_var,
                     apply_softmax=apply_softmax,
-                    return_tensor=True,  # ✅ Keep on device
+                    return_tensor=True,
                     device=device,
                 )
+
+                if verbose:
+                    logger.debug(f"Attention tensor shape: {attention.shape}")
+                    logger.debug(f"From index tensor shape: {from_idx_tensor.shape}")
+                    logger.debug(f"To index tensor shape: {to_idx_tensor.shape}")
 
                 # Extract edges ON GPU using tensor indexing
                 edge_attentions = attention[from_idx_tensor, to_idx_tensor]
@@ -963,11 +980,23 @@ class FoundationModel(BaseModel):
                 layer_df[FM_EDGELIST.LAYER] = layer_idx
                 layer_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
 
+                # Compute ranks if requested
+                if compute_ranks:
+                    if verbose:
+                        logger.info(f"Calculating ranks for layer {layer_idx}...")
+
+                    # Compute ranks only for the specific indices (memory-efficient)
+                    edge_ranks = compute_tensor_ranks_for_indices(
+                        attention,
+                        (from_idx_tensor, to_idx_tensor),
+                        by_absolute_value=by_absolute_value,
+                    )
+                    layer_df[FM_EDGELIST.ATTENTION_RANK] = edge_ranks.cpu().numpy()
+
                 results.append(layer_df)
 
                 # Clean up
-                del attention, edge_attentions
-                empty_cache(device)
+                cleanup_tensors(attention, edge_attentions, edge_ranks)
 
         # Combine all layers
         all_attentions = pd.concat(results, ignore_index=True)
@@ -987,13 +1016,16 @@ class FoundationModel(BaseModel):
         target_ids: Optional[List[str]] = None,
         gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
         apply_softmax: bool = False,
+        by_absolute_value: bool = True,
+        compute_ranks: bool = False,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
     ) -> pd.DataFrame:
         """
         Extract top-k strongest attention edges across all layers.
 
-        For each layer, identifies the k gene pairs with highest absolute attention values
+        For each layer, identifies the k gene pairs with highest attention values
+        (by absolute value or raw value depending on by_absolute_value parameter)
         and returns them as a DataFrame. Useful for network construction and identifying
         the most significant gene-gene relationships learned by the model.
 
@@ -1011,6 +1043,12 @@ class FoundationModel(BaseModel):
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
             If False, use raw attention scores for ranking.
+        by_absolute_value : bool, optional
+            If True, rank edges by absolute attention value (default: True).
+            If False, rank edges by raw attention value.
+        compute_ranks : bool, optional
+            If True, compute ranks of attention values relative to the full attention tensor
+            for each layer and add them to the output table (default: False)
         device : str or torch.device, optional
             Device to perform computation on (default: None to automatically select)
         verbose : bool, optional
@@ -1032,13 +1070,19 @@ class FoundationModel(BaseModel):
                 Target gene identifier
             - attention : float
                 Attention value (preserves sign if apply_softmax=False)
-            Sorted by layer, then by descending absolute attention value.
+            - attention_rank : int (if compute_ranks=True)
+                Integer rank compared to all attention values in the full tensor for this layer (rank 1 = highest)
+            Sorted by layer, then by descending absolute attention value (if by_absolute_value=True)
+            or descending raw attention value (if by_absolute_value=False).
 
         Examples
         --------
         >>> # Get top 1000 edges per layer for common genes
         >>> common_genes = ['ENSG00000000003', 'ENSG00000000005', ...]
-        >>> top_edges = model.find_top_k_attention_edges(k = 1000, common_genes)
+        >>> top_edges = model.get_top_attentions(k=1000, target_ids=common_genes)
+        >>>
+        >>> # Rank by raw value instead of absolute value
+        >>> top_edges = model.get_top_attentions(k=1000, by_absolute_value=False)
         """
 
         device = ensure_device(device, allow_autoselect=True)
@@ -1063,7 +1107,10 @@ class FoundationModel(BaseModel):
         with memory_manager(device):
             for layer_idx in layer_indices:
                 if verbose:
-                    logger.info(f"Extracting top-{k} edges from layer {layer_idx}...")
+                    value_type = "absolute value" if by_absolute_value else "raw value"
+                    logger.info(
+                        f"Extracting top-{k} edges from layer {layer_idx} by {value_type}..."
+                    )
 
                 # Get attention for this layer
                 attention = self.compute_reordered_attention(
@@ -1081,16 +1128,25 @@ class FoundationModel(BaseModel):
                     k=k,
                     layer_idx=layer_idx,
                     gene_ids=target_ids,
+                    by_absolute_value=by_absolute_value,
                 )
 
                 results.append(layer_df)
 
-                # Clean up
-                del attention
-                empty_cache(device)
+                # Clean up attention tensor
+                cleanup_tensors(attention)
 
         # Combine all layers
         all_edges = pd.concat(results, ignore_index=True)
+
+        # Add ranks if requested (rank within each layer)
+        if compute_ranks:
+            all_edges[FM_EDGELIST.ATTENTION_RANK] = calculate_ranks(
+                df=all_edges,
+                value_col=FM_EDGELIST.ATTENTION,
+                by_absolute_value=by_absolute_value,
+                grouping_vars=FM_EDGELIST.LAYER,
+            )
 
         if verbose:
             logger.info(
@@ -1297,6 +1353,18 @@ class FoundationModel(BaseModel):
             device=device,
         )
 
+    def __repr__(self) -> str:
+        """String representation of the FoundationModel instance."""
+        return (
+            f"FoundationModel("
+            f"name={self.full_name}, "
+            f"n_genes={self.n_genes}, "
+            f"n_layers={self.n_layers}, "
+            f"embed_dim={self.embed_dim}, "
+            f"n_heads={self.n_heads}"
+            f")"
+        )
+
 
 class FoundationModels(BaseModel):
     """Container for multiple foundation models with cross-model analysis capabilities.
@@ -1315,13 +1383,15 @@ class FoundationModels(BaseModel):
         Compare embeddings of all models using Spearman correlation of distance matrices.
     get_common_identifiers(ontology='ensembl_gene', verbose=True)
         Get common identifiers across all models.
-    get_max_attentions(apply_softmax=False, verbose=False)
-        Compute maximum attention scores across all models for common genes.
+    get_consensus_top_attentions(k=10000, consensus_method='absolute-argmax', apply_softmax=False, reextract_union=False, verbose=False)
+        Compute consensus top-k attention edges across all models for common genes.
+    get_consensus_attentions(consensus_method='absolute-argmax', apply_softmax=False)
+        Compute consensus attention scores across all models for common genes.
     get_model(full_name)
         Get a specific model by its full_name attribute.
     get_specific_attentions(edge_list, apply_softmax=False, verbose=False)
         Extract specific attention values across all models and layers for given edges.
-    get_top_attentions(k=10000, apply_softmax=False, reextract_top_edges=False, verbose=False)
+    get_top_attentions(k=10000, apply_softmax=False, reextract_union=False, verbose=False)
         Extract top-k attention edges across all models for common genes.
     load_multiple(output_dir, prefixes)
         Load multiple foundation models from saved files (classmethod).
@@ -1441,10 +1511,219 @@ class FoundationModels(BaseModel):
 
         return common_identifiers
 
+    def get_consensus_top_attentions(
+        self,
+        k: int = 10000,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
+        by_absolute_value: bool = True,
+        reextract_union: bool = False,
+        apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        return_original_and_reextracted: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+        """
+        Extract top-k consensus attention edges across models.
+
+        For each model:
+        1. Compute consensus attention across all layers
+        2. Extract top-k strongest edges from consensus
+
+        Optionally re-extract the union of all models' top edges
+        from every model's consensus.
+
+        Parameters
+        ----------
+        k : int, optional
+            Number of top edges to extract per model (default: 10000)
+        consensus_method : str, optional
+            Method for aggregating attention across layers to compute consensus.
+            Currently supported:
+            - "absolute-argmax" (default): Find layer with maximum absolute attention
+              and return that value with sign preserved
+            - "max": Find layer with maximum attention value (without taking absolute value)
+              and return that value
+            - "sum": Sum attention values across all layers
+            Options: 'absolute-argmax', 'max', 'sum'
+        by_absolute_value : bool, optional
+            If True, rank edges by absolute attention value (default: True).
+            If False, rank edges by raw attention value.
+        compute_ranks : bool, optional
+            If True, compute ranks of attention values and add them to the output table.
+        reextract_union : bool, optional
+            If True, take union of all top edges and re-extract from all models
+            (default: False)
+        apply_softmax : bool, optional
+            Whether to apply softmax before computing consensus (default: False)
+        return_original_and_reextracted : bool, optional
+            If True and reextract_union=True, return tuple (original, reextracted).
+            If False and reextract_union=True, return only reextracted DataFrame.
+            Ignored if reextract_union=False (default: False)
+        device: str or torch.device, optional
+            Device to perform computation on (default: None to automatically select)
+        verbose : bool, optional
+            Print progress information (default: False)
+
+        Returns
+        -------
+        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
+            If reextract_union=False:
+                Single DataFrame with columns:
+                - from_idx : int
+                - to_idx : int
+                - from_gene : str
+                - to_gene : str
+                - attention : float (consensus value)
+                - model : str
+
+            If reextract_union=True and return_original_and_reextracted=True:
+                Tuple of (top_edges_df, reextracted_union_df) where:
+                - top_edges_df: Same as above
+                - reextracted_union_df: DataFrame with union edges extracted from all models
+                    Columns: from_gene, to_gene, attention, model
+                - attention_rank : int (if compute_ranks=True)
+                    Integer rank compared to all attention values (rank 1 = highest)
+
+            If reextract_union=True and return_original_and_reextracted=False:
+                Single DataFrame with reextracted union edges (same structure as reextracted_union_df above)
+
+        Examples
+        --------
+        >>> # Get top-1000 consensus edges per model
+        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
+        >>> top_consensus = models.get_consensus_top_attentions(k=1000)
+        >>>
+        >>> # With union re-extraction: Compare how models score same edges
+        >>> top_edges, all_models_on_union = models.get_consensus_top_attentions(
+        ...     k=1000,
+        ...     reextract_union=True,
+        ...     return_original_and_reextracted=True
+        ... )
+        >>>
+        >>> # Just get reextracted union (without original)
+        >>> reextracted = models.get_consensus_top_attentions(
+        ...     k=1000,
+        ...     reextract_union=True,
+        ...     return_original_and_reextracted=False
+        ... )
+        >>>
+        >>> # Analyze: Which edges are in multiple models' top-k?
+        >>> from collections import Counter
+        >>> edge_counts = Counter(
+        ...     zip(top_edges['from_gene'], top_edges['to_gene'])
+        ... )
+        >>> shared_edges = {edge: count for edge, count in edge_counts.items()
+        ...                 if count > 1}
+        >>>
+        >>> # Analyze: How do models differ on the union edges?
+        >>> pivot = all_models_on_union.pivot_table(
+        ...     values='attention',
+        ...     index=['from_gene', 'to_gene'],
+        ...     columns='model'
+        ... )
+        """
+        # Get common genes across all models
+        common_ids = self.get_common_identifiers(verbose=False)
+
+        if verbose:
+            logger.info(
+                f"Computing consensus attention across {len(self.models)} models "
+                f"for {len(common_ids)} common genes..."
+            )
+
+        # Phase 1: Compute consensus for ALL models at once
+        # Returns: Tensor of shape (n_models, n_genes, n_genes)
+        all_consensus = self.get_consensus_attentions(
+            consensus_method=consensus_method,
+            apply_softmax=apply_softmax,
+        )
+
+        # Extract top-k from each model's consensus
+        top_edges_list = []
+
+        for i, model in enumerate(self.models):
+            if verbose:
+                logger.info(f"Extracting top-{k} edges from {model.full_name}...")
+
+            # Extract top-k using existing utility
+            model_top_k = _find_top_k_edges_in_attention_layer(
+                attention=all_consensus[i],
+                k=k,
+                layer_idx=None,  # No layer for consensus
+                gene_ids=common_ids,
+                by_absolute_value=by_absolute_value,
+            )
+            model_top_k[FM_EDGELIST.MODEL] = model.full_name
+
+            top_edges_list.append(model_top_k)
+
+        all_top_edges = pd.concat(top_edges_list, ignore_index=True)
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(all_top_edges)} total edges "
+                f"({k} per model × {len(self.models)} models)"
+            )
+
+        if not reextract_union:
+            if return_original_and_reextracted:
+                logger.warning(
+                    "return_original_and_reextracted=True but reextract_union=False, returning original top-k edges only"
+                )
+
+            return all_top_edges
+
+        # Phase 2: Union re-extraction
+        unique_edges = all_top_edges[
+            [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
+        ].drop_duplicates()
+
+        if verbose:
+            logger.info(
+                f"Re-extracting {len(unique_edges)} unique edges from all models..."
+            )
+
+        # Convert edges to indices ONCE
+        edge_df = _edgelist_to_indices(
+            edge_list=unique_edges,
+            gene_ids=common_ids,
+            verbose=verbose,
+        )
+
+        # Prepare attention tensors and metadata for utility function
+        # REUSE consensus from Phase 1 - no recomputation!
+        attention_tensors = [all_consensus[i] for i in range(len(self.models))]
+        metadata = [{FM_EDGELIST.MODEL: model.full_name} for model in self.models]
+
+        # Use utility to extract edges
+        reextracted_union = _extract_edges_from_attention_tensors(
+            edge_df=edge_df,
+            attention_tensors=attention_tensors,
+            metadata=metadata,
+            compute_ranks=compute_ranks,
+            by_absolute_value=by_absolute_value,
+            device=device,
+            verbose=verbose,
+        )
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(reextracted_union)} total attention values "
+                f"({len(unique_edges)} edges × {len(self.models)} models)"
+            )
+
+        if return_original_and_reextracted:
+            return all_top_edges, reextracted_union
+        else:
+            return reextracted_union
+
     def get_specific_attentions(
         self,
         edge_list: pd.DataFrame,
         apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        by_absolute_value: bool = True,
         verbose: bool = False,
     ) -> pd.DataFrame:
         """
@@ -1462,6 +1741,12 @@ class FoundationModels(BaseModel):
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
             If False, use raw attention scores.
+        compute_ranks : bool, optional
+            If True, compute ranks of attention values relative to the full attention tensor
+            for each model/layer and add them to the output table (default: False)
+        by_absolute_value : bool, optional
+            If True, rank by absolute value when calculating ranks (default: True).
+            Only used if compute_ranks=True.
         verbose : bool, optional
             Whether to print verbose output during computation (default: False)
 
@@ -1479,6 +1764,8 @@ class FoundationModels(BaseModel):
                 Layer index
             - attention : float
                 Attention value for this edge in this model/layer
+            - attention_rank : int (if compute_ranks=True)
+                Integer rank compared to all attention values in the full tensor for this model/layer (rank 1 = highest)
 
         Examples
         --------
@@ -1514,6 +1801,8 @@ class FoundationModels(BaseModel):
                 layer_indices=None,  # Extract from all layers
                 target_ids=common_ids,
                 apply_softmax=apply_softmax,
+                compute_ranks=compute_ranks,
+                by_absolute_value=by_absolute_value,
                 verbose=False,  # Suppress per-layer logging
             )
 
@@ -1542,10 +1831,13 @@ class FoundationModels(BaseModel):
     def get_top_attentions(
         self,
         k: int = 10000,
+        by_absolute_value: bool = True,
+        reextract_union: bool = False,
         apply_softmax: bool = False,
-        reextract_top_edges: bool = False,
+        compute_ranks: bool = False,
+        return_original_and_reextracted: bool = False,
         verbose: bool = False,
-    ) -> pd.DataFrame:
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
         """
         Extract top-k attention edges across all models for common genes.
 
@@ -1558,19 +1850,29 @@ class FoundationModels(BaseModel):
         ----------
         k : int, optional
             Number of top edges to extract per layer per model (default: 10000)
+        by_absolute_value : bool, optional
+            If True, rank edges by absolute attention value (default: True).
+            If False, rank edges by raw attention value.
+        reextract_union: bool, optional
+            If True, take the union of top edges and extract them from every model and layer.
+            If False, extract top edges from each model and layer separately.
         apply_softmax : bool, optional
             If True, use softmax-normalized attention probabilities (default: False).
             If False, use raw attention scores for ranking.
-        reextract_top_edges: bool, optional
-            If True, take the union of top edges and extract them from every model and layer.
-            If False, extract top edges from each model and layer separately.
+        compute_ranks : bool, optional
+            If True, compute ranks of attention values and add them to the output table.
+            Ranks are computed within each model and layer group (default: False)
+        return_original_and_reextracted : bool, optional
+            If True and reextract_union=True, return tuple (original, reextracted).
+            If False and reextract_union=True, return only reextracted DataFrame.
+            Ignored if reextract_union=False (default: False)
         verbose : bool, optional
             Whether to print verbose output during computation (default: False)
 
         Returns
         -------
         pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
-            If reextract_top_edges is False, returns a single DataFrame with columns:
+            If reextract_union is False, returns a single DataFrame with columns:
             - layer : int
                 Layer index where attention was computed
             - from_idx : int
@@ -1585,11 +1887,20 @@ class FoundationModels(BaseModel):
                 Attention value (preserves sign if apply_softmax=False)
             - model : str
                 Model name (e.g., 'scGPT', 'Geneformer')
-            Sorted by model, then layer, then by descending absolute attention value.
+            - attention_rank : int (if compute_ranks=True)
+                Integer rank compared to all attention values within the same model and layer (rank 1 = highest)
+            Sorted by model, then layer, then by descending absolute attention value (if by_absolute_value=True)
+            or descending raw attention value (if by_absolute_value=False).
 
-        If reextract_top_edges is True, returns a tuple of two DataFrames:
-        - The first DataFrame is the same as above.
-        - The second DataFrame is the same structure as the first, but with the attention for each top edge across all models and layers.
+        If reextract_union is True and return_original_and_reextracted is True:
+            Returns a tuple of two DataFrames:
+            - The first DataFrame is the same as above (original top edges).
+            - The second DataFrame has the attention for each top edge across all models and layers.
+                Includes 'attention_rank' column if compute_ranks=True (ranks within each model and layer).
+
+        If reextract_union is True and return_original_and_reextracted is False:
+            Returns a single DataFrame with reextracted union edges (same structure as second DataFrame above).
+                Includes 'attention_rank' column if compute_ranks=True (ranks within each model and layer).
 
         Examples
         --------
@@ -1600,6 +1911,23 @@ class FoundationModels(BaseModel):
         >>> # Compare attention patterns between models
         >>> scgpt_edges = top_edges[top_edges['model'] == 'scGPT']
         >>> geneformer_edges = top_edges[top_edges['model'] == 'Geneformer']
+        >>>
+        >>> # Get both original and reextracted union
+        >>> original, reextracted = models.get_top_attentions(
+        ...     k=1000,
+        ...     reextract_union=True,
+        ...     return_original_and_reextracted=True
+        ... )
+        >>>
+        >>> # Get only reextracted union
+        >>> reextracted = models.get_top_attentions(
+        ...     k=1000,
+        ...     reextract_union=True,
+        ...     return_original_and_reextracted=False
+        ... )
+        >>>
+        >>> # Rank by raw value instead of absolute value
+        >>> top_edges = models.get_top_attentions(k=1000, by_absolute_value=False)
         """
         common_ids = self.get_common_identifiers()
         n_models = len(self.models)
@@ -1615,26 +1943,42 @@ class FoundationModels(BaseModel):
                 k=k,
                 target_ids=common_ids,
                 apply_softmax=apply_softmax,
+                by_absolute_value=by_absolute_value,
+                compute_ranks=compute_ranks,
                 verbose=verbose,
             ).assign(model=model_name)
 
             top_attention_edges.append(model_top_k_attention)
 
         all_top_edges = pd.concat(top_attention_edges, ignore_index=True)
-        if reextract_top_edges:
+
+        if reextract_union:
             logger.info("Re-extracting top edges from every model and layer...")
 
             reextracted_top_edges = self.get_specific_attentions(
-                all_top_edges, apply_softmax=apply_softmax, verbose=verbose
+                all_top_edges,
+                apply_softmax=apply_softmax,
+                compute_ranks=compute_ranks,
+                by_absolute_value=by_absolute_value,
+                verbose=verbose,
             )
-            return all_top_edges, reextracted_top_edges
+
+            if return_original_and_reextracted:
+                return all_top_edges, reextracted_top_edges
+            else:
+                return reextracted_top_edges
         else:
+            if return_original_and_reextracted:
+                logger.warning(
+                    "return_original_and_reextracted=True but reextract_union=False, returning original top-k edges only"
+                )
             return all_top_edges
 
     def get_consensus_attentions(
         self,
-        consensus_method: str = "absolute-argmax",
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
         apply_softmax: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
     ) -> Tensor:
         """
         Compute maximum attention scores across all models for common genes.
@@ -1651,16 +1995,27 @@ class FoundationModels(BaseModel):
             attention scores. The first dimension corresponds to each model in
             self.models, and the last two dimensions represent attention from
             gene i to gene j. Values are raw attention scores (no softmax applied).
+        consensus_method : str, optional
+            Method for aggregating attention across layers to compute consensus.
+            Currently supported:
+            - "absolute-argmax" (default): Find layer with maximum absolute attention
+              and return that value with sign preserved
+            - "max": Find layer with maximum attention value (without taking absolute value)
+              and return that value
+            - "sum": Sum attention values across all layers
         softmax : bool, optional
             If True, apply softmax to the attention scores (default: False).
+        device: str or torch.device, optional
+            Device to perform computation on (default: None to automatically select)
+
 
         Examples
         --------
         >>> models = FoundationModels.load_multiple('/path/to/output', ['scGPT', 'Geneformer'])
-        >>> max_attentions = models.get_max_attentions()
+        >>> consensus_attentions = models.get_consensus_attentions()
         >>> # Compare attention patterns between first two models
-        >>> model1_attn = max_attentions[0]
-        >>> model2_attn = max_attentions[1]
+        >>> model1_attn = consensus_attentions[0]
+        >>> model2_attn = consensus_attentions[1]
         >>> correlation = np.corrcoef(model1_attn.flatten(), model2_attn.flatten())[0, 1]
         """
         common_ids = self.get_common_identifiers()
@@ -1673,12 +2028,13 @@ class FoundationModels(BaseModel):
 
         for i in range(n_models):
             model = self.models[i]
-            logger.info(f"Computing max-attention for {model.full_name}...")
+            logger.info(f"Computing consensus attention for {model.full_name}...")
 
             attention = model.compute_consensus_attention(
                 target_ids=common_ids,
                 consensus_method=consensus_method,
                 apply_softmax=apply_softmax,
+                device=device,
             )
 
             cross_model_attention[i] = attention
@@ -1970,17 +2326,234 @@ def _edgelist_to_indices(
     return edges_in_common
 
 
+def _extract_edges_from_attention_tensor(
+    edge_df: pd.DataFrame,
+    attention: Tensor,
+    from_idx_tensor: Tensor,
+    to_idx_tensor: Tensor,
+    metadata: Optional[Dict[str, Any]] = None,
+    rank_tensor: Optional[Tensor] = None,
+) -> pd.DataFrame:
+    """
+    Extract specific edge values from a single attention tensor.
+
+    Core utility for extracting edge attention values from an attention matrix
+    using pre-computed index tensors. This function performs the actual GPU
+    extraction and DataFrame construction.
+
+    Parameters
+    ----------
+    edge_df : pd.DataFrame
+        Must contain 'from_gene' and 'to_gene' columns.
+        Typically output from _edgelist_to_indices().
+    attention : Tensor
+        Attention matrix of shape (n_genes, n_genes) on device.
+    from_idx_tensor : Tensor
+        Pre-computed source indices tensor on device.
+    to_idx_tensor : Tensor
+        Pre-computed target indices tensor on device.
+    metadata : Dict[str, Any], optional
+        Metadata dict whose keys become DataFrame columns (default: None).
+        Example: {'model': 'scGPT', 'layer': 0}
+    rank_tensor : Tensor, optional
+        Pre-computed rank tensor from compute_tensor_ranks().
+        If provided, adds 'attention_rank' column with integer ranks (rank 1 = highest).
+        Uses fast O(n_edges) indexing (default: None)
+
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with columns:
+        - from_gene : str
+        - to_gene : str
+        - attention : float
+        - attention_rank : int (if rank_tensor is provided)
+            Integer rank compared to all attention values (rank 1 = highest)
+        - <metadata columns> : any keys from metadata dict
+
+    Examples
+    --------
+    >>> # Extract edges from a single attention tensor
+    >>> from_idx = torch.from_numpy(edge_df['from_idx'].values).long().to(device)
+    >>> to_idx = torch.from_numpy(edge_df['to_idx'].values).long().to(device)
+    >>> result = _extract_edges_from_attention_tensor(
+    ...     edge_df, attention, from_idx, to_idx, {'layer': 0}
+    ... )
+    >>>
+    >>> # Extract with ranks: pre-compute rank tensor once, then use for multiple extractions
+    >>> rank_tensor = compute_tensor_ranks(attention)
+    >>> result = _extract_edges_from_attention_tensor(
+    ...     edge_df, attention, from_idx, to_idx, {'layer': 0},
+    ...     rank_tensor=rank_tensor
+    ... )
+    >>> # Filter to top 100 strongest relationships
+    >>> top_100 = result[result['attention_rank'] <= 100]
+    """
+    # Extract edges ON GPU using pre-computed indices
+    edge_attentions = attention[from_idx_tensor, to_idx_tensor]
+
+    # Move only the extracted values to CPU
+    result_df = edge_df[[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]].copy()
+    result_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
+
+    # Compute ranks if rank_tensor is provided
+    if rank_tensor is not None:
+        ranks = rank_tensor[from_idx_tensor, to_idx_tensor].cpu().numpy()
+        result_df[FM_EDGELIST.ATTENTION_RANK] = ranks
+
+    # Add metadata columns
+    if metadata:
+        for key, value in metadata.items():
+            result_df[key] = value
+
+    return result_df
+
+
+def _extract_edges_from_attention_tensors(
+    edge_df: pd.DataFrame,
+    attention_tensors: List[Tensor],
+    metadata: List[Dict[str, Any]],
+    delete_as_processed: bool = False,
+    compute_ranks: bool = False,
+    by_absolute_value: bool = True,
+    device: Optional[Union[str, torch.device]] = None,
+    verbose: bool = False,
+) -> pd.DataFrame:
+    """
+    Extract specific edge values from multiple attention tensors.
+
+    Generic utility for extracting edges from a sequence of attention matrices,
+    whether they represent different layers, models, or other dimensions.
+
+    Parameters
+    ----------
+    edge_df : pd.DataFrame
+        Must contain 'from_idx', 'to_idx', 'from_gene', 'to_gene' columns.
+        Typically output from _edgelist_to_indices().
+    attention_tensors : List[Tensor]
+        List of attention matrices, each of shape (n_genes, n_genes).
+        All tensors must have the same shape.
+    metadata : List[Dict[str, Any]]
+        Metadata for each tensor. Must have same length as attention_tensors.
+        Each dict's keys become DataFrame columns.
+        Example: [{'model': 'scGPT', 'layer': 0}, ...]
+    delete_as_processed : bool, optional
+        If True, delete each attention tensor from the list immediately after processing
+        to free GPU memory. Useful when processing many large tensors (default: True)
+    compute_ranks : bool, optional
+        If True, compute ranks of attention values and add them to the output table.
+    by_absolute_value : bool, optional
+        If True, rank by absolute value when calculating ranks (default: True).
+        Only used if compute_ranks=True.
+    device : str or torch.device, optional
+        Device for computation (default: None to auto-select)
+    verbose : bool, optional
+        Print progress information (default: False)
+
+    Returns
+    -------
+    pd.DataFrame
+        Combined results with columns:
+        - from_gene : str
+        - to_gene : str
+        - attention : float
+        - <metadata columns> : any keys from metadata dicts
+
+    Raises
+    ------
+    ValueError
+        If attention_tensors and metadata have different lengths
+
+    Examples
+    --------
+    >>> # Extract from multiple layers
+    >>> attention_tensors = [layer0_attn, layer1_attn, layer2_attn]
+    >>> metadata = [{'layer': 0}, {'layer': 1}, {'layer': 2}]
+    >>> results = _extract_edges_from_attention_tensors(
+    ...     edge_df, attention_tensors, metadata
+    ... )
+
+    >>> # Extract from multiple models
+    >>> attention_tensors = [model1_consensus, model2_consensus]
+    >>> metadata = [{'model': 'scGPT'}, {'model': 'scPRINT'}]
+    >>> results = _extract_edges_from_attention_tensors(
+    ...     edge_df, attention_tensors, metadata
+    ... )
+    """
+    if len(attention_tensors) != len(metadata):
+        raise ValueError(
+            f"attention_tensors and metadata must have same length, "
+            f"got {len(attention_tensors)} and {len(metadata)}"
+        )
+
+    device = ensure_device(device, allow_autoselect=True)
+    results = []
+
+    with memory_manager(device):
+        # Create index tensors ONCE - stays on device for all iterations
+        from_idx_tensor = (
+            torch.from_numpy(edge_df[FM_EDGELIST.FROM_IDX].values).long().to(device)
+        )
+        to_idx_tensor = (
+            torch.from_numpy(edge_df[FM_EDGELIST.TO_IDX].values).long().to(device)
+        )
+
+        # Iterate backwards to allow safe deletion from list while iterating
+        # When delete_as_processed=False, this is equivalent to forward iteration
+        for i in range(len(attention_tensors) - 1, -1, -1):
+            attention = attention_tensors[i].to(device).clone()
+            meta = metadata[i]
+
+            if verbose:
+                meta_str = ", ".join(f"{k}={v}" for k, v in meta.items())
+                logger.info(
+                    f"Extracting edges from tensor {len(attention_tensors) - i}/{len(attention_tensors)} "
+                    f"({meta_str})..."
+                )
+
+            rank_tensor = None
+            if compute_ranks:
+                rank_tensor = compute_tensor_ranks(
+                    attention, by_absolute_value=by_absolute_value
+                )
+
+            if delete_as_processed:
+                if verbose:
+                    logger.info(f"Deleting attention tensor {i} from list...")
+                del attention_tensors[i]
+
+            # Extract edges using utility function
+            result_df = _extract_edges_from_attention_tensor(
+                edge_df=edge_df,
+                attention=attention,
+                from_idx_tensor=from_idx_tensor,
+                to_idx_tensor=to_idx_tensor,
+                metadata=meta,
+                rank_tensor=rank_tensor,
+            )
+
+            # Prepend to maintain order (since we're iterating backwards)
+            results.insert(0, result_df)
+
+            # Cleanup
+            cleanup_tensors(attention)
+
+    return pd.concat(results, ignore_index=True)
+
+
 def _find_top_k_edges_in_attention_layer(
     attention: Tensor,
     k: int,
     layer_idx: Optional[int] = None,
     gene_ids: Optional[List[str]] = None,
+    by_absolute_value: bool = True,
 ) -> pd.DataFrame:
     """
-    Extract top-k edges from an attention matrix by absolute value.
+    Extract top-k edges from an attention matrix.
 
-    Identifies the k gene pairs with highest absolute attention values
-    and returns them as a DataFrame with gene indices and identifiers.
+    Identifies the k gene pairs with highest attention values (by absolute value
+    or raw value depending on by_absolute_value parameter) and returns them as a
+    DataFrame with gene indices and identifiers.
 
     Parameters
     ----------
@@ -1994,6 +2567,9 @@ def _find_top_k_edges_in_attention_layer(
         Gene identifiers corresponding to attention matrix rows/cols.
         If provided, includes 'from_gene' and 'to_gene' columns in output.
         (default: None)
+    by_absolute_value : bool, optional
+        If True, rank edges by absolute attention value (default: True).
+        If False, rank edges by raw attention value.
 
     Returns
     -------
@@ -2011,7 +2587,8 @@ def _find_top_k_edges_in_attention_layer(
             Target gene identifier
         - attention : float
             Attention value (preserves sign)
-        Sorted by descending absolute attention value.
+        Sorted by descending absolute attention value (if by_absolute_value=True)
+        or descending raw attention value (if by_absolute_value=False).
 
     Examples
     --------
@@ -2021,25 +2598,34 @@ def _find_top_k_edges_in_attention_layer(
     >>>
     >>> # Without gene IDs
     >>> top_edges = find_top_k_edges(attention, k=100)
+    >>>
+    >>> # Rank by raw value instead of absolute value
+    >>> top_edges = find_top_k_edges(attention, k=100, by_absolute_value=False)
     """
 
+    # Get device from attention tensor for memory management
+    cleanup_device = attention.device
+
     # Extract top-k indices and values (stays on device)
-    from_indices, to_indices, top_values = find_top_k(
-        attention,
-        k=k,
-        by_absolute_value=True,
-    )
+    # Use memory_manager to ensure intermediate tensors are cleaned up
+    with memory_manager(cleanup_device):
+        from_indices, to_indices, top_values = find_top_k(
+            attention,
+            k=k,
+            by_absolute_value=by_absolute_value,
+        )
 
-    # Build base DataFrame with indices and attention
-    df = pd.DataFrame(
-        {
-            FM_EDGELIST.FROM_IDX: from_indices.cpu().numpy(),
-            FM_EDGELIST.TO_IDX: to_indices.cpu().numpy(),
-            FM_EDGELIST.ATTENTION: top_values.cpu().numpy(),
-        }
-    )
+        # Build base DataFrame with indices and attention
+        df = pd.DataFrame(
+            {
+                FM_EDGELIST.FROM_IDX: from_indices.cpu().numpy(),
+                FM_EDGELIST.TO_IDX: to_indices.cpu().numpy(),
+                FM_EDGELIST.ATTENTION: top_values.cpu().numpy(),
+            }
+        )
 
-    del from_indices, to_indices, top_values
+        # Clean up GPU tensors immediately
+        del from_indices, to_indices, top_values
 
     # Add layer if provided
     if layer_idx is not None:

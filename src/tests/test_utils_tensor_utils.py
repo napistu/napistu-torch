@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import torch
 
 from napistu_torch.ml.constants import DEVICE
@@ -10,6 +11,8 @@ from napistu_torch.utils.tensor_utils import (
     compute_max_abs_over_z,
     compute_max_over_z,
     compute_spearman_correlation_torch,
+    compute_tensor_ranks,
+    compute_tensor_ranks_for_indices,
     find_top_k,
 )
 
@@ -287,3 +290,128 @@ def test_find_top_k_with_ties():
     assert set(found_positions_with_5) == set(
         positions_with_5
     ), "Did not capture all unique positions with value 5.0"
+
+
+@pytest.mark.parametrize("by_absolute_value", [True, False])
+def test_compute_tensor_ranks(by_absolute_value):
+    """Test rank computation with both absolute value and raw value ranking."""
+    if by_absolute_value:
+        # Matrix with negative values to test absolute value ranking
+        tensor = torch.tensor([[-5.0, 2.0, -8.0], [1.0, 9.0, -3.0], [4.0, -7.0, 6.0]])
+        # Expected: highest absolute value is 9.0 (rank 1), then 8.0 (rank 2), then 7.0 (rank 3)
+        expected_rank_1_pos = (1, 1)  # 9.0
+        expected_rank_2_pos = (0, 2)  # -8.0 (abs=8.0)
+        expected_rank_3_pos = (2, 1)  # -7.0 (abs=7.0)
+    else:
+        # Simple 3x3 matrix with known positive values
+        tensor = torch.tensor([[5.0, 2.0, 8.0], [1.0, 9.0, 3.0], [4.0, 7.0, 6.0]])
+        # Expected: highest value is 9.0 (rank 1), then 8.0 (rank 2), lowest is 1.0 (rank 9)
+        expected_rank_1_pos = (1, 1)  # 9.0
+        expected_rank_2_pos = (0, 2)  # 8.0
+        expected_rank_3_pos = None  # Not needed for raw value test
+
+    # Compute ranks
+    ranks = compute_tensor_ranks(tensor, by_absolute_value=by_absolute_value)
+
+    # Verify shape and dtype
+    assert ranks.shape == tensor.shape
+    assert ranks.dtype == torch.int64
+
+    # Check expected rankings
+    assert (
+        ranks[expected_rank_1_pos] == 1
+    ), f"Expected rank 1 at {expected_rank_1_pos}, got {ranks[expected_rank_1_pos]}"
+    assert (
+        ranks[expected_rank_2_pos] == 2
+    ), f"Expected rank 2 at {expected_rank_2_pos}, got {ranks[expected_rank_2_pos]}"
+
+    if not by_absolute_value:
+        # For raw value, also check lowest value
+        assert ranks[1, 0] == 9, f"Expected rank 9 for value 1.0, got {ranks[1, 0]}"
+    else:
+        # For absolute value, check third highest
+        assert (
+            ranks[expected_rank_3_pos] == 3
+        ), f"Expected rank 3 at {expected_rank_3_pos}, got {ranks[expected_rank_3_pos]}"
+
+    # Verify all ranks are unique and cover 1 to numel
+    unique_ranks = torch.unique(ranks)
+    assert len(unique_ranks) == tensor.numel()
+    assert torch.all(
+        unique_ranks == torch.arange(1, tensor.numel() + 1, dtype=torch.int64)
+    )
+
+    # Test indexing works
+    from_idx = torch.tensor([0, 1, 2])
+    to_idx = torch.tensor([0, 1, 2])
+    extracted_ranks = ranks[from_idx, to_idx]
+    assert extracted_ranks.shape == (3,)
+    assert torch.all(extracted_ranks >= 1)
+    assert torch.all(extracted_ranks <= tensor.numel())
+
+    # Test shape preservation with various shapes
+    shapes = [(10, 10), (5, 20), (100,), (3, 4, 5)]
+    for shape in shapes:
+        test_tensor = torch.randn(*shape)
+        test_ranks = compute_tensor_ranks(
+            test_tensor, by_absolute_value=by_absolute_value
+        )
+        assert test_ranks.shape == shape, f"Shape mismatch for input shape {shape}"
+        assert test_ranks.dtype == torch.int64
+
+
+def test_compute_tensor_ranks_for_indices():
+    """Test that compute_tensor_ranks_for_indices matches compute_tensor_ranks for same indices."""
+    # Test 2D tensor
+    tensor_2d = torch.randn(50, 50)
+
+    # Create random indices
+    n_indices = 100
+    row_indices = torch.randint(0, 50, (n_indices,))
+    col_indices = torch.randint(0, 50, (n_indices,))
+
+    # Compute ranks using full matrix method
+    full_ranks = compute_tensor_ranks(tensor_2d, by_absolute_value=True)
+    extracted_ranks = full_ranks[row_indices, col_indices]
+
+    # Compute ranks using indices-only method
+    indices_ranks = compute_tensor_ranks_for_indices(
+        tensor_2d, (row_indices, col_indices), by_absolute_value=True
+    )
+
+    # Results should match exactly
+    assert torch.allclose(
+        extracted_ranks.float(), indices_ranks.float()
+    ), "Ranks from compute_tensor_ranks_for_indices don't match compute_tensor_ranks"
+
+    # Test with by_absolute_value=False
+    full_ranks_raw = compute_tensor_ranks(tensor_2d, by_absolute_value=False)
+    extracted_ranks_raw = full_ranks_raw[row_indices, col_indices]
+    indices_ranks_raw = compute_tensor_ranks_for_indices(
+        tensor_2d, (row_indices, col_indices), by_absolute_value=False
+    )
+    assert torch.allclose(
+        extracted_ranks_raw.float(), indices_ranks_raw.float()
+    ), "Ranks with by_absolute_value=False don't match"
+
+    # Test 1D tensor
+    tensor_1d = torch.randn(100)
+    indices_1d = torch.randint(0, 100, (50,))
+
+    full_ranks_1d = compute_tensor_ranks(tensor_1d, by_absolute_value=True)
+    extracted_ranks_1d = full_ranks_1d[indices_1d]
+    indices_ranks_1d = compute_tensor_ranks_for_indices(
+        tensor_1d, (indices_1d,), by_absolute_value=True
+    )
+    assert torch.allclose(
+        extracted_ranks_1d.float(), indices_ranks_1d.float()
+    ), "1D tensor ranks don't match"
+
+    # Test edge cases: single index, all indices, duplicate indices
+    single_row = torch.tensor([10])
+    single_col = torch.tensor([20])
+    single_rank_full = compute_tensor_ranks(tensor_2d, by_absolute_value=True)[10, 20]
+    single_rank_indices = compute_tensor_ranks_for_indices(
+        tensor_2d, (single_row, single_col), by_absolute_value=True
+    )
+    assert single_rank_full == single_rank_indices[0], "Single index rank doesn't match"
