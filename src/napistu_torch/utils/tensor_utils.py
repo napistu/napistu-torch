@@ -1,4 +1,29 @@
-"""Torch-accelerated versions of matrix operations."""
+"""
+Torch-accelerated versions of matrix operations.
+
+Public Functions
+----------------
+compute_confusion_matrix(predictions, true_labels, normalize=None)
+    Compute confusion matrix from prediction scores and true labels.
+compute_correlation_matrix(data, method='spearman')
+    Compute pairwise correlation matrix between columns of a data matrix.
+compute_cosine_distances_torch(tensor_like, device=None)
+    Compute cosine distance matrix using PyTorch with proper memory management.
+compute_effective_dimensionality(vectors)
+    Compute effective dimensionality (inverse participation ratio) for each vector.
+compute_max_abs_over_z(attention_3d, return_indices=False)
+    Find maximum absolute attention values across layers (z dimension), preserving sign.
+compute_max_over_z(attention_3d, return_indices=False)
+    Find maximum attention values across layers (z dimension) without taking absolute value.
+compute_spearman_correlation_torch(x, y, device=None)
+    Compute Spearman correlation using PyTorch with proper memory management.
+find_top_k(tensor, k, by_absolute_value=True)
+    Extract top-k values and indices from a 2D tensor.
+compute_tensor_ranks(tensor, by_absolute_value=True)
+    Compute rank matrix for a tensor.
+validate_tensor_for_nan_inf(tensor, name)
+    Validate tensor for NaN/Inf values and raise informative error if found.
+"""
 
 from typing import Optional, Tuple, Union
 
@@ -10,7 +35,11 @@ from torch import Tensor
 from torch import device as torch_device
 
 from napistu_torch.utils.constants import CORRELATION_METHODS
-from napistu_torch.utils.torch_utils import ensure_device, memory_manager
+from napistu_torch.utils.torch_utils import (
+    cleanup_tensors,
+    ensure_device,
+    memory_manager,
+)
 
 
 def compute_confusion_matrix(
@@ -504,9 +533,172 @@ def find_top_k(
     sorted_col_indices = col_indices[sort_idx]
     sorted_values = values[sort_idx]
 
-    del row_indices, col_indices, values, sort_idx
+    cleanup_tensors(row_indices, col_indices, values, sort_idx)
 
     return sorted_row_indices, sorted_col_indices, sorted_values
+
+
+def compute_tensor_ranks(
+    tensor: Tensor,
+    by_absolute_value: bool = True,
+) -> Tensor:
+    """
+    Compute rank matrix for a tensor.
+
+    Converts a tensor to a rank matrix where each value is replaced by its
+    integer rank (1 = highest, 2 = second highest, etc.). This allows O(1) rank
+    lookup via indexing instead of O(log n) searchsorted per query.
+
+    Parameters
+    ----------
+    tensor : Tensor
+        Tensor of any shape to compute ranks for
+    by_absolute_value : bool, optional
+        If True, rank by absolute value (default: True).
+        If False, rank by raw value.
+
+    Returns
+    -------
+    Tensor
+        Rank tensor of same shape as input, dtype=int64.
+        Rank 1 = highest value, rank 2 = second highest, etc.
+
+    Examples
+    --------
+    >>> # Compute rank matrix for attention tensor
+    >>> attention = torch.randn(100, 100)
+    >>> rank_matrix = compute_tensor_ranks(attention)
+    >>> # Extract ranks via indexing (very fast!)
+    >>> edge_ranks = rank_matrix[from_idx, to_idx]
+    >>>
+    >>> # Rank by raw value instead of absolute value
+    >>> rank_matrix = compute_tensor_ranks(attention, by_absolute_value=False)
+    """
+    device = tensor.device
+
+    # Flatten tensor
+    if by_absolute_value:
+        values = torch.abs(tensor).flatten()
+    else:
+        values = tensor.flatten()
+
+    # Store metadata before freeing values
+    n_elements = values.shape[0]
+
+    # Get argsort indices (indices that would sort values in descending order)
+    sorted_indices = torch.argsort(values, descending=True)
+
+    # Free values immediately - no longer needed after argsort
+    cleanup_tensors(values)
+
+    # Create rank array: rank[i] = position of value[i] in sorted order
+    # We need to invert the argsort mapping
+    ranks_flat = torch.zeros(n_elements, dtype=torch.int64, device=device)
+    ranks_flat[sorted_indices] = torch.arange(
+        1, n_elements + 1, dtype=torch.int64, device=device
+    )
+
+    # Free sorted_indices immediately - no longer needed after indexing
+    cleanup_tensors(sorted_indices)
+
+    # Reshape back to original shape (creates view if possible)
+    rank_tensor = ranks_flat.reshape(tensor.shape)
+
+    # Free ranks_flat (rank_tensor may be a view or copy depending on contiguity)
+    cleanup_tensors(ranks_flat)
+
+    return rank_tensor
+
+
+def compute_tensor_ranks_for_indices(
+    tensor: Tensor,
+    indices: tuple[Tensor, ...],
+    by_absolute_value: bool = True,
+) -> Tensor:
+    """
+    Compute ranks for specific indices in a tensor without building full rank matrix.
+
+    This is a memory-efficient alternative to `compute_tensor_ranks` when you only
+    need ranks for a subset of indices. Instead of building a full rank matrix, it
+    computes ranks on-the-fly using binary search on a sorted array.
+
+    Parameters
+    ----------
+    tensor : Tensor
+        Tensor of any shape to compute ranks for
+    indices : tuple[Tensor, ...]
+        Tuple of index tensors for multi-dimensional indexing.
+        For 2D tensor, use (row_indices, col_indices).
+        Each tensor should be 1D and have the same length.
+    by_absolute_value : bool, optional
+        If True, rank by absolute value (default: True).
+        If False, rank by raw value.
+
+    Returns
+    -------
+    Tensor
+        1D tensor of ranks (dtype=int64) for the specified indices.
+        Rank 1 = highest value, rank 2 = second highest, etc.
+        Length equals the length of the index tensors.
+
+    Examples
+    --------
+    >>> # Compute ranks for specific edges only (memory-efficient!)
+    >>> attention = torch.randn(100, 100)
+    >>> from_idx = torch.tensor([0, 5, 10])
+    >>> to_idx = torch.tensor([1, 6, 11])
+    >>> edge_ranks = compute_tensor_ranks_for_indices(
+    ...     attention, (from_idx, to_idx)
+    ... )
+    >>> # edge_ranks[i] = rank of attention[from_idx[i], to_idx[i]]
+    """
+
+    # Flatten tensor and get values at indices
+    if by_absolute_value:
+        values = torch.abs(tensor).flatten()
+    else:
+        values = tensor.flatten()
+
+    # Convert multi-dimensional indices to flat indices
+    # For 2D: flat_idx = row * n_cols + col
+    if len(indices) == 2:
+        row_idx, col_idx = indices
+        n_cols = tensor.shape[1]
+        flat_indices = row_idx * n_cols + col_idx
+    elif len(indices) == 1:
+        flat_indices = indices[0]
+    else:
+        # For higher dimensions, use ravel_multi_index equivalent
+        # For now, support up to 2D explicitly, raise error for higher
+        raise NotImplementedError(
+            f"Multi-dimensional indexing with {len(indices)} dimensions not yet supported. "
+            "Currently supports 1D and 2D tensors."
+        )
+
+    # Get values at the specified indices
+    query_values = values[flat_indices]
+
+    # Sort all values in descending order for searchsorted
+    sorted_values, _ = torch.sort(values, descending=True)
+
+    # Free original values array
+    cleanup_tensors(values)
+
+    # Use searchsorted to find rank positions
+    # sorted_values is descending: [10, 8, 5, 3, 1] where rank 1 = highest (10)
+    # For query value 5, we want rank 3 (it's the 3rd highest)
+    # searchsorted assumes ascending order, so flip to ascending: [1, 3, 5, 8, 10]
+    # Find rightmost insertion point: searchsorted([1,3,5,8,10], 5, right=True) = 3
+    # Convert to descending position: len - insertion_point = 5 - 3 = 2
+    # Rank = descending_position + 1 = 2 + 1 = 3 ✓
+    sorted_values_asc = torch.flip(sorted_values, dims=[0])
+    insertion_points = torch.searchsorted(sorted_values_asc, query_values, right=True)
+    ranks = len(sorted_values) - insertion_points + 1
+
+    # Free intermediate tensors
+    cleanup_tensors(sorted_values, sorted_values_asc, insertion_points)
+
+    return ranks
 
 
 def validate_tensor_for_nan_inf(

@@ -251,6 +251,7 @@ FM_EDGELIST = SimpleNamespace(
     TO_IDX="to_idx",
     LAYER="layer",
     ATTENTION="attention",
+    ATTENTION_RANK="attention_rank",
     MODEL="model",
 )
 
