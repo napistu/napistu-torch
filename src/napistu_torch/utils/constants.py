@@ -40,3 +40,22 @@ CORRELATION_METHODS = SimpleNamespace(
     SPEARMAN="spearman",
     PEARSON="pearson",
 )
+
+STATISTICAL_TESTS = SimpleNamespace(
+    WILCOXON_RANKSUM="wilcoxon",
+    ONE_SAMPLE_TTEST="ttest_one_sample",
+)
+
+RANK_SHIFT_TESTS = {
+    STATISTICAL_TESTS.WILCOXON_RANKSUM,
+    STATISTICAL_TESTS.ONE_SAMPLE_TTEST,
+}
+
+RANK_SHIFT_SUMMARIES = SimpleNamespace(
+    MEAN_QUANTILE="mean_quantile",
+    MEDIAN_QUANTILE="median_quantile",
+    MIN_QUANTILE="min_quantile",
+    MAX_QUANTILE="max_quantile",
+    STATISTIC="statistic",
+    P_VALUE="p_value",
+)

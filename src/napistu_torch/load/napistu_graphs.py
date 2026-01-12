@@ -1,4 +1,5 @@
-"""NapistuGraph to NapistuData conversion utilities.
+"""
+NapistuGraph to NapistuData conversion utilities.
 
 This module provides functions for converting NapistuGraph objects to NapistuData
 objects with various configurations and masking strategies.
