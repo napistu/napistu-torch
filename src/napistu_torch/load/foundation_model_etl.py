@@ -11,6 +11,8 @@ process_scfoundation:
     Process a scFoundation model and save the results.
 process_scgpt:
     Process a scGPT model and save the results.
+process_scprint:
+    Process a scPRINT model and save the results.
 """
 
 import json
@@ -38,6 +40,7 @@ from napistu_torch.load.foundation_models import (
     FoundationModel,
     FoundationModelWeights,
 )
+from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.optional import (
     require_bionty,
     require_modelgenerator,
@@ -46,6 +49,7 @@ from napistu_torch.utils.optional import (
     require_scprint,
     require_torchtext,
 )
+from napistu_torch.utils.torch_utils import select_device
 
 # Set up warnings for scGPT
 os.environ["KMP_WARNINGS"] = "off"
@@ -159,7 +163,7 @@ def process_scfoundation(
     checkpoint_path : str, optional
       Path to local checkpoint. If None, downloads from HuggingFace.
     output_prefix : str, optional
-      Prefix for output files (default: FOUNDATION_MODEL_NAMES.SCFOUNDATION)
+      Prefix for output files (default: "scFoundation")
     cache_dir : str, optional
       Cache directory for HuggingFace downloads
 
@@ -363,41 +367,233 @@ def process_scprint(
 # ============================================================================
 
 
-def _split_qkv_weights(
-    qkv_weight: np.ndarray, embed_dim: int
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Split combined QKV weight matrix into separate Q, K, V matrices.
+@require_modelgenerator
+def _aidocell_extract_attention_weights(model: Any) -> List[AttentionLayer]:
+    """Extract core attention weights (Q, K, V, O) from all layers.
 
     Parameters
     ----------
-    qkv_weight : np.ndarray
-      Combined QKV weight matrix of shape (3 * embed_dim, embed_dim)
-    embed_dim : int
-      Embedding dimension
+    model : Any
+      The AIDOCell model
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-      Tuple of (W_q, W_k, W_v) matrices, each of shape (embed_dim, embed_dim)
+    List[AttentionLayer]
+      List of AttentionLayer instances
+    """
+    attention_layers = []
+    encoder = model.encoder
+    transformer_layers = encoder.encoder.layer
+    n_layers = model.get_num_layer()
+
+    for layer_idx in range(n_layers):
+        layer = transformer_layers[layer_idx]
+        attention_self = layer.attention.self
+        attention_output = layer.attention.output
+
+        attention_layers.append(
+            AttentionLayer(
+                layer_idx=layer_idx,
+                W_q=attention_self.query.weight.detach().cpu().numpy(),
+                W_k=attention_self.key.weight.detach().cpu().numpy(),
+                W_v=attention_self.value.weight.detach().cpu().numpy(),
+                W_o=attention_output.dense.weight.detach().cpu().numpy(),
+            )
+        )
+
+    return attention_layers
+
+
+@require_modelgenerator
+def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
+    """Extract model weights in the standardized format.
+
+    Parameters
+    ----------
+    model : Any
+      The AIDOCell model
+
+    Returns
+    -------
+    FoundationModelWeights
+      FoundationModelWeights instance containing gene_embedding and attention_layers
+    """
+    # Extract gene embeddings
+    encoder = model.encoder
+    n_genes = len(_aidocell_load_gene_annotations())
+
+    with torch.no_grad():
+        gene_positions = torch.arange(n_genes)
+        gene_embedding = encoder.position_embedding(gene_positions).cpu().numpy()
+
+    # Extract attention weights as AttentionLayer instances
+    attention_layers = _aidocell_extract_attention_weights(model)
+
+    return FoundationModelWeights(
+        gene_embedding=gene_embedding, attention_layers=attention_layers
+    )
+
+
+@require_modelgenerator
+def _aidocell_format_metadata(model: Any, model_class_name: str) -> Dict:
+    """Extract model architecture metadata.
+
+    Parameters
+    ----------
+    model : Any
+      The AIDOCell model
+    model_class_name : str
+      Name of the model class
+
+    Returns
+    -------
+    Dict
+      Dictionary with model metadata
+    """
+    encoder = model.encoder
+    gene_annotations = _aidocell_load_gene_annotations()
+    n_genes = len(gene_annotations)
+
+    # Get vocabulary as list of gene symbols (AIDOCell doesn't have special tokens)
+    vocab_list = gene_annotations[FM_DEFS.VOCAB_NAME].tolist()
+
+    return _format_base_metadata(
+        model_name=AIDOCELL_DEFS.MODEL_NAME,
+        n_genes=n_genes,
+        n_vocab=n_genes,  # Same as n_genes for AIDOCell (no special tokens)
+        vocab_list=vocab_list,
+        embed_dim=int(model.get_embedding_size()),
+        n_layers=int(model.get_num_layer()),
+        n_heads=int(encoder.config.num_attention_heads),
+        model_variant=model_class_name,
+        # Additional AIDOCell-specific metadata
+        **{AIDOCELL_DEFS.HIDDEN_DIM: int(encoder.config.hidden_size)},
+    )
+
+
+@require_modelgenerator
+def _aidocell_get_backbone(class_name: str) -> Any:
+    """Get AIDOCell backbone class by name.
+
+    Parameters
+    ----------
+    class_name : str
+      AIDOCell class name (e.g., "aido_cell_3m", "aido_cell_10m", "aido_cell_100m")
+
+    Returns
+    -------
+    Any
+      The AIDOCell backbone class
 
     Examples
     --------
-    >>> qkv = np.random.randn(768, 256)  # 3*256 = 768
-    >>> w_q, w_k, w_v = _split_qkv_weights(qkv, embed_dim=256)
-    >>> assert w_q.shape == (256, 256)
+    >>> backbone = _aidocell_get_backbone("aido_cell_3m")
+    >>> model = backbone(...)
     """
-    if qkv_weight.shape[0] != 3 * embed_dim:
+    from modelgenerator.backbones import (
+        aido_cell_3m,
+        aido_cell_10m,
+        aido_cell_100m,
+    )
+
+    backbone_map = {
+        AIDOCELL_CLASSES.THREE_M: aido_cell_3m,
+        AIDOCELL_CLASSES.TEN_M: aido_cell_10m,
+        AIDOCELL_CLASSES.ONE_HUNDRED_M: aido_cell_100m,
+    }
+
+    if class_name not in backbone_map:
         raise ValueError(
-            f"Expected qkv_weight.shape[0] to be 3*embed_dim ({3*embed_dim}), "
-            f"but got {qkv_weight.shape[0]}"
+            f"Unknown AIDOCell class name: {class_name}. "
+            f"Must be one of: {list(backbone_map.keys())}"
         )
 
-    w_q = qkv_weight[:embed_dim, :]
-    w_k = qkv_weight[embed_dim : 2 * embed_dim, :]
-    w_v = qkv_weight[2 * embed_dim :, :]
+    return backbone_map[class_name]
 
-    return w_q, w_k, w_v
+
+@require_modelgenerator
+def _aidocell_load_gene_annotations() -> pd.DataFrame:
+    """Load gene annotations from AIDOCell model.
+
+    This is a flat file which is bundled with the package
+
+    Returns
+    -------
+    pd.DataFrame
+      DataFrame with gene annotations
+    """
+    import modelgenerator.cell.utils as cell_utils
+
+    load_base = os.path.dirname(os.path.abspath(cell_utils.__file__))
+    gene_file = os.path.join(load_base, AIDOCELL_DEFS.GENE_FILE)
+
+    # Load gene symbols
+    gene_symbols = pd.read_csv(gene_file, sep="\t")["gene_name"].values
+
+    # Build the mapping from symbols to Ensembl IDs
+    gene_map = cell_utils.build_map(gene_symbols)
+
+    # Create the mapping table
+    gene_table = pd.DataFrame(
+        {
+            FM_DEFS.VOCAB_NAME: gene_symbols,
+            ONTOLOGIES.SYMBOL: gene_symbols,
+            ONTOLOGIES.ENSEMBL_GENE: [
+                gene_map.get(x, f"{x}_unknown_ensg") for x in gene_symbols
+            ],
+        }
+    )
+
+    return gene_table
+
+
+@require_modelgenerator
+def _aidocell_load_model(model_class: Any) -> Any:
+    """Load AIDOCell model in eval mode.
+
+    Parameters
+    ----------
+    model_class : Any
+      AIDOCell model class to load
+
+    Returns
+    -------
+    Any
+      The AIDOCell model in eval mode
+    """
+    model = model_class(
+        legacy_adapter_type=None, default_config=None, from_scratch=False
+    )
+    model.eval()
+    return model
+
+
+@require_modelgenerator
+def _aidocell_load_model_full(model_class: Any) -> Tuple[Any, pd.DataFrame, Dict]:
+    """Load the AIDOCell model and return model, gene annotations, and metadata.
+
+    Parameters
+    ----------
+    model_class : Any
+      AIDOCell model class to load
+
+    Returns
+    -------
+    Tuple[Any, pd.DataFrame, Dict]
+      Tuple of (model, gene_annotations, model_metadata)
+    """
+    logger.info("Loading AIDOCell model")
+    model = _aidocell_load_model(model_class)
+
+    logger.info("Loading gene annotations")
+    gene_annotations = _aidocell_load_gene_annotations()
+
+    logger.info("Formatting model metadata")
+    model_metadata = _aidocell_format_metadata(
+        model, model_class_name=model_class.__name__
+    )
+
+    return model, gene_annotations, model_metadata
 
 
 def _create_and_save_foundation_model(
@@ -443,71 +639,6 @@ def _create_and_save_foundation_model(
     foundation_model.save(output_dir, file_prefix)
     logger.info("Successfully saved all results!")
     return foundation_model
-
-
-def _format_base_metadata(
-    model_name: str,
-    n_genes: int,
-    n_vocab: int,
-    vocab_list: List[str],
-    embed_dim: int,
-    n_layers: int,
-    n_heads: int,
-    model_variant: Optional[str] = None,
-    **extra_metadata,
-) -> Dict:
-    """
-    Format base model metadata dictionary with standard keys.
-
-    Parameters
-    ----------
-    model_name : str
-      Model name (e.g., "scGPT", "scFoundation")
-    n_genes : int
-      Number of genes
-    n_vocab : int
-      Vocabulary size (may include special tokens)
-    vocab_list : List[str]
-      Ordered vocabulary list
-    embed_dim : int
-      Embedding dimension
-    n_layers : int
-      Number of transformer layers
-    n_heads : int
-      Number of attention heads
-    model_variant : str, optional
-      Model variant identifier (e.g., "small", "medium")
-    **extra_metadata : Dict
-      Additional metadata to include
-
-    Returns
-    -------
-    Dict
-      Metadata dictionary with standard FM_DEFS keys
-
-    Examples
-    --------
-    >>> metadata = format_base_metadata(
-    ...     "scGPT", 1000, 1003, ["gene1", "gene2", ...], 512, 12, 8
-    ... )
-    """
-    metadata = {
-        FM_DEFS.MODEL_NAME: model_name,
-        FM_DEFS.N_GENES: n_genes,
-        FM_DEFS.N_VOCAB: n_vocab,
-        FM_DEFS.ORDERED_VOCABULARY: vocab_list,
-        FM_DEFS.EMBED_DIM: embed_dim,
-        FM_DEFS.N_LAYERS: n_layers,
-        FM_DEFS.N_HEADS: n_heads,
-    }
-
-    if model_variant is not None:
-        metadata[FM_DEFS.MODEL_VARIANT] = model_variant
-
-    # Add any extra metadata
-    metadata.update(extra_metadata)
-
-    return metadata
 
 
 def _extract_attention_from_state_dict(
@@ -577,256 +708,106 @@ def _extract_attention_from_state_dict(
     return attention_layers
 
 
-# ============================================================================
-# scGPT-specific helper functions
-# ============================================================================
-
-
-def _scgpt_load_gene_annotations(annotations_path: str) -> pd.DataFrame:
-    """Load gene annotations for scGPT.
-
-    Parameters
-    ----------
-    annotations_path : str
-      Path to gene annotations CSV file
-
-    Returns
-    -------
-    pd.DataFrame
-      DataFrame with gene annotations
+def _format_base_metadata(
+    model_name: str,
+    n_genes: int,
+    n_vocab: int,
+    vocab_list: List[str],
+    embed_dim: int,
+    n_layers: int,
+    n_heads: int,
+    model_variant: Optional[str] = None,
+    **extra_metadata,
+) -> Dict:
     """
-    return (
-        pd.read_csv(annotations_path, index_col=0)
-        .rename(
-            columns={
-                "feature_id": ONTOLOGIES.ENSEMBL_GENE,
-                "feature_name": ONTOLOGIES.SYMBOL,
-            }
-        )
-        .assign(**{FM_DEFS.VOCAB_NAME: lambda x: x[ONTOLOGIES.SYMBOL]})
-        .drop(columns=["feature_length", "soma_joinid"])
-    )
-
-
-@require_torchtext
-def _scgpt_format_metadata(model_configs: dict, vocab: Any) -> Dict:
-    """Format scGPT model metadata.
+    Format base model metadata dictionary with standard keys.
 
     Parameters
     ----------
-    model_configs : dict
-      Model configuration dictionary
-    vocab : Any
-      scGPT vocabulary object
+    model_name : str
+      Model name (e.g., "scGPT", "scFoundation")
+    n_genes : int
+      Number of genes
+    n_vocab : int
+      Vocabulary size (may include special tokens)
+    vocab_list : List[str]
+      Ordered vocabulary list
+    embed_dim : int
+      Embedding dimension
+    n_layers : int
+      Number of transformer layers
+    n_heads : int
+      Number of attention heads
+    model_variant : str, optional
+      Model variant identifier (e.g., "small", "medium")
+    **extra_metadata : Dict
+      Additional metadata to include
 
     Returns
     -------
     Dict
       Metadata dictionary with standard FM_DEFS keys
-    """
-    # Get vocabulary as list of tokens in order
-    vocab_list = vocab.get_itos()
 
-    # Count actual genes (excluding special tokens)
-    n_genes = len(
-        [
-            token
-            for token in vocab_list
-            if not token.startswith("<") and token != SCGPT_DEFS.PAD_TOKEN
-        ]
-    )
+    Examples
+    --------
+    >>> metadata = format_base_metadata(
+    ...     "scGPT", 1000, 1003, ["gene1", "gene2", ...], 512, 12, 8
+    ... )
+    """
+    metadata = {
+        FM_DEFS.MODEL_NAME: model_name,
+        FM_DEFS.N_GENES: n_genes,
+        FM_DEFS.N_VOCAB: n_vocab,
+        FM_DEFS.ORDERED_VOCABULARY: vocab_list,
+        FM_DEFS.EMBED_DIM: embed_dim,
+        FM_DEFS.N_LAYERS: n_layers,
+        FM_DEFS.N_HEADS: n_heads,
+    }
+
+    if model_variant is not None:
+        metadata[FM_DEFS.MODEL_VARIANT] = model_variant
+
+    # Add any extra metadata
+    metadata.update(extra_metadata)
+
+    return metadata
+
+
+@require_modelgenerator
+def _scfoundation_extract_metadata(
+    checkpoint: dict, gene_annotations: pd.DataFrame
+) -> Dict:
+    """Extract model metadata from scFoundation checkpoint config.
+
+    Parameters
+    ----------
+    checkpoint : dict
+      Loaded checkpoint for gene encoder
+    gene_annotations : pd.DataFrame
+      Gene annotations table
+
+    Returns
+    -------
+    Dict
+      Metadata dictionary for FoundationModel
+    """
+    logger.info("Extracting metadata...")
+
+    config = checkpoint["config"]
+    encoder_config = config["model_config"]["mae_autobin"]["encoder"]
+
+    n_genes = len(gene_annotations)
+    vocab_list = gene_annotations[FM_DEFS.VOCAB_NAME].tolist()
 
     return _format_base_metadata(
-        model_name=SCGPT_DEFS.MODEL_NAME,
+        model_name=SCFOUNDATION_DEFS.MODEL_NAME,
         n_genes=n_genes,
-        n_vocab=len(vocab),
+        n_vocab=n_genes,
         vocab_list=vocab_list,
-        embed_dim=model_configs[SCGPT_DEFS.D_HID],
-        n_layers=model_configs[SCGPT_DEFS.NLAYERS],
-        n_heads=model_configs[SCGPT_DEFS.NHEAD],
+        embed_dim=encoder_config["hidden_dim"],
+        n_layers=encoder_config["depth"],
+        n_heads=encoder_config["heads"],
     )
-
-
-@require_scgpt
-@require_torchtext
-def _scgpt_load_model_from_file(
-    model_file: str, vocab: Any, model_configs: dict
-) -> Any:
-    """Load scGPT model from checkpoint file.
-
-    Parameters
-    ----------
-    model_file : str
-      Path to model checkpoint file
-    vocab : Any
-      scGPT vocabulary object
-    model_configs : dict
-      Model configuration dictionary
-
-    Returns
-    -------
-    Any
-      Loaded scGPT TransformerModel
-    """
-    from scgpt.model import TransformerModel
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    ntokens = len(vocab)  # size of vocabulary
-    model = TransformerModel(
-        ntokens,
-        model_configs[SCGPT_DEFS.EMBSIZE],
-        model_configs[SCGPT_DEFS.NHEAD],
-        model_configs[SCGPT_DEFS.D_HID],
-        model_configs[SCGPT_DEFS.NLAYERS],
-        vocab=vocab,
-        pad_value=SCGPT_DEFS.PAD_VALUE,
-        n_input_bins=SCGPT_DEFS.N_INPUT_BINS,
-    )
-
-    try:
-        model.load_state_dict(torch.load(model_file, map_location=torch.device("cpu")))
-        print(f"Loading all model params from {model_file}")
-    except Exception as e:
-        logger.warning(
-            f"Error loading model: {e}; recovering by extracting specific parameters."
-        )
-        # only load params that are in the model and match the size
-        model_dict = model.state_dict()
-        pretrained_dict = torch.load(model_file, map_location=torch.device("cpu"))
-        pretrained_dict = {
-            k: v
-            for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
-        for k, v in pretrained_dict.items():
-            print(f"Loading params {k} with shape {v.shape}")
-            model_dict.update(pretrained_dict)
-            model.load_state_dict(model_dict)
-
-    model.to(device)
-
-    return model
-
-
-@require_scgpt
-@require_torchtext
-def _scgpt_load_model(model_dir: str) -> Tuple[Any, Any, dict, str]:
-    """Load scGPT model from directory.
-
-    Parameters
-    ----------
-    model_dir : str
-      Directory containing scGPT model files
-
-    Returns
-    -------
-    Tuple[Any, Any, dict, str]
-      Tuple of (model, vocab, model_metadata, checkpoint_path)
-    """
-    from scgpt.tokenizer.gene_tokenizer import GeneVocab
-
-    model_config_file = os.path.join(model_dir, SCGPT_DEFS.CONFIG_FILENAME)
-    model_file = os.path.join(model_dir, SCGPT_DEFS.MODEL_FILENAME)
-    vocab_file = os.path.join(model_dir, SCGPT_DEFS.VOCAB_FILENAME)
-
-    vocab = GeneVocab.from_file(vocab_file)
-    for s in SCGPT_DEFS.SPECIAL_TOKENS:
-        if s not in vocab:
-            vocab.append_token(s)
-
-    # Retrieve model parameters from config files
-    with open(model_config_file, "r") as f:
-        model_configs = json.load(f)
-    print(
-        f"Resume model from {model_file}, the model args will override the "
-        f"config {model_config_file}."
-    )
-
-    model = _scgpt_load_model_from_file(model_file, vocab, model_configs)
-
-    model_metadata = _scgpt_format_metadata(model_configs, vocab)
-
-    return model, vocab, model_metadata, model_file
-
-
-@require_scgpt
-@require_torchtext
-def _scgpt_extract_weights(
-    model: Any, vocab: Any, model_metadata: dict, checkpoint_path: str
-) -> FoundationModelWeights:
-    """Extract weights from scGPT model.
-
-    Note: Weights must be loaded directly from the checkpoint file because
-    model.state_dict() returns incorrect/shared weights across layers.
-
-    Parameters
-    ----------
-    model : Any
-      scGPT TransformerModel
-    vocab : Any
-      scGPT vocabulary object
-    model_metadata : dict
-      Model metadata dictionary
-    checkpoint_path : str
-      Path to checkpoint file
-
-    Returns
-    -------
-    FoundationModelWeights
-      Extracted model weights
-    """
-    # Extract gene embeddings
-    gene_ids = torch.arange(len(vocab))
-    embeddings = model.encoder(gene_ids).detach().cpu().numpy()
-
-    # Load weights directly from checkpoint file (model.state_dict() is unreliable)
-    state_dict = torch.load(checkpoint_path, map_location="cpu")
-
-    # Extract attention weights for all layers as AttentionLayer instances
-    attention_layers = []
-    n_layers = model_metadata[FM_DEFS.N_LAYERS]
-    d = model_metadata[FM_DEFS.EMBED_DIM]
-
-    for layer_idx in range(n_layers):
-        # scGPT uses Wqkv.weight for the combined QKV projection
-        wqkv_key = f"transformer_encoder.layers.{layer_idx}.self_attn.Wqkv.weight"
-        out_proj_key = (
-            f"transformer_encoder.layers.{layer_idx}.self_attn.out_proj.weight"
-        )
-
-        if wqkv_key not in state_dict:
-            raise KeyError(f"Could not find {wqkv_key} in state_dict")
-        if out_proj_key not in state_dict:
-            raise KeyError(f"Could not find {out_proj_key} in state_dict")
-
-        # Clone immediately to ensure independent copies
-        in_proj = state_dict[wqkv_key].clone()
-        out_proj = state_dict[out_proj_key].clone()
-
-        # Validate shape
-        if in_proj.shape[0] != 3 * d:
-            raise ValueError(
-                f"Expected in_proj.shape[0] to be 3*d ({3*d}), but got {in_proj.shape[0]}"
-            )
-
-        # Split QKV into separate matrices and convert to numpy
-        in_proj_np = in_proj.clone().cpu().detach().numpy()
-        w_q, w_k, w_v = _split_qkv_weights(in_proj_np, d)
-        w_o = out_proj.clone().cpu().detach().numpy()
-
-        attention_layers.append(
-            AttentionLayer(layer_idx=layer_idx, W_q=w_q, W_k=w_k, W_v=w_v, W_o=w_o)
-        )
-
-    return FoundationModelWeights(
-        gene_embedding=embeddings, attention_layers=attention_layers
-    )
-
-
-# ============================================================================
-# scFoundation-specific helper functions
-# ============================================================================
 
 
 @require_modelgenerator
@@ -918,125 +899,248 @@ def _scfoundation_extract_weights(
     )
 
 
-@require_modelgenerator
-def _scfoundation_extract_metadata(
-    checkpoint: dict, gene_annotations: pd.DataFrame
-) -> Dict:
-    """Extract model metadata from scFoundation checkpoint config.
+@require_scgpt
+@require_torchtext
+def _scgpt_extract_weights(
+    model: Any, vocab: Any, model_metadata: dict, checkpoint_path: str
+) -> FoundationModelWeights:
+    """Extract weights from scGPT model.
 
-    Parameters
-    ----------
-    checkpoint : dict
-      Loaded checkpoint for gene encoder
-    gene_annotations : pd.DataFrame
-      Gene annotations table
-
-    Returns
-    -------
-    Dict
-      Metadata dictionary for FoundationModel
-    """
-    logger.info("Extracting metadata...")
-
-    config = checkpoint["config"]
-    encoder_config = config["model_config"]["mae_autobin"]["encoder"]
-
-    n_genes = len(gene_annotations)
-    vocab_list = gene_annotations[FM_DEFS.VOCAB_NAME].tolist()
-
-    return _format_base_metadata(
-        model_name=SCFOUNDATION_DEFS.MODEL_NAME,
-        n_genes=n_genes,
-        n_vocab=n_genes,
-        vocab_list=vocab_list,
-        embed_dim=encoder_config["hidden_dim"],
-        n_layers=encoder_config["depth"],
-        n_heads=encoder_config["heads"],
-    )
-
-
-# ============================================================================
-# scPRINT-specific helper functions
-# ============================================================================
-
-
-@require_scprint
-def _scprint_load_model_from_file(
-    checkpoint_path: str, transformer: str = "normal"
-) -> Any:
-    """Load scPRINT model from checkpoint file.
-
-    Parameters
-    ----------
-    checkpoint_path : str
-      Path to the scPRINT checkpoint file
-    transformer : str, optional
-      Transformer type, by default "normal"
-
-    Returns
-    -------
-    Any
-      The scPRINT model
-    """
-    from scprint import scPrint
-
-    m = torch.load(checkpoint_path, map_location=torch.device("cpu"))
-
-    if "prenorm" in m["hyper_parameters"]:
-        m["hyper_parameters"].pop("prenorm")
-
-    if "label_counts" in m["hyper_parameters"]:
-        model = scPrint.load_from_checkpoint(
-            checkpoint_path,
-            precpt_gene_emb=None,
-            classes=m["hyper_parameters"]["label_counts"],
-            transformer=transformer,
-        )
-    else:
-        model = scPrint.load_from_checkpoint(
-            checkpoint_path, precpt_gene_emb=None, transformer=transformer
-        )
-
-    model.eval()
-    return model
-
-
-def _scprint_load_gene_annotations(model: Any) -> pd.DataFrame:
-    """Load gene annotations from scPRINT model.
+    Note: Weights must be loaded directly from the checkpoint file because
+    model.state_dict() returns incorrect/shared weights across layers.
 
     Parameters
     ----------
     model : Any
-      The scPRINT model
+      scGPT TransformerModel
+    vocab : Any
+      scGPT vocabulary object
+    model_metadata : dict
+      Model metadata dictionary
+    checkpoint_path : str
+      Path to checkpoint file
+
+    Returns
+    -------
+    FoundationModelWeights
+      Extracted model weights
+    """
+    # Extract gene embeddings
+    gene_ids = torch.arange(len(vocab))
+    embeddings = model.encoder(gene_ids).detach().cpu().numpy()
+
+    # Load weights directly from checkpoint file (model.state_dict() is unreliable)
+    state_dict = torch.load(checkpoint_path, map_location="cpu")
+
+    # Extract attention weights for all layers as AttentionLayer instances
+    attention_layers = []
+    n_layers = model_metadata[FM_DEFS.N_LAYERS]
+    d = model_metadata[FM_DEFS.EMBED_DIM]
+
+    for layer_idx in range(n_layers):
+        # scGPT uses Wqkv.weight for the combined QKV projection
+        wqkv_key = f"transformer_encoder.layers.{layer_idx}.self_attn.Wqkv.weight"
+        out_proj_key = (
+            f"transformer_encoder.layers.{layer_idx}.self_attn.out_proj.weight"
+        )
+
+        if wqkv_key not in state_dict:
+            raise KeyError(f"Could not find {wqkv_key} in state_dict")
+        if out_proj_key not in state_dict:
+            raise KeyError(f"Could not find {out_proj_key} in state_dict")
+
+        # Clone immediately to ensure independent copies
+        in_proj = state_dict[wqkv_key].clone()
+        out_proj = state_dict[out_proj_key].clone()
+
+        # Validate shape
+        if in_proj.shape[0] != 3 * d:
+            raise ValueError(
+                f"Expected in_proj.shape[0] to be 3*d ({3*d}), but got {in_proj.shape[0]}"
+            )
+
+        # Split QKV into separate matrices and convert to numpy
+        in_proj_np = in_proj.clone().cpu().detach().numpy()
+        w_q, w_k, w_v = _split_qkv_weights(in_proj_np, d)
+        w_o = out_proj.clone().cpu().detach().numpy()
+
+        attention_layers.append(
+            AttentionLayer(layer_idx=layer_idx, W_q=w_q, W_k=w_k, W_v=w_v, W_o=w_o)
+        )
+
+    return FoundationModelWeights(
+        gene_embedding=embeddings, attention_layers=attention_layers
+    )
+
+
+@require_torchtext
+def _scgpt_format_metadata(model_configs: dict, vocab: Any) -> Dict:
+    """Format scGPT model metadata.
+
+    Parameters
+    ----------
+    model_configs : dict
+      Model configuration dictionary
+    vocab : Any
+      scGPT vocabulary object
+
+    Returns
+    -------
+    Dict
+      Metadata dictionary with standard FM_DEFS keys
+    """
+    # Get vocabulary as list of tokens in order
+    vocab_list = vocab.get_itos()
+
+    # Count actual genes (excluding special tokens)
+    n_genes = len(
+        [
+            token
+            for token in vocab_list
+            if not token.startswith("<") and token != SCGPT_DEFS.PAD_TOKEN
+        ]
+    )
+
+    return _format_base_metadata(
+        model_name=SCGPT_DEFS.MODEL_NAME,
+        n_genes=n_genes,
+        n_vocab=len(vocab),
+        vocab_list=vocab_list,
+        embed_dim=model_configs[SCGPT_DEFS.D_HID],
+        n_layers=model_configs[SCGPT_DEFS.NLAYERS],
+        n_heads=model_configs[SCGPT_DEFS.NHEAD],
+    )
+
+
+def _scgpt_load_gene_annotations(annotations_path: str) -> pd.DataFrame:
+    """Load gene annotations for scGPT.
+
+    Parameters
+    ----------
+    annotations_path : str
+      Path to gene annotations CSV file
 
     Returns
     -------
     pd.DataFrame
       DataFrame with gene annotations
     """
-    gene_table = pd.DataFrame(
-        {
-            FM_DEFS.VOCAB_NAME: model.genes,
-            ONTOLOGIES.ENSEMBL_GENE: model.genes,
-        }
+    return (
+        pd.read_csv(annotations_path, index_col=0)
+        .rename(
+            columns={
+                "feature_id": ONTOLOGIES.ENSEMBL_GENE,
+                "feature_name": ONTOLOGIES.SYMBOL,
+            }
+        )
+        .assign(**{FM_DEFS.VOCAB_NAME: lambda x: x[ONTOLOGIES.SYMBOL]})
+        .drop(columns=["feature_length", "soma_joinid"])
     )
 
-    # Optionally add gene symbols from lamindb
+
+@require_scgpt
+@require_torchtext
+def _scgpt_load_model(model_dir: str) -> Tuple[Any, Any, dict, str]:
+    """Load scGPT model from directory.
+
+    Parameters
+    ----------
+    model_dir : str
+      Directory containing scGPT model files
+
+    Returns
+    -------
+    Tuple[Any, Any, dict, str]
+      Tuple of (model, vocab, model_metadata, checkpoint_path)
+    """
+    from scgpt.tokenizer.gene_tokenizer import GeneVocab
+
+    model_config_file = os.path.join(model_dir, SCGPT_DEFS.CONFIG_FILENAME)
+    model_file = os.path.join(model_dir, SCGPT_DEFS.MODEL_FILENAME)
+    vocab_file = os.path.join(model_dir, SCGPT_DEFS.VOCAB_FILENAME)
+
+    vocab = GeneVocab.from_file(vocab_file)
+    for s in SCGPT_DEFS.SPECIAL_TOKENS:
+        if s not in vocab:
+            vocab.append_token(s)
+
+    # Retrieve model parameters from config files
+    with open(model_config_file, "r") as f:
+        model_configs = json.load(f)
+    print(
+        f"Resume model from {model_file}, the model args will override the "
+        f"config {model_config_file}."
+    )
+
+    model = _scgpt_load_model_from_file(model_file, vocab, model_configs)
+
+    model_metadata = _scgpt_format_metadata(model_configs, vocab)
+
+    return model, vocab, model_metadata, model_file
+
+
+@require_scgpt
+@require_torchtext
+def _scgpt_load_model_from_file(
+    model_file: str, vocab: Any, model_configs: dict
+) -> Any:
+    """Load scGPT model from checkpoint file.
+
+    Parameters
+    ----------
+    model_file : str
+      Path to model checkpoint file
+    vocab : Any
+      scGPT vocabulary object
+    model_configs : dict
+      Model configuration dictionary
+
+    Returns
+    -------
+    Any
+      Loaded scGPT TransformerModel
+    """
+    from scgpt.model import TransformerModel
+
+    device = select_device()
+
+    ntokens = len(vocab)  # size of vocabulary
+    model = TransformerModel(
+        ntokens,
+        model_configs[SCGPT_DEFS.EMBSIZE],
+        model_configs[SCGPT_DEFS.NHEAD],
+        model_configs[SCGPT_DEFS.D_HID],
+        model_configs[SCGPT_DEFS.NLAYERS],
+        vocab=vocab,
+        pad_value=SCGPT_DEFS.PAD_VALUE,
+        n_input_bins=SCGPT_DEFS.N_INPUT_BINS,
+    )
+
     try:
-        import bionty as bt
-
-        all_genes_df = bt.Gene.filter().df()
-        ensembl_to_symbol = all_genes_df.set_index("ensembl_gene_id")[
-            "symbol"
-        ].to_dict()
-        gene_table[ONTOLOGIES.SYMBOL] = gene_table[ONTOLOGIES.ENSEMBL_GENE].map(
-            ensembl_to_symbol
+        model.load_state_dict(
+            torch.load(model_file, map_location=torch.device(DEVICE.CPU))
         )
+        print(f"Loading all model params from {model_file}")
     except Exception as e:
-        logger.warning(f"Error loading gene symbols from lamin database: {e}")
-        gene_table[ONTOLOGIES.SYMBOL] = gene_table[ONTOLOGIES.ENSEMBL_GENE]
+        logger.warning(
+            f"Error loading model: {e}; recovering by extracting specific parameters."
+        )
+        # only load params that are in the model and match the size
+        model_dict = model.state_dict()
+        pretrained_dict = torch.load(model_file, map_location=torch.device(DEVICE.CPU))
+        pretrained_dict = {
+            k: v
+            for k, v in pretrained_dict.items()
+            if k in model_dict and v.shape == model_dict[k].shape
+        }
+        for k, v in pretrained_dict.items():
+            print(f"Loading params {k} with shape {v.shape}")
+            model_dict.update(pretrained_dict)
+            model.load_state_dict(model_dict)
 
-    return gene_table
+    model.to(device)
+
+    return model
 
 
 @require_scprint
@@ -1149,6 +1253,44 @@ def _scprint_format_metadata(model: Any, version: Optional[str] = None) -> Dict:
     )
 
 
+def _scprint_load_gene_annotations(model: Any) -> pd.DataFrame:
+    """Load gene annotations from scPRINT model.
+
+    Parameters
+    ----------
+    model : Any
+      The scPRINT model
+
+    Returns
+    -------
+    pd.DataFrame
+      DataFrame with gene annotations
+    """
+    gene_table = pd.DataFrame(
+        {
+            FM_DEFS.VOCAB_NAME: model.genes,
+            ONTOLOGIES.ENSEMBL_GENE: model.genes,
+        }
+    )
+
+    # Optionally add gene symbols from lamindb
+    try:
+        import bionty as bt
+
+        all_genes_df = bt.Gene.filter().df()
+        ensembl_to_symbol = all_genes_df.set_index("ensembl_gene_id")[
+            "symbol"
+        ].to_dict()
+        gene_table[ONTOLOGIES.SYMBOL] = gene_table[ONTOLOGIES.ENSEMBL_GENE].map(
+            ensembl_to_symbol
+        )
+    except Exception as e:
+        logger.warning(f"Error loading gene symbols from lamin database: {e}")
+        gene_table[ONTOLOGIES.SYMBOL] = gene_table[ONTOLOGIES.ENSEMBL_GENE]
+
+    return gene_table
+
+
 @require_scprint
 def _scprint_load_model(
     checkpoint_path: str, transformer: str = "normal", version: Optional[str] = None
@@ -1181,235 +1323,79 @@ def _scprint_load_model(
     return model, gene_annotations, model_metadata
 
 
-# ============================================================================
-# AIDOCell-specific helper functions
-# ============================================================================
-
-
-@require_modelgenerator
-def _aidocell_get_backbone(class_name: str) -> Any:
-    """Get AIDOCell backbone class by name.
+@require_scprint
+def _scprint_load_model_from_file(
+    checkpoint_path: str, transformer: str = "normal"
+) -> Any:
+    """Load scPRINT model from checkpoint file.
 
     Parameters
     ----------
-    class_name : str
-      AIDOCell class name (e.g., "aido_cell_3m", "aido_cell_10m", "aido_cell_100m")
+    checkpoint_path : str
+      Path to the scPRINT checkpoint file
+    transformer : str, optional
+      Transformer type, by default "normal"
 
     Returns
     -------
     Any
-      The AIDOCell backbone class
-
-    Examples
-    --------
-    >>> backbone = _aidocell_get_backbone("aido_cell_3m")
-    >>> model = backbone(...)
+      The scPRINT model
     """
-    from modelgenerator.backbones import (
-        aido_cell_3m,
-        aido_cell_10m,
-        aido_cell_100m,
-    )
+    from scprint import scPrint
 
-    backbone_map = {
-        AIDOCELL_CLASSES.THREE_M: aido_cell_3m,
-        AIDOCELL_CLASSES.TEN_M: aido_cell_10m,
-        AIDOCELL_CLASSES.ONE_HUNDRED_M: aido_cell_100m,
-    }
+    m = torch.load(checkpoint_path, map_location=torch.device("cpu"))
 
-    if class_name not in backbone_map:
-        raise ValueError(
-            f"Unknown AIDOCell class name: {class_name}. "
-            f"Must be one of: {list(backbone_map.keys())}"
+    if "prenorm" in m["hyper_parameters"]:
+        m["hyper_parameters"].pop("prenorm")
+
+    if "label_counts" in m["hyper_parameters"]:
+        model = scPrint.load_from_checkpoint(
+            checkpoint_path,
+            precpt_gene_emb=None,
+            classes=m["hyper_parameters"]["label_counts"],
+            transformer=transformer,
+        )
+    else:
+        model = scPrint.load_from_checkpoint(
+            checkpoint_path, precpt_gene_emb=None, transformer=transformer
         )
 
-    return backbone_map[class_name]
-
-
-@require_modelgenerator
-def _aidocell_load_model(model_class: Any) -> Any:
-    """Load AIDOCell model in eval mode.
-
-    Parameters
-    ----------
-    model_class : Any
-      AIDOCell model class to load
-
-    Returns
-    -------
-    Any
-      The AIDOCell model in eval mode
-    """
-    model = model_class(
-        legacy_adapter_type=None, default_config=None, from_scratch=False
-    )
     model.eval()
     return model
 
 
-@require_modelgenerator
-def _aidocell_load_gene_annotations() -> pd.DataFrame:
-    """Load gene annotations from AIDOCell model.
-
-    This is a flat file which is bundled with the package
-
-    Returns
-    -------
-    pd.DataFrame
-      DataFrame with gene annotations
+def _split_qkv_weights(
+    qkv_weight: np.ndarray, embed_dim: int
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    import modelgenerator.cell.utils as cell_utils
-
-    load_base = os.path.dirname(os.path.abspath(cell_utils.__file__))
-    gene_file = os.path.join(load_base, AIDOCELL_DEFS.GENE_FILE)
-
-    # Load gene symbols
-    gene_symbols = pd.read_csv(gene_file, sep="\t")["gene_name"].values
-
-    # Build the mapping from symbols to Ensembl IDs
-    gene_map = cell_utils.build_map(gene_symbols)
-
-    # Create the mapping table
-    gene_table = pd.DataFrame(
-        {
-            FM_DEFS.VOCAB_NAME: gene_symbols,
-            ONTOLOGIES.SYMBOL: gene_symbols,
-            ONTOLOGIES.ENSEMBL_GENE: [
-                gene_map.get(x, f"{x}_unknown_ensg") for x in gene_symbols
-            ],
-        }
-    )
-
-    return gene_table
-
-
-@require_modelgenerator
-def _aidocell_extract_attention_weights(model: Any) -> List[AttentionLayer]:
-    """Extract core attention weights (Q, K, V, O) from all layers.
+    Split combined QKV weight matrix into separate Q, K, V matrices.
 
     Parameters
     ----------
-    model : Any
-      The AIDOCell model
+    qkv_weight : np.ndarray
+      Combined QKV weight matrix of shape (3 * embed_dim, embed_dim)
+    embed_dim : int
+      Embedding dimension
 
     Returns
     -------
-    List[AttentionLayer]
-      List of AttentionLayer instances
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+      Tuple of (W_q, W_k, W_v) matrices, each of shape (embed_dim, embed_dim)
+
+    Examples
+    --------
+    >>> qkv = np.random.randn(768, 256)  # 3*256 = 768
+    >>> w_q, w_k, w_v = _split_qkv_weights(qkv, embed_dim=256)
+    >>> assert w_q.shape == (256, 256)
     """
-    attention_layers = []
-    encoder = model.encoder
-    transformer_layers = encoder.encoder.layer
-    n_layers = model.get_num_layer()
-
-    for layer_idx in range(n_layers):
-        layer = transformer_layers[layer_idx]
-        attention_self = layer.attention.self
-        attention_output = layer.attention.output
-
-        attention_layers.append(
-            AttentionLayer(
-                layer_idx=layer_idx,
-                W_q=attention_self.query.weight.detach().cpu().numpy(),
-                W_k=attention_self.key.weight.detach().cpu().numpy(),
-                W_v=attention_self.value.weight.detach().cpu().numpy(),
-                W_o=attention_output.dense.weight.detach().cpu().numpy(),
-            )
+    if qkv_weight.shape[0] != 3 * embed_dim:
+        raise ValueError(
+            f"Expected qkv_weight.shape[0] to be 3*embed_dim ({3*embed_dim}), "
+            f"but got {qkv_weight.shape[0]}"
         )
 
-    return attention_layers
+    w_q = qkv_weight[:embed_dim, :]
+    w_k = qkv_weight[embed_dim : 2 * embed_dim, :]
+    w_v = qkv_weight[2 * embed_dim :, :]
 
-
-@require_modelgenerator
-def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
-    """Extract model weights in the standardized format.
-
-    Parameters
-    ----------
-    model : Any
-      The AIDOCell model
-
-    Returns
-    -------
-    FoundationModelWeights
-      FoundationModelWeights instance containing gene_embedding and attention_layers
-    """
-    # Extract gene embeddings
-    encoder = model.encoder
-    n_genes = len(_aidocell_load_gene_annotations())
-
-    with torch.no_grad():
-        gene_positions = torch.arange(n_genes)
-        gene_embedding = encoder.position_embedding(gene_positions).cpu().numpy()
-
-    # Extract attention weights as AttentionLayer instances
-    attention_layers = _aidocell_extract_attention_weights(model)
-
-    return FoundationModelWeights(
-        gene_embedding=gene_embedding, attention_layers=attention_layers
-    )
-
-
-@require_modelgenerator
-def _aidocell_format_metadata(model: Any, model_class_name: str) -> Dict:
-    """Extract model architecture metadata.
-
-    Parameters
-    ----------
-    model : Any
-      The AIDOCell model
-    model_class_name : str
-      Name of the model class
-
-    Returns
-    -------
-    Dict
-      Dictionary with model metadata
-    """
-    encoder = model.encoder
-    gene_annotations = _aidocell_load_gene_annotations()
-    n_genes = len(gene_annotations)
-
-    # Get vocabulary as list of gene symbols (AIDOCell doesn't have special tokens)
-    vocab_list = gene_annotations[FM_DEFS.VOCAB_NAME].tolist()
-
-    return _format_base_metadata(
-        model_name=AIDOCELL_DEFS.MODEL_NAME,
-        n_genes=n_genes,
-        n_vocab=n_genes,  # Same as n_genes for AIDOCell (no special tokens)
-        vocab_list=vocab_list,
-        embed_dim=int(model.get_embedding_size()),
-        n_layers=int(model.get_num_layer()),
-        n_heads=int(encoder.config.num_attention_heads),
-        model_variant=model_class_name,
-        # Additional AIDOCell-specific metadata
-        **{AIDOCELL_DEFS.HIDDEN_DIM: int(encoder.config.hidden_size)},
-    )
-
-
-@require_modelgenerator
-def _aidocell_load_model_full(model_class: Any) -> Tuple[Any, pd.DataFrame, Dict]:
-    """Load the AIDOCell model and return model, gene annotations, and metadata.
-
-    Parameters
-    ----------
-    model_class : Any
-      AIDOCell model class to load
-
-    Returns
-    -------
-    Tuple[Any, pd.DataFrame, Dict]
-      Tuple of (model, gene_annotations, model_metadata)
-    """
-    logger.info("Loading AIDOCell model")
-    model = _aidocell_load_model(model_class)
-
-    logger.info("Loading gene annotations")
-    gene_annotations = _aidocell_load_gene_annotations()
-
-    logger.info("Formatting model metadata")
-    model_metadata = _aidocell_format_metadata(
-        model, model_class_name=model_class.__name__
-    )
-
-    return model, gene_annotations, model_metadata
+    return w_q, w_k, w_v
