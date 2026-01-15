@@ -40,12 +40,13 @@ from napistu_torch.load.constants import (
     VALID_FM_LAYER_CONSENSUS_METHODS,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
+from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.pd_utils import calculate_ranks
 from napistu_torch.utils.tensor_utils import (
+    compute_correlation,
     compute_cosine_distances_torch,
     compute_max_abs_over_z,
     compute_max_over_z,
-    compute_spearman_correlation_torch,
     compute_tensor_ranks,
     compute_tensor_ranks_for_indices,
     find_top_k,
@@ -203,6 +204,8 @@ class FoundationModelWeights(BaseModel):
     --------------
     compute_attention_from_weights(layer_idx, n_heads, vocab_mask=None, apply_softmax=True, return_tensor=False, device=None)
         Compute attention scores for a specific layer with proper multi-head handling.
+    count_attention_parameters()
+        Count the total number of parameters across all attention layers.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -324,6 +327,32 @@ class FoundationModelWeights(BaseModel):
             return_tensor=return_tensor,
             device=device,
         )
+
+    def count_attention_parameters(self) -> int:
+        """
+        Count the total number of parameters across all attention layers.
+
+        Sums the parameters in W_q, W_k, W_v, and W_o matrices for each
+        attention layer in the model.
+
+        Returns
+        -------
+        int
+            Total number of parameters in all attention layers
+
+        Examples
+        --------
+        >>> n_params = model.weights.count_attention_parameters()
+        >>> print(f"Total attention parameters: {n_params:,}")
+        """
+        total_params = 0
+        for layer in self.attention_layers:
+            # Count parameters in each weight matrix
+            total_params += layer.W_q.size  # W_q: (embed_dim, d_k)
+            total_params += layer.W_k.size  # W_k: (embed_dim, d_k)
+            total_params += layer.W_v.size  # W_v: (embed_dim, d_v)
+            total_params += layer.W_o.size  # W_o: (embed_dim, embed_dim)
+        return total_params
 
 
 class GeneAnnotations(BaseModel):
@@ -1404,6 +1433,8 @@ class FoundationModels(BaseModel):
     --------------
     _align_embeddings(common_identifiers, ontology='ensembl_gene', verbose=False)
         Align gene embeddings across all models based on common identifiers.
+    _sort_models_by_parameters()
+        Sort models by attention parameters, grouping by model_name and sorting by group max.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -2103,7 +2134,12 @@ class FoundationModels(BaseModel):
         loaded_models = [
             FoundationModel.load(output_dir, prefix) for prefix in prefixes
         ]
-        return cls(models=loaded_models)
+
+        # Create instance and sort by parameters
+        instance = cls(models=loaded_models)
+        instance._sort_models_by_parameters()
+
+        return instance
 
     @property
     def model_names(self) -> List[str]:
@@ -2200,6 +2236,48 @@ class FoundationModels(BaseModel):
 
         return aligned_embeddings
 
+    def _sort_models_by_parameters(self) -> None:
+        """
+        Sort models list by attention parameters.
+
+        Groups models by model_name (not full_name, so variants are grouped together),
+        finds the maximum number of parameters in each group, then sorts by:
+        1. Group maximum (ascending)
+        2. Within each group, by number of parameters (ascending)
+
+        This results in smaller models appearing first and larger models appearing later.
+
+        Modifies self.models in-place.
+
+        Examples
+        --------
+        >>> models = FoundationModels(models=[model1, model2, model3])
+        >>> models._sort_models_by_parameters()
+        >>> # models.models is now sorted (smallest to largest)
+        """
+        # Calculate parameters for each model
+        model_params = [
+            model.weights.count_attention_parameters() for model in self.models
+        ]
+
+        # Group by model_name and find max in each group
+        group_maxes = {}
+        for model, n_params in zip(self.models, model_params):
+            model_name = model.model_name
+            if model_name not in group_maxes:
+                group_maxes[model_name] = n_params
+            else:
+                group_maxes[model_name] = max(group_maxes[model_name], n_params)
+
+        # Sort by: (group_max ascending, params ascending)
+        # Larger models appear later in the list
+        self.models.sort(
+            key=lambda model: (
+                group_maxes[model.model_name],
+                model.weights.count_attention_parameters(),
+            )
+        )
+
     def __repr__(self) -> str:
         """String representation listing model names."""
         model_full_names_str = ", ".join(self.model_names)
@@ -2260,7 +2338,12 @@ def _calculate_embedding_correlations(
             dist2_flat = distances[model2][mask]
 
             # Spearman correlation using PyTorch
-            rho = compute_spearman_correlation_torch(dist1_flat, dist2_flat, device)
+            rho = compute_correlation(
+                dist1_flat,
+                dist2_flat,
+                method=CORRELATION_METHODS.SPEARMAN,
+                device=device,
+            )
             comparisons[f"{model1}_vs_{model2}"] = rho
 
             if verbose:

@@ -1,7 +1,10 @@
 import numpy as np
 import pandas as pd
 
-from napistu_torch.utils.pd_utils import calculate_ranks
+from napistu_torch.utils.pd_utils import (
+    calculate_ranks,
+    reorder_multindex_by_categorical_and_numeric,
+)
 
 
 def test_calculate_ranks():
@@ -42,3 +45,33 @@ def test_calculate_ranks():
     assert ranks4.iloc[1] == 1  # A, 1, 0.8
     assert ranks4.iloc[2] == 1  # B, 0, 0.7
     assert ranks4.iloc[3] == 1  # B, 1, 0.6
+
+
+def test_reorder_multindex_success():
+    """Test successful MultiIndex reordering."""
+    idx = pd.MultiIndex.from_tuples(
+        [("B", 2), ("A", 1), ("A", 0), ("B", 0)], names=["model", "layer"]
+    )
+    categorical_order = ["A", "B"]
+    result = reorder_multindex_by_categorical_and_numeric(
+        idx, categorical_order, categorical_level=0, numeric_level=1
+    )
+    expected = pd.MultiIndex.from_tuples(
+        [("A", 0), ("A", 1), ("B", 0), ("B", 2)], names=["model", "layer"]
+    )
+    assert result.equals(expected)
+
+
+def test_reorder_multindex_invalid():
+    """Test invalid MultiIndex with extra categorical values."""
+    idx = pd.MultiIndex.from_tuples(
+        [("A", 0), ("B", 1), ("C", 0)], names=["model", "layer"]
+    )
+    categorical_order = ["A", "B"]
+    try:
+        reorder_multindex_by_categorical_and_numeric(
+            idx, categorical_order, categorical_level=0, numeric_level=1
+        )
+        assert False, "Should have raised ValueError"
+    except ValueError as e:
+        assert "C" in str(e)

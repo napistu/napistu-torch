@@ -18,9 +18,10 @@ import numpy as np
 import pandas as pd
 import torch
 
+from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.tensor_utils import (
+    compute_correlation,
     compute_cosine_distances_torch,
-    compute_spearman_correlation_torch,
 )
 from napistu_torch.utils.torch_utils import ensure_device, memory_manager
 
@@ -75,7 +76,12 @@ def compare_embeddings(
             dist2_flat = distances[model2][mask]
 
             # Spearman correlation using PyTorch
-            rho = compute_spearman_correlation_torch(dist1_flat, dist2_flat, device)
+            rho = compute_correlation(
+                dist1_flat,
+                dist2_flat,
+                method=CORRELATION_METHODS.SPEARMAN,
+                device=device,
+            )
 
             comparison_summary = {
                 "model1": model1,

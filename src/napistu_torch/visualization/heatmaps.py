@@ -1,4 +1,13 @@
-"""Hierarchical clustering and heatmap visualization functions."""
+"""
+Hierarchical clustering and heatmap visualization functions.
+
+Public Functions
+----------------
+hierarchical_cluster(data, axis, method, metric)
+    Perform hierarchical clustering and return reordered indices and labels.
+plot_heatmap(data, row_labels, column_labels, title, xlabel, ylabel, figsize, cmap, fmt, vmin, vmax, center, cbar_label, cbar, mask, mask_upper_triangle, square, annot, cluster, cluster_method, cluster_metric, label_size, axis_title_size, title_size, annot_size, ax)
+    Plot a heatmap with flexible labeling, masking, and clustering options.
+"""
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -106,7 +115,9 @@ def plot_heatmap(
     center: float | None = None,
     cbar_label: str | None = None,
     cbar: bool = True,
+    mask: np.ndarray | None = None,
     mask_upper_triangle: bool = False,
+    mask_color: str | None = None,
     square: bool = False,
     annot: bool = True,
     cluster: str = HEATMAP_AXIS.NONE,
@@ -151,8 +162,13 @@ def plot_heatmap(
         Label for colorbar
     cbar : bool
         If True, show colorbar. If False, hide colorbar.
+    mask : np.ndarray, optional
+        Boolean array of same shape as data. True values will be masked.
+        If both mask and mask_upper_triangle are provided, they will be combined (OR operation).
     mask_upper_triangle : bool
         If True, mask upper triangle (for symmetric matrices)
+    mask_color : str | None
+        Background color for masked cells (sets ax facecolor)
     square : bool
         If True, force square cells
     annot : bool
@@ -184,36 +200,29 @@ def plot_heatmap(
 
     # Convert labels to lists to handle dict_values and other non-list types
     row_labels_list = list[str](row_labels)
-
-    # Use row_labels for columns if not provided
-    if column_labels is None:
-        column_labels_list = row_labels_list
-    else:
-        column_labels_list = list[str](column_labels)
-
-    # Make copies to avoid modifying originals
-    data_plot = data.copy()
-    row_labels_plot = row_labels_list.copy()
-    column_labels_plot = column_labels_list.copy()
-
-    # Perform clustering
-    row_order, col_order, _, _ = hierarchical_cluster(
-        data_plot, axis=cluster, method=cluster_method, metric=cluster_metric
+    column_labels_list = (
+        list[str](column_labels) if column_labels is not None else row_labels_list
     )
 
     # Reorder data and labels based on clustering
-    if row_order is not None:
-        data_plot = data_plot[row_order, :]
-        row_labels_plot = [row_labels_plot[i] for i in row_order]
+    data_plot, row_labels_plot, column_labels_plot, mask_plot = _reorder_for_clustering(
+        data=data,
+        row_labels=row_labels_list,
+        column_labels=column_labels_list,
+        mask=mask,
+        cluster=cluster,
+        cluster_method=cluster_method,
+        cluster_metric=cluster_metric,
+    )
 
-    if col_order is not None:
-        data_plot = data_plot[:, col_order]
-        column_labels_plot = [column_labels_plot[i] for i in col_order]
-
-    # Create mask if requested (apply after reordering)
-    mask = None
+    # Apply upper triangle masking if requested (combine with existing mask)
     if mask_upper_triangle:
-        mask = np.triu(np.ones_like(data_plot, dtype=bool), k=1)
+        upper_triangle_mask = np.triu(np.ones_like(data_plot, dtype=bool), k=1)
+        mask_plot = (
+            mask_plot | upper_triangle_mask
+            if mask_plot is not None
+            else upper_triangle_mask
+        )
 
     # Track whether we created the figure
     created_fig = ax is None
@@ -225,14 +234,139 @@ def plot_heatmap(
     else:
         fig = ax.get_figure()
 
-    # Build kwargs for heatmap
+    # Build heatmap kwargs
+    heatmap_kwargs = _build_heatmap_kwargs(
+        annot=annot,
+        cmap=cmap,
+        fmt=fmt,
+        square=square,
+        column_labels=column_labels_plot,
+        row_labels=row_labels_plot,
+        cbar=cbar,
+        center=center,
+        cbar_label=cbar_label,
+        mask=mask_plot,
+        vmax=vmax,
+        vmin=vmin,
+        annot_size=annot_size,
+    )
+
+    # Plot heatmap
+    sns.heatmap(data_plot, ax=ax, **heatmap_kwargs)
+
+    # Apply aesthetics
+    _apply_heatmap_aesthetics(
+        ax=ax,
+        xlabel=xlabel,
+        ylabel=ylabel,
+        title=title,
+        label_size=label_size,
+        axis_title_size=axis_title_size,
+        title_size=title_size,
+        mask_color=mask_color,
+    )
+
+    # Only call tight_layout if we created the figure
+    if created_fig:
+        plt.tight_layout()
+
+    return fig
+
+
+def _apply_heatmap_aesthetics(
+    ax,
+    xlabel: str | None,
+    ylabel: str | None,
+    title: str | None,
+    label_size: float | None,
+    axis_title_size: float | None,
+    title_size: float | None,
+    mask_color: str | None,
+):
+    """
+    Apply aesthetic settings to heatmap axis (labels, title, tick formatting).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis to apply aesthetics to
+    xlabel : str | None
+        X-axis label
+    ylabel : str | None
+        Y-axis label
+    title : str | None
+        Plot title
+    label_size : float | None
+        Font size for axis labels
+    axis_title_size : float | None
+        Font size for tick labels
+    title_size : float | None
+        Font size for title
+    mask_color : str | None
+        Background color for masked cells (sets ax facecolor)
+    """
+    # Rotate x-axis tick labels to vertical and align properly
+    xtick_kwargs = {"rotation": 90, "ha": "center", "va": "top"}
+    if axis_title_size is not None:
+        xtick_kwargs["fontsize"] = axis_title_size
+    ax.set_xticklabels(ax.get_xticklabels(), **xtick_kwargs)
+
+    # Set y-axis tick labels to horizontal
+    ytick_kwargs = {"rotation": 0, "ha": "right"}
+    if axis_title_size is not None:
+        ytick_kwargs["fontsize"] = axis_title_size
+    ax.set_yticklabels(ax.get_yticklabels(), **ytick_kwargs)
+
+    # Add labels and title to the axis
+    if xlabel is not None:
+        ax.set_xlabel(xlabel, fontsize=label_size)
+    else:
+        ax.set_xlabel("", fontsize=label_size)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel, fontsize=label_size)
+    else:
+        ax.set_ylabel("", fontsize=label_size)
+    if title:
+        title_fontsize = title_size if title_size is not None else 15
+        ax.set_title(
+            title, fontsize=title_fontsize, fontweight="bold", pad=20, loc="left"
+        )
+
+    # Set background color for masked cells if specified
+    if mask_color is not None:
+        ax.set_facecolor(mask_color)
+
+
+def _build_heatmap_kwargs(
+    annot: bool,
+    cmap: str,
+    fmt: str,
+    square: bool,
+    column_labels: list[str],
+    row_labels: list[str],
+    cbar: bool,
+    center: float | None,
+    cbar_label: str | None,
+    mask: np.ndarray | None,
+    vmax: float | None,
+    vmin: float | None,
+    annot_size: float | None,
+) -> dict:
+    """
+    Build keyword arguments dictionary for seaborn heatmap.
+
+    Returns
+    -------
+    dict
+        Keyword arguments for sns.heatmap()
+    """
     heatmap_kwargs = {
         HEATMAP_KWARGS.ANNOT: annot,
         HEATMAP_KWARGS.CMAP: cmap,
         HEATMAP_KWARGS.FMT: fmt,
         HEATMAP_KWARGS.SQUARE: square,
-        HEATMAP_KWARGS.XTICKLABELS: column_labels_plot,
-        HEATMAP_KWARGS.YTICKLABELS: row_labels_plot,
+        HEATMAP_KWARGS.XTICKLABELS: column_labels,
+        HEATMAP_KWARGS.YTICKLABELS: row_labels,
         HEATMAP_KWARGS.CBAR: cbar,
     }
 
@@ -250,39 +384,65 @@ def plot_heatmap(
     if annot_size is not None:
         heatmap_kwargs[HEATMAP_KWARGS.ANNOT_KWS] = {"size": annot_size}
 
-    # Plot heatmap on the specified axis
-    sns.heatmap(data_plot, ax=ax, **heatmap_kwargs)
+    return heatmap_kwargs
 
-    # Rotate x-axis tick labels to vertical
-    xtick_kwargs = {"rotation": 90, "ha": "right"}
-    if axis_title_size is not None:
-        xtick_kwargs["fontsize"] = axis_title_size
-    ax.set_xticklabels(ax.get_xticklabels(), **xtick_kwargs)
 
-    # Set y-axis tick labels to horizontal (explicitly set rotation to 0)
-    ytick_kwargs = {"rotation": 0, "ha": "right"}
-    if axis_title_size is not None:
-        ytick_kwargs["fontsize"] = axis_title_size
-    ax.set_yticklabels(ax.get_yticklabels(), **ytick_kwargs)
+def _reorder_for_clustering(
+    data: np.ndarray,
+    row_labels: list[str],
+    column_labels: list[str],
+    mask: np.ndarray | None,
+    cluster: str,
+    cluster_method: str,
+    cluster_metric: str,
+) -> tuple[np.ndarray, list[str], list[str], np.ndarray | None]:
+    """
+    Apply hierarchical clustering and reorder data, labels, and mask.
 
-    # Add labels and title to the axis
-    # Explicitly set to empty string if None to suppress default labels
-    if xlabel is not None:
-        ax.set_xlabel(xlabel, fontsize=label_size)
-    else:
-        ax.set_xlabel("", fontsize=label_size)
-    if ylabel is not None:
-        ax.set_ylabel(ylabel, fontsize=label_size)
-    else:
-        ax.set_ylabel("", fontsize=label_size)
-    if title:
-        title_fontsize = title_size if title_size is not None else 15
-        ax.set_title(
-            title, fontsize=title_fontsize, fontweight="bold", pad=20, loc="left"
-        )
+    Parameters
+    ----------
+    data : np.ndarray
+        2D array to cluster and reorder
+    row_labels : list[str]
+        Row labels to reorder
+    column_labels : list[str]
+        Column labels to reorder
+    mask : np.ndarray | None
+        Optional mask to reorder
+    cluster : str
+        Clustering axis specification
+    cluster_method : str
+        Linkage method for clustering
+    cluster_metric : str
+        Distance metric for clustering
 
-    # Only call tight_layout if we created the figure
-    if created_fig:
-        plt.tight_layout()
+    Returns
+    -------
+    tuple
+        (reordered_data, reordered_row_labels, reordered_column_labels, reordered_mask)
+    """
+    # Make copies to avoid modifying originals
+    data_plot = data.copy()
+    row_labels_plot = row_labels.copy()
+    column_labels_plot = column_labels.copy()
+    mask_plot = mask.copy() if mask is not None else None
 
-    return fig
+    # Perform clustering
+    row_order, col_order, _, _ = hierarchical_cluster(
+        data_plot, axis=cluster, method=cluster_method, metric=cluster_metric
+    )
+
+    # Reorder data, labels, and mask based on clustering
+    if row_order is not None:
+        data_plot = data_plot[row_order, :]
+        row_labels_plot = [row_labels_plot[i] for i in row_order]
+        if mask_plot is not None:
+            mask_plot = mask_plot[row_order, :]
+
+    if col_order is not None:
+        data_plot = data_plot[:, col_order]
+        column_labels_plot = [column_labels_plot[i] for i in col_order]
+        if mask_plot is not None:
+            mask_plot = mask_plot[:, col_order]
+
+    return data_plot, row_labels_plot, column_labels_plot, mask_plot
