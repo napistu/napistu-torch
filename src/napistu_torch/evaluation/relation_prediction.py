@@ -110,7 +110,7 @@ def compare_relation_type_predictions_to_perturbseq_truth(
     relation_type_indices: dict[str, int]
         A dictionary mapping relation_type names to their indices in the relation_type embedding.
     perturbseq_edgelist_tensor: torch.Tensor
-        A tensor of shape (2, num_edges) containing the source and target species_ids for each edge.
+        A tensor of shape (2, num_edges) containing the indices of each edge's source and target vertices in the NapistuData vertex tensor.
     napistu_data: NapistuData
         The NapistuData instance containing the graph structure.
     distinct_perturbseq_pairs: pd.DataFrame

@@ -40,6 +40,7 @@ from napistu_torch.load.artifacts import (
 from napistu_torch.load.constants import VALID_SPLITTING_STRATEGIES
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.utils.base_utils import ensure_path
 from napistu_torch.vertex_tensor import VertexTensor
 
 logger = logging.getLogger(__name__)
@@ -133,7 +134,7 @@ class NapistuDataStore:
         >>> # Load an existing store
         >>> store = NapistuDataStore('.store')
         """
-        self.store_dir = Path(store_dir)
+        self.store_dir = ensure_path(store_dir)
         self.registry_path = self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
 
         if not self.registry_path.exists():
@@ -228,7 +229,7 @@ class NapistuDataStore:
         ...     copy_to_store=False
         ... )
         """
-        store_dir = Path(store_dir)
+        store_dir = ensure_path(store_dir)
         registry_path = store_dir / NAPISTU_DATA_STORE_STRUCTURE.REGISTRY_FILE
 
         # Handle overwrite logic
@@ -238,9 +239,13 @@ class NapistuDataStore:
 
         # Skip path validation and copying when read_only is True
         if not read_only:
-            sbml_dfs_path = Path(sbml_dfs_path) if sbml_dfs_path is not None else None
+            sbml_dfs_path = (
+                ensure_path(sbml_dfs_path) if sbml_dfs_path is not None else None
+            )
             napistu_graph_path = (
-                Path(napistu_graph_path) if napistu_graph_path is not None else None
+                ensure_path(napistu_graph_path)
+                if napistu_graph_path is not None
+                else None
             )
             _validate_create_inputs(registry_path, sbml_dfs_path, napistu_graph_path)
 
@@ -361,8 +366,8 @@ class NapistuDataStore:
             return
 
         # Validate that files exist
-        sbml_dfs_path = Path(sbml_dfs_path)
-        napistu_graph_path = Path(napistu_graph_path)
+        sbml_dfs_path = ensure_path(sbml_dfs_path)
+        napistu_graph_path = ensure_path(napistu_graph_path)
 
         if not sbml_dfs_path.is_file():
             raise FileNotFoundError(f"SBML_dfs file not found: {sbml_dfs_path}")

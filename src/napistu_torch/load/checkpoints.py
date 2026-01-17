@@ -44,6 +44,7 @@ from napistu_torch.load.constants import (
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.models.constants import MODEL_DEFS
 from napistu_torch.napistu_data import NapistuData
+from napistu_torch.utils.base_utils import ensure_path
 from napistu_torch.utils.environment_info import EnvironmentInfo
 
 logger = logging.getLogger(__name__)
@@ -250,7 +251,7 @@ class Checkpoint:
         >>> checkpoint = Checkpoint.load("model.ckpt")
         >>> checkpoint = Checkpoint.load("model.ckpt", map_location="cuda:0")
         """
-        checkpoint_path = Path(checkpoint_path)
+        checkpoint_path = ensure_path(checkpoint_path, expand_user=True)
 
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")

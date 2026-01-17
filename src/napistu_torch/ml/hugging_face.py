@@ -45,6 +45,7 @@ from napistu_torch.ml.wandb import WandbRunInfo, get_wandb_metrics_table
 from napistu_torch.models.constants import RELATION_AWARE_HEADS
 from napistu_torch.napistu_data_store import NapistuDataStore
 from napistu_torch.tasks.constants import TASK_DESCRIPTIONS
+from napistu_torch.utils.base_utils import ensure_path
 from napistu_torch.utils.table_utils import format_metrics_as_markdown
 
 logger = logging.getLogger(__name__)
@@ -377,7 +378,7 @@ class HFDatasetLoader(HFClient):
     ):
         super().__init__(token=token)
         self.repo_id = repo_id
-        self.store_dir = Path(store_dir)
+        self.store_dir = ensure_path(store_dir)
         self.revision = revision or "main"
 
         # Validate repo_id format
