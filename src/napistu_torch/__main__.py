@@ -465,6 +465,18 @@ def test(experiment_dir: Path, checkpoint: Optional[Path]):
     default=False,
     help="Initialize the head to approximate an identity transformation",
 )
+@click.option(
+    "--mlp_num_layers",
+    "mlp_num_layers",
+    type=int,
+    help="Number of hidden layers for MLP-based heads",
+)
+@click.option(
+    "--mlp_hidden_dim",
+    "mlp_hidden_dim",
+    type=int,
+    help="Hidden dimension for MLP-based heads",
+)
 @click.option("--lr", type=float, help="Learning rate")
 @click.option("--weight_decay", "weight_decay", type=float, help="Weight decay")
 @click.option("--optimizer", type=str, help="Optimizer")
@@ -497,6 +509,8 @@ def train(
     hidden_channels: Optional[int],
     dropout: Optional[float],
     init_head_as_identity: bool,
+    mlp_num_layers: Optional[int],
+    mlp_hidden_dim: Optional[int],
     lr: Optional[float],
     weight_decay: Optional[float],
     optimizer: Optional[str],
@@ -536,6 +550,8 @@ def train(
         hidden_channels=hidden_channels,
         dropout=dropout,
         init_head_as_identity=init_head_as_identity,
+        mlp_num_layers=mlp_num_layers,
+        mlp_hidden_dim=mlp_hidden_dim,
         lr=lr,
         optimizer=optimizer,
         scheduler=scheduler,

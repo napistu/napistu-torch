@@ -157,7 +157,7 @@ jobs:
         
         git tag -a "v${VERSION}" -m "Release version ${VERSION}
 
-        ✅ All CI checks passed (lint, test, MCP tests)
+        ✅ All CI checks passed (lint, test)
         📈 Version bumped: ${PREVIOUS} → ${VERSION}
         📦 Ready for PyPI and Docker release
         🚀 Commit: ${{ github.event.workflow_run.head_sha }}

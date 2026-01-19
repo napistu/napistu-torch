@@ -29,6 +29,8 @@ def format_named_overrides(
     hidden_channels: Optional[int] = None,
     dropout: Optional[float] = None,
     init_head_as_identity: bool = False,
+    mlp_num_layers: Optional[int] = None,
+    mlp_hidden_dim: Optional[int] = None,
     lr: Optional[float] = None,
     weight_decay: Optional[float] = None,
     optimizer: Optional[str] = None,
@@ -59,6 +61,10 @@ def format_named_overrides(
         Dropout rate
     init_head_as_identity : bool
         Whether to initialize the head to approximate an identity transformation
+    mlp_num_layers : Optional[int]
+        Number of hidden layers for MLP-based heads
+    mlp_hidden_dim : Optional[int]
+        Hidden dimension for MLP-based heads
     lr : Optional[float]
         Learning rate
     weight_decay : Optional[float]
@@ -104,6 +110,8 @@ def format_named_overrides(
         TRAIN_NAMED_ARGS.HIDDEN_CHANNELS: hidden_channels,
         TRAIN_NAMED_ARGS.DROPOUT: dropout,
         TRAIN_NAMED_ARGS.INIT_HEAD_AS_IDENTITY: init_head_as_identity,
+        TRAIN_NAMED_ARGS.MLP_NUM_LAYERS: mlp_num_layers,
+        TRAIN_NAMED_ARGS.MLP_HIDDEN_DIM: mlp_hidden_dim,
         TRAIN_NAMED_ARGS.LR: lr,
         TRAIN_NAMED_ARGS.WEIGHT_DECAY: weight_decay,
         TRAIN_NAMED_ARGS.OPTIMIZER: optimizer,

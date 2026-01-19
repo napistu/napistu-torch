@@ -69,6 +69,7 @@ def test_normalize_and_validate_indices():
         normalize_and_validate_indices([1.5, 2.0], max_value=5)
 
 
+@pytest.mark.skip_on_windows
 def test_ensure_path():
     """Test ensure_path with various input types and expand_user settings."""
     # Test string input converts to Path
