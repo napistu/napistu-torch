@@ -5,8 +5,12 @@ Public Functions
 ----------------
 compute_confusion_matrix(predictions, true_labels, normalize=None)
     Compute confusion matrix from prediction scores and true labels.
-compute_correlation_matrix(data, method='spearman')
-    Compute pairwise correlation matrix between columns of a data matrix.
+compute_correlation(x, y, method='spearman', device=None)
+    Compute correlation between two vectors using PyTorch with proper memory management.
+compute_correlation_matrix(data, method='spearman', device=None)
+    Compute pairwise correlation matrix between columns using optimized tensor operations.
+compute_correlation_matrix_numpy(data, method='spearman')
+    Compute pairwise correlation matrix using scipy (for testing/comparison or if p-values are needed).
 compute_cosine_distances_torch(tensor_like, device=None)
     Compute cosine distance matrix using PyTorch with proper memory management.
 compute_effective_dimensionality(vectors)
@@ -15,16 +19,15 @@ compute_max_abs_over_z(attention_3d, return_indices=False)
     Find maximum absolute attention values across layers (z dimension), preserving sign.
 compute_max_over_z(attention_3d, return_indices=False)
     Find maximum attention values across layers (z dimension) without taking absolute value.
-compute_spearman_correlation_torch(x, y, device=None)
-    Compute Spearman correlation using PyTorch with proper memory management.
-find_top_k(tensor, k, by_absolute_value=True)
-    Extract top-k values and indices from a 2D tensor.
 compute_tensor_ranks(tensor, by_absolute_value=True)
     Compute rank matrix for a tensor.
+find_top_k(tensor, k, by_absolute_value=True)
+    Extract top-k values and indices from a 2D tensor.
 validate_tensor_for_nan_inf(tensor, name)
     Validate tensor for NaN/Inf values and raise informative error if found.
 """
 
+import logging
 from typing import Optional, Tuple, Union
 
 import numpy as np
@@ -40,6 +43,8 @@ from napistu_torch.utils.torch_utils import (
     ensure_device,
     memory_manager,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def compute_confusion_matrix(
@@ -126,16 +131,270 @@ def compute_confusion_matrix(
     return cm
 
 
+def compute_correlation(
+    x: Union[np.ndarray, Tensor],
+    y: Union[np.ndarray, Tensor],
+    method: str = CORRELATION_METHODS.SPEARMAN,
+    device: Optional[Union[str, torch_device]] = None,
+    verbose: bool = False,
+) -> float:
+    """
+    Compute correlation between two vectors using PyTorch with proper memory management.
+
+    Parameters
+    ----------
+    x : array-like
+        First vector (numpy array or torch.Tensor)
+    y : array-like
+        Second vector (numpy array or torch.Tensor)
+    method : str, optional
+        Correlation method to use:
+        - 'spearman' (default): Spearman rank correlation (robust to monotonic relationships)
+        - 'pearson': Pearson correlation (measures linear relationships)
+    device : Optional[Union[str, torch_device]]
+        The device to use for the computation. If None, the device will be automatically selected.
+    verbose : bool, optional
+        If True, print verbose output.
+
+    Returns
+    -------
+    correlation : float
+        Correlation coefficient between x and y
+        - Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation)
+        - 0 indicates no correlation
+
+    Examples
+    --------
+    >>> x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    >>> y = torch.tensor([2.0, 4.0, 6.0, 8.0, 10.0])
+    >>> corr = compute_correlation(x, y, method='pearson')
+    >>> print(corr)  # Should be close to 1.0 (perfect positive correlation)
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    with memory_manager(device):
+        # Convert to torch tensors if needed
+        if isinstance(x, np.ndarray):
+            x_tensor = torch.from_numpy(x).float().to(device)
+        else:
+            x_tensor = x.to(device).float() if hasattr(x, "to") else x
+
+        if isinstance(y, np.ndarray):
+            y_tensor = torch.from_numpy(y).float().to(device)
+        else:
+            y_tensor = y.to(device).float() if hasattr(y, "to") else y
+
+        # Check if inputs are multi-dimensional and suggest alternative
+        if x_tensor.ndim > 1 or y_tensor.ndim > 1:
+            error_parts = []
+            if x_tensor.ndim > 1:
+                error_parts.append(f"x has shape {x_tensor.shape} (expected 1D vector)")
+            if y_tensor.ndim > 1:
+                error_parts.append(f"y has shape {y_tensor.shape} (expected 1D vector)")
+
+            error_msg = "Expected 1D vectors, but got: " + ", ".join(error_parts) + ". "
+            error_msg += (
+                "If you want to compute a correlation matrix between columns, use "
+            )
+            error_msg += f"compute_correlation_matrix(data, method='{method}') instead."
+
+            raise ValueError(error_msg)
+
+        # Check that vectors have the same length
+        if len(x_tensor) != len(y_tensor):
+            raise ValueError(
+                f"Vectors must have the same length. Got x: {len(x_tensor)}, y: {len(y_tensor)}"
+            )
+
+        if verbose:
+            logger.info(
+                f"Computing {method.capitalize()} correlation between length {len(x_tensor)} vectors on device {device}"
+            )
+
+        # For Spearman, convert to ranks first
+        if method == CORRELATION_METHODS.SPEARMAN:
+            # Use the utility function for consistent tie handling
+            # Stack x and y as columns, compute ranks, then extract
+            data = torch.stack([x_tensor, y_tensor], dim=1)
+            ranks = _compute_spearman_ranks(data, device=device)
+            x_data = ranks[:, 0]
+            y_data = ranks[:, 1]
+        elif method == CORRELATION_METHODS.PEARSON:
+            x_data = x_tensor
+            y_data = y_tensor
+        else:
+            raise ValueError(
+                f"Unknown method: {method}. Use {CORRELATION_METHODS.SPEARMAN} or {CORRELATION_METHODS.PEARSON}"
+            )
+
+        # Calculate Pearson correlation
+        x_centered = x_data - x_data.mean()
+        y_centered = y_data - y_data.mean()
+
+        # Compute correlation: cov(x,y) / (std(x) * std(y))
+        numerator = (x_centered * y_centered).sum()
+        denominator = torch.sqrt((x_centered**2).sum()) * torch.sqrt(
+            (y_centered**2).sum()
+        )
+
+        # Handle edge case: if denominator is zero (constant vectors)
+        if denominator == 0:
+            correlation = torch.tensor(0.0, device=device)
+        else:
+            correlation = numerator / denominator
+
+        result = correlation.item()
+
+        return result
+
+
 def compute_correlation_matrix(
     data: Tensor | np.ndarray,
     method: str = CORRELATION_METHODS.SPEARMAN,
-) -> tuple[np.ndarray, np.ndarray]:
+    device: Optional[Union[str, torch_device]] = None,
+    verbose: bool = False,
+) -> np.ndarray:
     """
     Compute pairwise correlation matrix between columns of a data matrix.
 
     Calculates correlation coefficients between all pairs of columns (features)
-    in the input data. Useful for analyzing relationships between features,
-    identifying redundant features, or understanding feature similarity patterns.
+    in the input data using optimized tensor operations. Much faster than
+    scipy-based implementations, especially for large matrices.
+
+    Parameters
+    ----------
+    data : torch.Tensor or np.ndarray
+        Shape [n_samples, n_features] - data matrix where each column represents
+        a feature/variable and each row represents a sample/observation
+    method : str, optional
+        Correlation method to use:
+        - 'spearman' (default): Spearman rank correlation (robust to monotonic relationships)
+        - 'pearson': Pearson correlation (measures linear relationships)
+    device : Optional[Union[str, torch_device]]
+        The device to use for the computation. If None, the device will be automatically selected.
+    verbose : bool, optional
+        If True, print verbose output.
+
+    Returns
+    -------
+    correlation_matrix : np.ndarray
+        Shape [n_features, n_features] - symmetric correlation matrix where
+        element [i, j] is the correlation coefficient between feature i and feature j
+        - Diagonal elements are always 1.0 (perfect self-correlation)
+        - Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation)
+        - Matrix is symmetric: correlation_matrix[i, j] == correlation_matrix[j, i]
+
+    Examples
+    --------
+    >>> # Example: correlation between prediction scores for different classes
+    >>> scores = torch.tensor([[0.8, 0.5, 0.3],
+    ...                        [0.7, 0.6, 0.2],
+    ...                        [0.9, 0.4, 0.1],
+    ...                        [0.6, 0.7, 0.3]])
+    >>> corr_matrix = compute_correlation_matrix(scores)
+    >>> print(corr_matrix.shape)  # (3, 3) - one row/col per feature
+
+    >>> # High positive correlation means features tend to increase/decrease together
+    >>> # High negative correlation means features have opposite trends
+    >>> # Near-zero correlation means features are independent
+
+    >>> # Example: check if two features are highly correlated (redundant)
+    >>> if corr_matrix[0, 1] > 0.9:
+    ...     print("Features 0 and 1 are highly correlated")
+
+    Notes
+    -----
+    **Spearman vs Pearson:**
+    - Use Spearman (default) for:
+      - Monotonic but non-linear relationships
+      - Data with outliers (more robust)
+      - Ordinal data or ranks
+    - Use Pearson for:
+      - Linear relationships
+      - Normally distributed data
+      - When you want to detect only linear associations
+
+    The correlation matrix is symmetric and can be visualized using plot_heatmap()
+    with mask_upper_triangle=True to avoid redundant display.
+
+    **Performance:**
+    This implementation uses optimized tensor operations instead of loops,
+    making it significantly faster than scipy-based approaches for large matrices.
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    with memory_manager(device):
+        # Convert to tensor if needed
+        if isinstance(data, np.ndarray):
+            data_tensor = torch.from_numpy(data).float().to(device)
+        else:
+            data_tensor = data.float().to(device)
+
+        n_samples = data_tensor.shape[0]
+
+        if verbose:
+            n_features = data_tensor.shape[1]
+            logger.info(
+                f"Computing {method.capitalize()} correlation for {n_samples} samples and {n_features} features on device {device}"
+            )
+
+        # For Spearman, convert to ranks first using utility function
+        if method == CORRELATION_METHODS.SPEARMAN:
+            data_for_corr = _compute_spearman_ranks(data_tensor, device=device)
+        elif method == CORRELATION_METHODS.PEARSON:
+            data_for_corr = data_tensor
+        else:
+            raise ValueError(
+                f"Unknown method: {method}. Use {CORRELATION_METHODS.SPEARMAN} or {CORRELATION_METHODS.PEARSON}"
+            )
+
+        # Center the data (subtract mean of each column)
+        data_centered = data_for_corr - data_for_corr.mean(dim=0, keepdim=True)
+
+        # Compute standard deviations for each column
+        std_devs = data_centered.std(dim=0, unbiased=True)
+
+        # Avoid division by zero (handle constant columns)
+        std_devs = torch.clamp(std_devs, min=1e-8)
+
+        # Compute covariance matrix: (X^T @ X) / (n-1)
+        # Shape: [n_features, n_features]
+        cov_matrix = (data_centered.T @ data_centered) / (n_samples - 1)
+
+        # Compute correlation matrix: cov / (std_i * std_j)
+        # Outer product of standard deviations
+        std_outer = std_devs.unsqueeze(1) @ std_devs.unsqueeze(0)
+        correlation_matrix = cov_matrix / std_outer
+
+        # Set diagonal to 1.0 (perfect self-correlation)
+        correlation_matrix.fill_diagonal_(1.0)
+
+        # Convert back to numpy
+        correlation_matrix_np = correlation_matrix.cpu().numpy()
+
+        # Clean up
+        cleanup_tensors(
+            data_tensor,
+            data_for_corr,
+            data_centered,
+            std_devs,
+            cov_matrix,
+            std_outer,
+            correlation_matrix,
+        )
+
+    return correlation_matrix_np
+
+
+def compute_correlation_matrix_numpy(
+    data: Tensor | np.ndarray,
+    method: str = CORRELATION_METHODS.SPEARMAN,
+) -> np.ndarray:
+    """
+    Compute pairwise correlation matrix between columns using scipy (for testing).
+
+    This is a reference implementation using scipy that can be used for comparison
+    and testing against the optimized tensor-based implementation.
 
     Parameters
     ----------
@@ -155,45 +414,12 @@ def compute_correlation_matrix(
         - Diagonal elements are always 1.0 (perfect self-correlation)
         - Values range from -1 (perfect negative correlation) to +1 (perfect positive correlation)
         - Matrix is symmetric: correlation_matrix[i, j] == correlation_matrix[j, i]
-    p_values : np.ndarray
-        Shape [n_features, n_features] - matrix of p-values for testing non-correlation
-        - Element [i, j] is the p-value for the null hypothesis that features i and j
-          are uncorrelated
-        - Diagonal p-values are 0.0 (self-correlation is always significant)
-        - Small p-values (e.g., < 0.05) indicate statistically significant correlations
-
-    Examples
-    --------
-    >>> # Example: correlation between prediction scores for different classes
-    >>> scores = torch.tensor([[0.8, 0.5, 0.3],
-    ...                        [0.7, 0.6, 0.2],
-    ...                        [0.9, 0.4, 0.1],
-    ...                        [0.6, 0.7, 0.3]])
-    >>> corr_matrix, p_vals = compute_correlation_matrix(scores)
-    >>> print(corr_matrix.shape)  # (3, 3) - one row/col per feature
-
-    >>> # High positive correlation means features tend to increase/decrease together
-    >>> # High negative correlation means features have opposite trends
-    >>> # Near-zero correlation means features are independent
-
-    >>> # Example: check if two features are highly correlated (redundant)
-    >>> if corr_matrix[0, 1] > 0.9 and p_vals[0, 1] < 0.05:
-    ...     print("Features 0 and 1 are highly correlated")
 
     Notes
     -----
-    **Spearman vs Pearson:**
-    - Use Spearman (default) for:
-      - Monotonic but non-linear relationships
-      - Data with outliers (more robust)
-      - Ordinal data or ranks
-    - Use Pearson for:
-      - Linear relationships
-      - Normally distributed data
-      - When you want to detect only linear associations
-
-    The correlation matrix is symmetric and can be visualized using plot_heatmap()
-    with mask_upper_triangle=True to avoid redundant display.
+    This function uses scipy's pairwise correlation functions in a loop, which is
+    slower than the optimized tensor-based implementation but useful for testing
+    and validation purposes.
     """
     # Convert to numpy if torch tensor
     if isinstance(data, Tensor):
@@ -201,9 +427,8 @@ def compute_correlation_matrix(
 
     n_features = data.shape[1]
 
-    # Initialize matrices
+    # Initialize matrix
     correlation_matrix = np.zeros((n_features, n_features))
-    p_values = np.zeros((n_features, n_features))
 
     # Compute pairwise correlations
     for i in range(n_features):
@@ -211,21 +436,19 @@ def compute_correlation_matrix(
             if i == j:
                 # Perfect self-correlation
                 correlation_matrix[i, j] = 1.0
-                p_values[i, j] = 0.0
             else:
                 if method == CORRELATION_METHODS.SPEARMAN:
-                    corr, pval = spearmanr(data[:, i], data[:, j])
+                    corr, _ = spearmanr(data[:, i], data[:, j])
                 elif method == CORRELATION_METHODS.PEARSON:
-                    corr, pval = pearsonr(data[:, i], data[:, j])
+                    corr, _ = pearsonr(data[:, i], data[:, j])
                 else:
                     raise ValueError(
                         f"Unknown method: {method}. Use {CORRELATION_METHODS.SPEARMAN} or {CORRELATION_METHODS.PEARSON}"
                     )
 
                 correlation_matrix[i, j] = corr
-                p_values[i, j] = pval
 
-    return correlation_matrix, p_values
+    return correlation_matrix
 
 
 def compute_cosine_distances_torch(
@@ -400,57 +623,109 @@ def compute_max_over_z(
     return max_values
 
 
-def compute_spearman_correlation_torch(
-    x: Union[np.ndarray, Tensor],
-    y: Union[np.ndarray, Tensor],
-    device: Optional[Union[str, torch_device]] = None,
-) -> float:
+def compute_tensor_ranks(
+    tensor: Tensor,
+    by_absolute_value: bool = False,
+    ascending: bool = False,
+    handle_ties: bool = False,
+) -> Tensor:
     """
-    Compute Spearman correlation using PyTorch with proper memory management
+    Compute rank matrix for a tensor.
+
+    Converts a tensor to a rank matrix where each value is replaced by its
+    integer rank (1 = highest, 2 = second highest, etc.). This allows O(1) rank
+    lookup via indexing instead of O(log n) searchsorted per query.
 
     Parameters
     ----------
-    x : array-like
-        First vector (numpy array or similar)
-    y : array-like
-        Second vector (numpy array or similar)
-    device : Optional[Union[str, torch_device]]
-        The device to use for the computation. If None, the device will be automatically selected.
+    tensor : Tensor
+        Tensor of any shape to compute ranks for
+    by_absolute_value : bool, optional
+        If True, rank by absolute value (default: False).
+        If False, rank by raw value.
+    ascending : bool, optional
+        If True, rank in ascending order (1 = smallest) (default: False).
+        If False, rank in descending order (1 = largest).
+    handle_ties : bool, optional
+        If True, tied values receive average rank (default: False).
+        If False, tied values receive arbitrary sequential ranks.
+        Required for Spearman correlation.
 
     Returns
     -------
-    rho : float
-        Spearman correlation coefficient
+    Tensor
+        Rank tensor of same shape as input.
+        - If handle_ties=False: dtype=int64
+        - If handle_ties=True: dtype=float32 (for average ranks)
+
+    Examples
+    --------
+    >>> # Compute rank matrix for attention tensor
+    >>> attention = torch.randn(100, 100)
+    >>> rank_matrix = compute_tensor_ranks(attention)
+    >>> # Extract ranks via indexing (very fast!)
+    >>> edge_ranks = rank_matrix[from_idx, to_idx]
+    >>>
+    >>> # Spearman correlation ranks with tie handling
+    >>> data = torch.tensor([1.0, 3.0, 2.0, 3.0, 5.0])
+    >>> ranks = compute_tensor_ranks(data, ascending=True, handle_ties=True)
+    >>> # Result: [1.0, 3.5, 2.0, 3.5, 5.0] - tied 3.0s get average rank
     """
+    device = tensor.device
 
-    device = ensure_device(device, allow_autoselect=True)
-    with memory_manager(device):
-        # Convert to torch tensors if needed
-        if isinstance(x, np.ndarray):
-            x_tensor = torch.from_numpy(x).float().to(device)
-        else:
-            x_tensor = x.to(device) if hasattr(x, "to") else x
+    # Flatten tensor
+    if by_absolute_value:
+        values = torch.abs(tensor).flatten()
+    else:
+        values = tensor.flatten()
 
-        if isinstance(y, np.ndarray):
-            y_tensor = torch.from_numpy(y).float().to(device)
-        else:
-            y_tensor = y.to(device) if hasattr(y, "to") else y
+    n_elements = values.shape[0]
 
-        # Convert values to ranks
-        x_rank = torch.argsort(torch.argsort(x_tensor)).float()
-        y_rank = torch.argsort(torch.argsort(y_tensor)).float()
+    # Get argsort indices
+    sorted_indices = torch.argsort(values, descending=(not ascending))
 
-        # Calculate Pearson correlation on ranks
-        x_centered = x_rank - x_rank.mean()
-        y_centered = y_rank - y_rank.mean()
-
-        correlation = (x_centered * y_centered).sum() / (
-            torch.sqrt((x_centered**2).sum()) * torch.sqrt((y_centered**2).sum())
+    if handle_ties:
+        # Use float32 for average ranks
+        ranks_flat = torch.zeros(n_elements, dtype=torch.float32, device=device)
+        ranks_flat[sorted_indices] = torch.arange(
+            1, n_elements + 1, dtype=torch.float32, device=device
         )
 
-        result = correlation.item()
+        # Check if there are any ties
+        unique_vals, inverse_indices = torch.unique(values, return_inverse=True)
 
-        return result
+        if len(unique_vals) < n_elements:  # Ties exist
+            # Compute average rank for each unique value
+            rank_sums = torch.zeros(
+                len(unique_vals), device=device, dtype=torch.float32
+            )
+            rank_counts = torch.zeros(
+                len(unique_vals), device=device, dtype=torch.float32
+            )
+
+            rank_sums.scatter_add_(0, inverse_indices, ranks_flat)
+            rank_counts.scatter_add_(0, inverse_indices, torch.ones_like(ranks_flat))
+
+            avg_ranks = rank_sums / rank_counts
+            ranks_flat = avg_ranks[inverse_indices]
+
+            cleanup_tensors(
+                rank_sums, rank_counts, avg_ranks, unique_vals, inverse_indices
+            )
+    else:
+        # Use int64 for sequential ranks (original behavior)
+        ranks_flat = torch.zeros(n_elements, dtype=torch.int64, device=device)
+        ranks_flat[sorted_indices] = torch.arange(
+            1, n_elements + 1, dtype=torch.int64, device=device
+        )
+
+    cleanup_tensors(values, sorted_indices)
+
+    # Reshape back to original shape
+    rank_tensor = ranks_flat.reshape(tensor.shape)
+    cleanup_tensors(ranks_flat)
+
+    return rank_tensor
 
 
 def find_top_k(
@@ -536,78 +811,6 @@ def find_top_k(
     cleanup_tensors(row_indices, col_indices, values, sort_idx)
 
     return sorted_row_indices, sorted_col_indices, sorted_values
-
-
-def compute_tensor_ranks(
-    tensor: Tensor,
-    by_absolute_value: bool = True,
-) -> Tensor:
-    """
-    Compute rank matrix for a tensor.
-
-    Converts a tensor to a rank matrix where each value is replaced by its
-    integer rank (1 = highest, 2 = second highest, etc.). This allows O(1) rank
-    lookup via indexing instead of O(log n) searchsorted per query.
-
-    Parameters
-    ----------
-    tensor : Tensor
-        Tensor of any shape to compute ranks for
-    by_absolute_value : bool, optional
-        If True, rank by absolute value (default: True).
-        If False, rank by raw value.
-
-    Returns
-    -------
-    Tensor
-        Rank tensor of same shape as input, dtype=int64.
-        Rank 1 = highest value, rank 2 = second highest, etc.
-
-    Examples
-    --------
-    >>> # Compute rank matrix for attention tensor
-    >>> attention = torch.randn(100, 100)
-    >>> rank_matrix = compute_tensor_ranks(attention)
-    >>> # Extract ranks via indexing (very fast!)
-    >>> edge_ranks = rank_matrix[from_idx, to_idx]
-    >>>
-    >>> # Rank by raw value instead of absolute value
-    >>> rank_matrix = compute_tensor_ranks(attention, by_absolute_value=False)
-    """
-    device = tensor.device
-
-    # Flatten tensor
-    if by_absolute_value:
-        values = torch.abs(tensor).flatten()
-    else:
-        values = tensor.flatten()
-
-    # Store metadata before freeing values
-    n_elements = values.shape[0]
-
-    # Get argsort indices (indices that would sort values in descending order)
-    sorted_indices = torch.argsort(values, descending=True)
-
-    # Free values immediately - no longer needed after argsort
-    cleanup_tensors(values)
-
-    # Create rank array: rank[i] = position of value[i] in sorted order
-    # We need to invert the argsort mapping
-    ranks_flat = torch.zeros(n_elements, dtype=torch.int64, device=device)
-    ranks_flat[sorted_indices] = torch.arange(
-        1, n_elements + 1, dtype=torch.int64, device=device
-    )
-
-    # Free sorted_indices immediately - no longer needed after indexing
-    cleanup_tensors(sorted_indices)
-
-    # Reshape back to original shape (creates view if possible)
-    rank_tensor = ranks_flat.reshape(tensor.shape)
-
-    # Free ranks_flat (rank_tensor may be a view or copy depending on contiguity)
-    cleanup_tensors(ranks_flat)
-
-    return rank_tensor
 
 
 def compute_tensor_ranks_for_indices(
@@ -747,3 +950,59 @@ def validate_tensor_for_nan_inf(
                 )
 
         raise ValueError(error_msg)
+
+
+def _compute_spearman_ranks(
+    data_tensor: Tensor,
+    device: Optional[Union[str, torch_device]] = None,
+) -> Tensor:
+    """
+    Compute Spearman ranks for each column of a data matrix with tie handling.
+
+    Converts data to ranks where tied values receive the average rank of their group.
+    This is used for Spearman correlation computation.
+
+    Parameters
+    ----------
+    data_tensor : torch.Tensor
+        Shape [n_samples, n_features] - data matrix where each column represents
+        a feature/variable and each row represents a sample/observation
+    device : Optional[Union[str, torch_device]]
+        The device to use for the computation. If None, uses the device of data_tensor.
+
+    Returns
+    -------
+    ranks : torch.Tensor
+        Shape [n_samples, n_features] - rank matrix where each column contains
+        the ranks of the corresponding column in data_tensor, with ties receiving
+        average ranks (matching scipy's behavior)
+
+    Examples
+    --------
+    >>> data = torch.tensor([[1.0, 5.0, 3.0],
+    ...                      [2.0, 5.0, 1.0],
+    ...                      [2.0, 3.0, 2.0]])
+    >>> ranks = compute_spearman_ranks_torch(data)
+    >>> # Column 0: [1.0, 2.0, 2.0] -> ranks [1.0, 2.5, 2.5] (ties get average)
+    >>> # Column 1: [5.0, 5.0, 3.0] -> ranks [2.5, 2.5, 1.0]
+    >>> # Column 2: [3.0, 1.0, 2.0] -> ranks [3.0, 1.0, 2.0]
+    """
+    if device is None:
+        device = data_tensor.device
+    else:
+        device = ensure_device(device, allow_autoselect=False)
+        data_tensor = data_tensor.to(device)
+
+    n_samples, n_features = data_tensor.shape
+    ranks = torch.zeros((n_samples, n_features), dtype=torch.float32, device=device)
+
+    # Compute ranks for each column
+    for col_idx in range(n_features):
+        ranks[:, col_idx] = compute_tensor_ranks(
+            data_tensor[:, col_idx],
+            by_absolute_value=False,
+            ascending=True,
+            handle_ties=True,
+        )
+
+    return ranks

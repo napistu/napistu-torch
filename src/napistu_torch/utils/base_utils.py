@@ -1,6 +1,68 @@
-"""General utilities for the Python standard library."""
+"""
+General utilities for the Python standard library.
 
+Classes
+-------
+CorruptionError
+    Raised when MPS memory corruption is detected.
+
+Public Functions
+----------------
+ensure_path(path: Union[str, Path], expand_user: bool = True) -> Path
+    Convert a string or Path to a Path object, optionally expanding user home directory.
+normalize_and_validate_indices(indices: Union[int, List[int], tuple, range], max_value: int, param_name: str = "indices") -> List[int]
+    Normalize indices to a list and validate they are integers in valid range.
+shortest_common_prefix(names: List[str], min_length: int = 3) -> str
+    Find shortest common prefix respecting word boundaries.
+"""
+
+from pathlib import Path
 from typing import List, Union
+
+
+class CorruptionError(ValueError):
+    """Raised when MPS memory corruption is detected."""
+
+    pass
+
+
+def ensure_path(path: Union[str, Path], expand_user: bool = True) -> Path:
+    """
+    Convert a string or Path to a Path object, optionally expanding user home directory.
+
+    Parameters
+    ----------
+    path : Union[str, Path]
+        Path to convert. Can be a string (e.g., "~/data/store") or Path object.
+    expand_user : bool, default=True
+        If True, expand tildes (~) to the user's home directory.
+
+    Returns
+    -------
+    Path
+        Path object, with user expanded if expand_user=True.
+
+    Raises
+    ------
+    TypeError
+        If path is not a str or Path object.
+
+    Examples
+    --------
+    >>> ensure_path("~/data/store")
+    PosixPath('/home/user/data/store')
+    >>> ensure_path(Path("./relative/path"))
+    PosixPath('./relative/path')
+    >>> ensure_path("~/data", expand_user=False)
+    PosixPath('~/data')
+    """
+    if not isinstance(path, (str, Path)):
+        raise TypeError(f"path must be a str or Path object, got {type(path).__name__}")
+    if isinstance(path, str):
+        path = Path(path)
+    if expand_user:
+        path = path.expanduser()
+    return path
 
 
 def normalize_and_validate_indices(
@@ -113,9 +175,3 @@ def shortest_common_prefix(names: List[str], min_length: int = 3) -> str:
         return sorted(names)[0]
 
     return prefix_str
-
-
-class CorruptionError(ValueError):
-    """Raised when MPS memory corruption is detected."""
-
-    pass

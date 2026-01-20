@@ -6,11 +6,12 @@ from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.tensor_utils import (
     compute_confusion_matrix,
+    compute_correlation,
     compute_correlation_matrix,
+    compute_correlation_matrix_numpy,
     compute_cosine_distances_torch,
     compute_max_abs_over_z,
     compute_max_over_z,
-    compute_spearman_correlation_torch,
     compute_tensor_ranks,
     compute_tensor_ranks_for_indices,
     find_top_k,
@@ -57,10 +58,96 @@ def test_cosine_distances_spearman_correlation_agreement():
     dist_a = dist_a_full[iu]
     dist_b = dist_b_full[iu]
 
-    rho = compute_spearman_correlation_torch(dist_a, dist_b, device)
+    rho = compute_correlation(
+        dist_a, dist_b, method=CORRELATION_METHODS.SPEARMAN, device=device
+    )
 
     assert isinstance(rho, float)
     assert rho > 0.8
+
+
+@pytest.mark.parametrize(
+    "method,expected_corr",
+    [
+        (CORRELATION_METHODS.SPEARMAN, 1.0),
+        (CORRELATION_METHODS.PEARSON, 1.0),
+        (CORRELATION_METHODS.SPEARMAN, -1.0),
+        (CORRELATION_METHODS.PEARSON, -1.0),
+    ],
+)
+def test_compute_correlation_perfect_correlation(method, expected_corr):
+    """Test compute_correlation with perfect positive and negative correlation."""
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    if expected_corr > 0:
+        y = torch.tensor(
+            [2.0, 4.0, 6.0, 8.0, 10.0]
+        )  # Perfect positive linear relationship
+    else:
+        y = torch.tensor(
+            [5.0, 4.0, 3.0, 2.0, 1.0]
+        )  # Perfect negative linear relationship
+
+    corr = compute_correlation(x, y, method=method)
+
+    assert isinstance(corr, float)
+    assert np.allclose(corr, expected_corr, atol=1e-6)
+
+
+def test_compute_correlation_spearman_vs_pearson():
+    """Test that Spearman and Pearson give different results for nonlinear relationships."""
+    # Nonlinear but monotonic relationship
+    x = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0])
+    y = torch.tensor([1.0, 4.0, 9.0, 16.0, 25.0])  # Quadratic relationship
+
+    corr_spearman = compute_correlation(x, y, method=CORRELATION_METHODS.SPEARMAN)
+    corr_pearson = compute_correlation(x, y, method=CORRELATION_METHODS.PEARSON)
+
+    # Spearman should detect perfect monotonic relationship (corr = 1.0)
+    assert np.allclose(corr_spearman, 1.0, atol=1e-6)
+    # Pearson should detect strong but not perfect correlation
+    assert corr_pearson > 0.9
+    assert corr_pearson < 1.0
+
+
+def test_compute_correlation_numpy_input():
+    """Test compute_correlation with numpy array input."""
+    x = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    y = np.array([2.0, 4.0, 6.0, 8.0, 10.0])
+
+    corr = compute_correlation(x, y, method=CORRELATION_METHODS.PEARSON)
+
+    assert isinstance(corr, float)
+    assert np.allclose(corr, 1.0, atol=1e-6)
+
+
+def test_compute_correlation_2d_tensor_error():
+    """Test that compute_correlation raises helpful error for multi-dimensional tensors."""
+    # Test with 2D tensor for x
+    x_2d = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+    y_1d = torch.tensor([1.0, 2.0, 3.0])
+
+    with pytest.raises(ValueError, match="Expected 1D vectors"):
+        compute_correlation(x_2d, y_1d)
+
+    # Test with 2D tensor for y
+    x_1d = torch.tensor([1.0, 2.0, 3.0])
+    y_2d = torch.tensor([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]])
+
+    with pytest.raises(ValueError, match="Expected 1D vectors"):
+        compute_correlation(x_1d, y_2d)
+
+    # Test with both 2D tensors
+    with pytest.raises(ValueError, match="Expected 1D vectors"):
+        compute_correlation(x_2d, y_2d)
+
+    # Test with 3D tensor (should also raise error)
+    x_3d = torch.tensor([[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]])
+    with pytest.raises(ValueError, match="Expected 1D vectors"):
+        compute_correlation(x_3d, y_1d)
+
+    # Test that error message suggests compute_correlation_matrix
+    with pytest.raises(ValueError, match="compute_correlation_matrix"):
+        compute_correlation(x_2d, y_1d, method=CORRELATION_METHODS.PEARSON)
 
 
 def test_compute_confusion_matrix():
@@ -118,36 +205,29 @@ def test_compute_correlation_matrix():
     # Test basic properties
     data = torch.tensor([[1.0, 2.0, 3.0], [2.0, 4.0, 6.0], [3.0, 6.0, 9.0]])
 
-    corr_matrix, p_values = compute_correlation_matrix(data)
+    corr_matrix = compute_correlation_matrix(data)
 
     assert isinstance(corr_matrix, np.ndarray)
-    assert isinstance(p_values, np.ndarray)
     assert corr_matrix.shape == (3, 3)
-    assert p_values.shape == (3, 3)
     assert np.allclose(np.diag(corr_matrix), 1.0)
     assert np.allclose(corr_matrix, corr_matrix.T)
 
     # Test perfect correlation
     data = torch.tensor([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
 
-    corr_matrix, p_values = compute_correlation_matrix(
-        data, method=CORRELATION_METHODS.PEARSON
-    )
+    corr_matrix = compute_correlation_matrix(data, method=CORRELATION_METHODS.PEARSON)
 
     assert np.allclose(corr_matrix[0, 1], 1.0, atol=1e-6)
-    assert p_values[0, 1] < 0.05
 
 
 def test_compute_correlation_matrix_spearman_vs_pearson():
     """Test that Spearman and Pearson methods both work."""
     data = torch.tensor([[1.0, 1.0], [2.0, 4.0], [3.0, 9.0], [4.0, 16.0]])
 
-    corr_spearman, _ = compute_correlation_matrix(
+    corr_spearman = compute_correlation_matrix(
         data, method=CORRELATION_METHODS.SPEARMAN
     )
-    corr_pearson, _ = compute_correlation_matrix(
-        data, method=CORRELATION_METHODS.PEARSON
-    )
+    corr_pearson = compute_correlation_matrix(data, method=CORRELATION_METHODS.PEARSON)
 
     assert isinstance(corr_spearman, np.ndarray)
     assert isinstance(corr_pearson, np.ndarray)
@@ -159,10 +239,9 @@ def test_compute_correlation_matrix_numpy_input():
     """Test correlation matrix with numpy array input."""
     data = np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]])
 
-    corr_matrix, p_values = compute_correlation_matrix(data)
+    corr_matrix = compute_correlation_matrix(data)
 
     assert isinstance(corr_matrix, np.ndarray)
-    assert isinstance(p_values, np.ndarray)
 
 
 def test_compute_max_abs_over_z():
@@ -415,3 +494,97 @@ def test_compute_tensor_ranks_for_indices():
         tensor_2d, (single_row, single_col), by_absolute_value=True
     )
     assert single_rank_full == single_rank_indices[0], "Single index rank doesn't match"
+
+
+@pytest.mark.parametrize(
+    "method,test_case",
+    [
+        (CORRELATION_METHODS.SPEARMAN, "perfect_correlation"),
+        (CORRELATION_METHODS.PEARSON, "perfect_correlation"),
+        (CORRELATION_METHODS.SPEARMAN, "no_correlation"),
+        (CORRELATION_METHODS.PEARSON, "no_correlation"),
+        (CORRELATION_METHODS.SPEARMAN, "with_ties"),
+        (CORRELATION_METHODS.PEARSON, "with_ties"),
+        (CORRELATION_METHODS.SPEARMAN, "numpy_input"),
+        (CORRELATION_METHODS.PEARSON, "numpy_input"),
+    ],
+)
+def test_compute_correlation_matrix_vs_numpy(method, test_case):
+    """Test that optimized version matches numpy version across various scenarios."""
+    if test_case == "perfect_correlation":
+        # Perfect linear correlation
+        data = torch.tensor([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0], [4.0, 8.0]])
+        atol = 1e-6
+    elif test_case == "no_correlation":
+        # Uncorrelated data (random)
+        torch.manual_seed(42)
+        data = torch.randn(20, 5)
+        atol = 1e-5
+    elif test_case == "with_ties":
+        # Data with ties (important for Spearman)
+        data = torch.tensor(
+            [
+                [1.0, 2.0, 3.0],
+                [1.0, 2.0, 3.0],  # Ties in first two columns
+                [2.0, 3.0, 1.0],
+                [3.0, 1.0, 2.0],
+                [2.0, 3.0, 1.0],  # More ties
+            ]
+        )
+        atol = 1e-5
+    elif test_case == "numpy_input":
+        # Numpy array input
+        np.random.seed(42)
+        data = np.random.randn(15, 4)
+        atol = 1e-5
+    else:
+        raise ValueError(f"Unknown test case: {test_case}")
+
+    corr_optimized = compute_correlation_matrix(data, method=method)
+    corr_numpy = compute_correlation_matrix_numpy(data, method=method)
+
+    assert corr_optimized.shape == corr_numpy.shape
+    assert np.allclose(corr_optimized, corr_numpy, atol=atol)
+
+    # Additional checks for specific test cases
+    if test_case == "perfect_correlation":
+        # Perfect correlation should be 1.0
+        assert np.allclose(corr_optimized[0, 1], 1.0, atol=1e-6)
+        assert np.allclose(corr_numpy[0, 1], 1.0, atol=1e-6)
+    elif test_case == "no_correlation":
+        # Diagonal should be 1.0 and matrix should be symmetric
+        assert np.allclose(np.diag(corr_optimized), 1.0, atol=1e-6)
+        assert np.allclose(np.diag(corr_numpy), 1.0, atol=1e-6)
+        assert np.allclose(corr_optimized, corr_optimized.T, atol=1e-6)
+        assert np.allclose(corr_numpy, corr_numpy.T, atol=1e-6)
+
+
+@pytest.mark.filterwarnings("ignore:An input array is constant")
+def test_compute_correlation_matrix_vs_numpy_edge_cases():
+    """Test edge cases: constant columns, single column, etc."""
+    # Test with constant column (should handle gracefully)
+    data = torch.tensor([[1.0, 5.0], [2.0, 5.0], [3.0, 5.0], [4.0, 5.0]])
+
+    # Both should handle constant columns
+    # Note: scipy may issue a warning about constant input, which is expected
+    corr_optimized = compute_correlation_matrix(
+        data, method=CORRELATION_METHODS.PEARSON
+    )
+    corr_numpy = compute_correlation_matrix_numpy(
+        data, method=CORRELATION_METHODS.PEARSON
+    )
+
+    assert corr_optimized.shape == corr_numpy.shape
+    # Constant column should result in NaN or 0 correlation with other columns
+    # scipy returns NaN for constant columns, our implementation clamps std to avoid division by zero
+    # So we check that both handle it (may differ slightly but should not crash)
+    assert not np.isnan(
+        corr_optimized
+    ).any(), "Optimized version should handle constant columns"
+
+    # Test with very small matrix
+    data_small = torch.tensor([[1.0, 2.0], [2.0, 4.0]])
+    corr_opt_small = compute_correlation_matrix(data_small)
+    corr_np_small = compute_correlation_matrix_numpy(data_small)
+    assert corr_opt_small.shape == corr_np_small.shape
+    assert np.allclose(corr_opt_small, corr_np_small, atol=1e-5)

@@ -46,6 +46,7 @@ from napistu_torch.constants import (
 from napistu_torch.lightning.constants import EXPERIMENT_DICT
 from napistu_torch.napistu_data import NapistuData
 from napistu_torch.napistu_data_store import NapistuDataStore
+from napistu_torch.utils.base_utils import ensure_path
 from napistu_torch.utils.optional import require_lightning
 
 logger = logging.getLogger(__name__)
@@ -423,13 +424,7 @@ class LocalEvaluationManager(EvaluationManager):
             If manifest file is invalid or cannot be parsed
         """
 
-        if isinstance(experiment_dir, str):
-            experiment_dir = Path(experiment_dir).expanduser()
-        elif not isinstance(experiment_dir, Path):
-            raise TypeError(
-                f"Experiment directory must be a Path or string, got {type(experiment_dir)}"
-            )
-
+        experiment_dir = ensure_path(experiment_dir)
         if not experiment_dir.exists():
             raise FileNotFoundError(
                 f"Experiment directory {experiment_dir} does not exist"
@@ -840,7 +835,7 @@ class RemoteEvaluationManager(EvaluationManager):
     def from_huggingface(
         cls,
         repo_id: str,
-        data_store_dir: Path,
+        data_store_dir: Union[str, Path],
         revision: Optional[str] = None,
         data_repo_id: Optional[str] = None,
         data_revision: Optional[str] = None,
@@ -854,8 +849,10 @@ class RemoteEvaluationManager(EvaluationManager):
         ----------
         repo_id : str
             Model repository ID (e.g., "shackett/sage-octopus")
-        data_store_dir : Path
-            Directory for the data store. If it exists, will be loaded as-is.
+        data_store_dir : Union[str, Path]
+            Directory for the data store. Can be a string (e.g., "~/data/store")
+            or Path. Tildes (~) will be expanded to the user's home directory.
+            If it exists, will be loaded as-is.
             If it doesn't exist, will be downloaded from HuggingFace using
             data_repo_id (or config.data.hf_repo_id if not provided).
         revision : Optional[str]
@@ -912,6 +909,8 @@ class RemoteEvaluationManager(EvaluationManager):
         ... )
         """
         from napistu_torch.ml.hugging_face import HFModelLoader
+
+        data_store_dir = ensure_path(data_store_dir)
 
         # Load model
         model_loader = HFModelLoader(

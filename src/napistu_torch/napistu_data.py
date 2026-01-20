@@ -52,6 +52,7 @@ from napistu_torch.load.encoding import (
 )
 from napistu_torch.load.encoding_manager import EncodingManager
 from napistu_torch.ml.constants import DEVICE
+from napistu_torch.utils.base_utils import ensure_path
 from napistu_torch.utils.nd_utils import (
     add_optional_attr,
     compute_mask_hashes,
@@ -77,6 +78,8 @@ class NapistuData(Data):
         Graph connectivity in COO format with shape [2, num_edges]
     edge_attr : torch.Tensor
         Edge feature matrix with shape [num_edges, num_edge_features]
+    name: str = NAPISTU_DATA_DEFAULT_NAME,
+        Name of the NapistuData object. Used for summaries and for organizing objects in the NapistuDataStore.
     edge_weight : torch.Tensor, optional
         Edge weights tensor with shape [num_edges]
     y : torch.Tensor, optional
@@ -97,8 +100,6 @@ class NapistuData(Data):
         Minimal edge names from the original NapistuGraph. DataFrame with 'from' and 'to'
         columns aligned with the edge tensor (edge_index, edge_attr) - each row corresponds
         to an edge in the same order as the tensor columns. Used for debugging and validation.
-    name: str = NAPISTU_DATA_DEFAULT_NAME,
-        Name of the NapistuData object. Used for summaries and for organizing objects in the NapistuDataStore.
     splitting_strategy: Optional[str] = None,
         Strategy used to split the data into train/test/val sets. This occurs upstream but the approach is tracked as a reference here.
     labeling_manager: Optional[LabelingManager] = None,
@@ -114,6 +115,8 @@ class NapistuData(Data):
         Estimate memory footprint of the NapistuData object
     get_edge_feature_names()
         Get the names of edge features
+    get_edge_indices(df, from_col, to_col)
+        Get edge index tensor from a DataFrame with vertex names
     get_edge_names()
         Get the edge names from the original NapistuGraph
     get_edge_weights()
@@ -126,8 +129,12 @@ class NapistuData(Data):
         Get the indices of symmetric relation types
     get_vertex_feature_names()
         Get the names of vertex features
+    get_vertex_indices(vertex_names)
+        Get the indices of vertices by their names
     get_vertex_names()
         Get the vertex names from the original NapistuGraph
+    has_edges(edge_indices)
+        Check which edges in edge_indices are present in this NapistuData
     load(filepath, map_location="cpu")
         Load a NapistuData object from disk
     save(filepath)
@@ -175,6 +182,7 @@ class NapistuData(Data):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_attr: torch.Tensor,
+        name: str = NAPISTU_DATA_DEFAULT_NAME,
         edge_weight: Optional[torch.Tensor] = None,
         y: Optional[torch.Tensor] = None,
         vertex_feature_names: Optional[List[str]] = None,
@@ -183,7 +191,6 @@ class NapistuData(Data):
         edge_feature_name_aliases: Optional[Dict[str, str]] = None,
         ng_vertex_names: Optional[pd.Series] = None,
         ng_edge_names: Optional[pd.DataFrame] = None,
-        name: str = NAPISTU_DATA_DEFAULT_NAME,
         splitting_strategy: Optional[str] = None,
         labeling_manager: Optional[LabelingManager] = None,
         relation_type: Optional[torch.Tensor] = None,
@@ -191,20 +198,9 @@ class NapistuData(Data):
         **kwargs,
     ):
         # Validate required parameters
-        if x is None:
-            raise ValueError("x (node feature matrix) is required and cannot be None")
-        if edge_index is None:
-            raise ValueError(
-                "edge_index (graph connectivity) is required and cannot be None"
-            )
-        if edge_attr is None:
-            raise ValueError(
-                "edge_attr (edge feature matrix) is required and cannot be None"
-            )
-        if name is None or not isinstance(name, str):
-            raise ValueError(
-                "name (name of the NapistuData object) is required and must be a string"
-            )
+        _validate_required_nd_args(
+            x=x, edge_index=edge_index, edge_attr=edge_attr, name=name
+        )
 
         # Build parameters dict, only including non-None values
         params = {
@@ -216,102 +212,22 @@ class NapistuData(Data):
         }
 
         # Add optional parameters if they are not None
-        if y is not None:
-            if not isinstance(y, torch.Tensor):
-                raise ValueError("if provided, y (node labels) must be a torch.Tensor")
-            params[PYG.Y] = y
-
-        if vertex_feature_names is not None:
-            if not isinstance(vertex_feature_names, list):
-                raise ValueError(
-                    "if provided, vertex_feature_names must be a list of strings"
-                )
-            if len(vertex_feature_names) != x.shape[1]:
-                raise ValueError(
-                    "if provided, vertex_feature_names must be a list of strings with the same length as the number of columns in x"
-                )
-            params[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
-
-        if vertex_feature_name_aliases is not None:
-            if not isinstance(vertex_feature_name_aliases, dict):
-                raise ValueError(
-                    "if provided, vertex_feature_name_aliases must be a dict"
-                )
-            params[NAPISTU_DATA.VERTEX_FEATURE_NAME_ALIASES] = (
-                vertex_feature_name_aliases
-            )
-
-        if edge_feature_name_aliases is not None:
-            if not isinstance(edge_feature_name_aliases, dict):
-                raise ValueError(
-                    "if provided, edge_feature_name_aliases must be a dict"
-                )
-            params[NAPISTU_DATA.EDGE_FEATURE_NAME_ALIASES] = edge_feature_name_aliases
-
-        if edge_feature_names is not None:
-            if not isinstance(edge_feature_names, list):
-                raise ValueError(
-                    "if provided, edge_feature_names must be a list of strings"
-                )
-            if len(edge_feature_names) != edge_attr.shape[1]:
-                raise ValueError(
-                    "if provided, edge_feature_names must be a list of strings with the same length as the number of columns in edge_attr"
-                )
-            params[NAPISTU_DATA.EDGE_FEATURE_NAMES] = edge_feature_names
-
-        if ng_vertex_names is not None:
-            if not isinstance(ng_vertex_names, pd.Series):
-                raise ValueError("if provided, ng_vertex_names must be a pd.Series")
-            if ng_vertex_names.name != NAPISTU_GRAPH_VERTICES.NAME:
-                raise ValueError(
-                    "if provided, ng_vertex_names must have a name attribute of 'name'"
-                )
-            params[NAPISTU_DATA.NG_VERTEX_NAMES] = ng_vertex_names
-
-        if ng_edge_names is not None:
-            if not isinstance(ng_edge_names, pd.DataFrame):
-                raise ValueError("if provided, ng_edge_names must be a pd.DataFrame")
-            if ng_edge_names.shape[1] != 2:
-                raise ValueError("if provided, ng_edge_names must have 2 columns")
-            EXPECTED_EDGE_NAMES = [NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO]
-            if not all(col in ng_edge_names.columns for col in EXPECTED_EDGE_NAMES):
-                raise ValueError(
-                    f"if provided, ng_edge_names must have columns '{EXPECTED_EDGE_NAMES}'"
-                )
-            params[NAPISTU_DATA.NG_EDGE_NAMES] = ng_edge_names
-
-        if splitting_strategy is not None:
-            if not isinstance(splitting_strategy, str):
-                raise ValueError("if provided, splitting_strategy must be a string")
-            if splitting_strategy not in VALID_SPLITTING_STRATEGIES:
-                raise ValueError(
-                    f"if provided, splitting_strategy must be one of {VALID_SPLITTING_STRATEGIES}"
-                )
-            params[NAPISTU_DATA.SPLITTING_STRATEGY] = splitting_strategy
-
-        if labeling_manager is not None:
-            if not isinstance(labeling_manager, LabelingManager):
-                raise ValueError(
-                    "if provided, labeling_manager must be a LabelingManager object"
-                )
-            if y is None:
-                logger.warning(
-                    "Labeling manager provided but no labels are present in the data. The labeling manager will be ignored."
-                )
-            else:
-                params[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
-
-        if relation_type is not None:
-            if not isinstance(relation_type, torch.Tensor):
-                raise ValueError("if provided, relation_type must be a torch.Tensor")
-            params[NAPISTU_DATA.RELATION_TYPE] = relation_type
-
-        if relation_manager is not None:
-            if not isinstance(relation_manager, LabelingManager):
-                raise ValueError(
-                    "if provided, relation_manager must be a LabelingManager object"
-                )
-            params[NAPISTU_DATA.RELATION_MANAGER] = relation_manager
+        _apply_optional_nd_args(
+            params=params,
+            x=x,
+            edge_attr=edge_attr,
+            y=y,
+            vertex_feature_names=vertex_feature_names,
+            edge_feature_names=edge_feature_names,
+            vertex_feature_name_aliases=vertex_feature_name_aliases,
+            edge_feature_name_aliases=edge_feature_name_aliases,
+            ng_vertex_names=ng_vertex_names,
+            ng_edge_names=ng_edge_names,
+            splitting_strategy=splitting_strategy,
+            labeling_manager=labeling_manager,
+            relation_type=relation_type,
+            relation_manager=relation_manager,
+        )
 
         # Add any non-None kwargs
         params.update({k: v for k, v in kwargs.items() if v is not None})
@@ -414,6 +330,58 @@ class NapistuData(Data):
                 f"Attribute '{NAPISTU_DATA.EDGE_FEATURE_NAMES}' is missing."
             )
         return result
+
+    def get_edge_indices(
+        self, df: pd.DataFrame, from_col: str, to_col: str
+    ) -> torch.Tensor:
+        """
+        Get edge index tensor from a DataFrame with vertex names.
+
+        Extracts vertex names from specified columns in a DataFrame, converts them
+        to indices using get_vertex_indices, and returns a tensor of shape (2, num_edges)
+        suitable for use as edge_index in PyTorch Geometric.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame containing edge information with vertex names.
+        from_col : str
+            Name of the column containing source vertex names.
+        to_col : str
+            Name of the column containing target vertex names.
+
+        Returns
+        -------
+        torch.Tensor
+            Tensor of shape (2, num_edges) with dtype torch.long, where:
+            - Row 0 contains source vertex indices
+            - Row 1 contains target vertex indices
+
+        Raises
+        ------
+        KeyError
+            If from_col or to_col are not in the DataFrame.
+        ValueError
+            If any vertex names in the columns are not found in NapistuData.
+        """
+        # Validate columns exist
+        if from_col not in df.columns:
+            raise KeyError(
+                f"Column '{from_col}' not found in DataFrame. Available columns: {list(df.columns)}"
+            )
+        if to_col not in df.columns:
+            raise KeyError(
+                f"Column '{to_col}' not found in DataFrame. Available columns: {list(df.columns)}"
+            )
+
+        # Get indices for source and target vertices
+        source_indices = self.get_vertex_indices(df[from_col])
+        target_indices = self.get_vertex_indices(df[to_col])
+
+        # Convert to tensor of shape (2, num_edges)
+        edge_index = torch.tensor([source_indices, target_indices], dtype=torch.long)
+
+        return edge_index
 
     def get_edge_names(self) -> Optional[pd.Index]:
         """
@@ -834,6 +802,75 @@ class NapistuData(Data):
             )
         return result
 
+    def get_vertex_indices(
+        self, vertex_names: Union[List[str], pd.Series]
+    ) -> List[int]:
+        """
+        Get the indices of vertices by their names.
+
+        Parameters
+        ----------
+        vertex_names : List[str] or pd.Series
+            List or Series of vertex names to look up. If Series, uses the values.
+
+        Returns
+        -------
+        List[int]
+            List of integer indices corresponding to the vertex names.
+            Indices are aligned with the vertex tensor (x) rows.
+
+        Raises
+        ------
+        TypeError
+            If vertex_names is not a list or pd.Series.
+        ValueError
+            If vertex names are not available in this NapistuData.
+        ValueError
+            If any vertex names are not found (results in -1 indices).
+        """
+        # Validate input type
+        if not isinstance(vertex_names, (list, pd.Series)):
+            raise TypeError(
+                f"vertex_names must be a list or pd.Series, got {type(vertex_names)}"
+            )
+
+        # Get vertex names from NapistuData
+        data_vertex_names = self.get_vertex_names()
+        if data_vertex_names is None:
+            raise ValueError(
+                "Vertex names are not available in this NapistuData. "
+                f"Attribute '{NAPISTU_DATA.NG_VERTEX_NAMES}' is missing."
+            )
+
+        # Convert input to list of names
+        if isinstance(vertex_names, pd.Series):
+            names_to_lookup = vertex_names.values.tolist()
+        else:
+            names_to_lookup = vertex_names
+
+        # Get indices using pandas Index.get_indexer
+        # This returns integer positions, or -1 for missing values
+        indices = pd.Index(data_vertex_names).get_indexer(names_to_lookup)
+
+        # Check for missing vertices (-1 indicates not found)
+        missing_mask = indices == -1
+        if missing_mask.any():
+            missing_names = [
+                name
+                for name, is_missing in zip(names_to_lookup, missing_mask)
+                if is_missing
+            ]
+            raise ValueError(
+                f"Vertex names not found in NapistuData: {missing_names[:10]}"
+                + (
+                    f" (and {len(missing_names) - 10} more)"
+                    if len(missing_names) > 10
+                    else ""
+                )
+            )
+
+        return indices.tolist()
+
     def get_vertex_names(self) -> Optional[pd.Index]:
         """
         Get the vertex names as a pandas Index.
@@ -850,6 +887,51 @@ class NapistuData(Data):
                 f"Attribute '{NAPISTU_DATA.NG_VERTEX_NAMES}' is missing."
             )
         return result
+
+    def has_edges(self, edge_indices: torch.Tensor) -> torch.Tensor:
+        """
+        Check which edges in edge_indices are present in this NapistuData.
+
+        Uses efficient set-based lookup for fast checking of many edges.
+        Suitable for looking up large numbers of edges (e.g., 30K+).
+
+        Parameters
+        ----------
+        edge_indices : torch.Tensor
+            Edge indices tensor of shape (2, num_edges) to check.
+            Row 0 should contain source vertex indices.
+            Row 1 should contain target vertex indices.
+
+        Returns
+        -------
+        torch.Tensor
+            Boolean tensor of shape (num_edges,) where True indicates
+            the edge exists in this NapistuData.
+
+        Examples
+        --------
+        >>> # Get edge indices from a DataFrame
+        >>> query_edges = napistu_data.get_edge_indices(df, from_col='from', to_col='to')
+        >>> # Check which edges exist
+        >>> matches = napistu_data.has_edges(query_edges)
+        >>> # Filter to only existing edges
+        >>> existing_edges = query_edges[:, matches]
+        """
+        # Validate input shape
+        if edge_indices.dim() != 2 or edge_indices.shape[0] != 2:
+            raise ValueError(
+                f"edge_indices must be a 2D tensor with shape (2, num_edges), "
+                f"got shape {edge_indices.shape}"
+            )
+
+        # Convert existing edges to set of tuples for O(1) lookup
+        existing_edges_set = set(tuple(edge.tolist()) for edge in self.edge_index.T)
+
+        # Check each query edge
+        query_t = edge_indices.T  # shape (num_query, 2)
+        matches = [tuple(edge.tolist()) in existing_edges_set for edge in query_t]
+
+        return torch.tensor(matches, dtype=torch.bool, device=edge_indices.device)
 
     @classmethod
     def load(
@@ -895,7 +977,7 @@ class NapistuData(Data):
         contain custom classes that aren't allowed with weights_only=True.
         Only use this with trusted files, as it can result in arbitrary code execution.
         """
-        filepath = Path(filepath)
+        filepath = ensure_path(filepath)
 
         if not filepath.exists():
             raise FileNotFoundError(f"File n?ot found: {filepath}")
@@ -934,7 +1016,7 @@ class NapistuData(Data):
         --------
         >>> data.save('my_network.pt')
         """
-        filepath = Path(filepath)
+        filepath = ensure_path(filepath)
         filepath.parent.mkdir(parents=True, exist_ok=True)
 
         torch.save(self, filepath)
@@ -1243,8 +1325,6 @@ class NapistuData(Data):
             decoded_values = decoded.flatten()
 
         return pd.Series(decoded_values, name=attribute)
-
-    # private methods
 
     def _validate_vertex_encoding(
         self,
@@ -1649,3 +1729,189 @@ class NapistuData(Data):
         summary = self.get_summary(NAPISTU_DATA_SUMMARY_TYPES.DETAILED)
         summary_table = format_summary(summary)
         return summary_table.to_string(index=False)
+
+
+def _apply_optional_nd_args(
+    params: Dict[str, Any],
+    x: torch.Tensor,
+    edge_attr: torch.Tensor,
+    y: Optional[torch.Tensor],
+    vertex_feature_names: Optional[List[str]],
+    edge_feature_names: Optional[List[str]],
+    vertex_feature_name_aliases: Optional[Dict[str, str]],
+    edge_feature_name_aliases: Optional[Dict[str, str]],
+    ng_vertex_names: Optional[pd.Series],
+    ng_edge_names: Optional[pd.DataFrame],
+    splitting_strategy: Optional[str],
+    labeling_manager: Optional[LabelingManager],
+    relation_type: Optional[torch.Tensor],
+    relation_manager: Optional[LabelingManager],
+) -> None:
+    """
+    Apply and validate optional NapistuData arguments.
+
+    Parameters
+    ----------
+    params : Dict[str, Any]
+        Dictionary to update with validated optional parameters
+    x : torch.Tensor
+        Node feature matrix (for validation of vertex_feature_names length)
+    edge_attr : torch.Tensor
+        Edge feature matrix (for validation of edge_feature_names length)
+    y : Optional[torch.Tensor]
+        Node labels tensor
+    vertex_feature_names : Optional[List[str]]
+        Names of vertex features
+    edge_feature_names : Optional[List[str]]
+        Names of edge features
+    vertex_feature_name_aliases : Optional[Dict[str, str]]
+        Mapping from vertex feature names to their canonical names
+    edge_feature_name_aliases : Optional[Dict[str, str]]
+        Mapping from edge feature names to their canonical names
+    ng_vertex_names : Optional[pd.Series]
+        Minimal vertex names from the original NapistuGraph
+    ng_edge_names : Optional[pd.DataFrame]
+        Minimal edge names from the original NapistuGraph
+    splitting_strategy : Optional[str]
+        Strategy used to split the data into train/test/val sets
+    labeling_manager : Optional[LabelingManager]
+        Labeling manager used to encode the labels
+    relation_type : Optional[torch.Tensor]
+        Relation type tensor
+    relation_manager : Optional[LabelingManager]
+        Relation manager used to encode relation types
+
+    Returns
+    -------
+    None
+        Modifies params dict in place
+    """
+    if y is not None:
+        if not isinstance(y, torch.Tensor):
+            raise ValueError("if provided, y (node labels) must be a torch.Tensor")
+        params[PYG.Y] = y
+
+    if vertex_feature_names is not None:
+        if not isinstance(vertex_feature_names, list):
+            raise ValueError(
+                "if provided, vertex_feature_names must be a list of strings"
+            )
+        if len(vertex_feature_names) != x.shape[1]:
+            raise ValueError(
+                "if provided, vertex_feature_names must be a list of strings with the same length as the number of columns in x"
+            )
+        params[NAPISTU_DATA.VERTEX_FEATURE_NAMES] = vertex_feature_names
+
+    if vertex_feature_name_aliases is not None:
+        if not isinstance(vertex_feature_name_aliases, dict):
+            raise ValueError("if provided, vertex_feature_name_aliases must be a dict")
+        params[NAPISTU_DATA.VERTEX_FEATURE_NAME_ALIASES] = vertex_feature_name_aliases
+
+    if edge_feature_name_aliases is not None:
+        if not isinstance(edge_feature_name_aliases, dict):
+            raise ValueError("if provided, edge_feature_name_aliases must be a dict")
+        params[NAPISTU_DATA.EDGE_FEATURE_NAME_ALIASES] = edge_feature_name_aliases
+
+    if edge_feature_names is not None:
+        if not isinstance(edge_feature_names, list):
+            raise ValueError(
+                "if provided, edge_feature_names must be a list of strings"
+            )
+        if len(edge_feature_names) != edge_attr.shape[1]:
+            raise ValueError(
+                "if provided, edge_feature_names must be a list of strings with the same length as the number of columns in edge_attr"
+            )
+        params[NAPISTU_DATA.EDGE_FEATURE_NAMES] = edge_feature_names
+
+    if ng_vertex_names is not None:
+        if not isinstance(ng_vertex_names, pd.Series):
+            raise ValueError("if provided, ng_vertex_names must be a pd.Series")
+        if ng_vertex_names.name != NAPISTU_GRAPH_VERTICES.NAME:
+            raise ValueError(
+                "if provided, ng_vertex_names must have a name attribute of 'name'"
+            )
+        params[NAPISTU_DATA.NG_VERTEX_NAMES] = ng_vertex_names
+
+    if ng_edge_names is not None:
+        if not isinstance(ng_edge_names, pd.DataFrame):
+            raise ValueError("if provided, ng_edge_names must be a pd.DataFrame")
+        if ng_edge_names.shape[1] != 2:
+            raise ValueError("if provided, ng_edge_names must have 2 columns")
+        EXPECTED_EDGE_NAMES = [NAPISTU_GRAPH_EDGES.FROM, NAPISTU_GRAPH_EDGES.TO]
+        if not all(col in ng_edge_names.columns for col in EXPECTED_EDGE_NAMES):
+            raise ValueError(
+                f"if provided, ng_edge_names must have columns '{EXPECTED_EDGE_NAMES}'"
+            )
+        params[NAPISTU_DATA.NG_EDGE_NAMES] = ng_edge_names
+
+    if splitting_strategy is not None:
+        if not isinstance(splitting_strategy, str):
+            raise ValueError("if provided, splitting_strategy must be a string")
+        if splitting_strategy not in VALID_SPLITTING_STRATEGIES:
+            raise ValueError(
+                f"if provided, splitting_strategy must be one of {VALID_SPLITTING_STRATEGIES}"
+            )
+        params[NAPISTU_DATA.SPLITTING_STRATEGY] = splitting_strategy
+
+    if labeling_manager is not None:
+        if not isinstance(labeling_manager, LabelingManager):
+            raise ValueError(
+                "if provided, labeling_manager must be a LabelingManager object"
+            )
+        if y is None:
+            logger.warning(
+                "Labeling manager provided but no labels are present in the data. The labeling manager will be ignored."
+            )
+        else:
+            params[NAPISTU_DATA.LABELING_MANAGER] = labeling_manager
+
+    if relation_type is not None:
+        if not isinstance(relation_type, torch.Tensor):
+            raise ValueError("if provided, relation_type must be a torch.Tensor")
+        params[NAPISTU_DATA.RELATION_TYPE] = relation_type
+
+    if relation_manager is not None:
+        if not isinstance(relation_manager, LabelingManager):
+            raise ValueError(
+                "if provided, relation_manager must be a LabelingManager object"
+            )
+        params[NAPISTU_DATA.RELATION_MANAGER] = relation_manager
+
+
+def _validate_required_nd_args(
+    x: torch.Tensor,
+    edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
+    name: str,
+) -> None:
+    """
+    Validate required NapistuData arguments for correct types.
+
+    Parameters
+    ----------
+    x : torch.Tensor
+        Node feature matrix
+    edge_index : torch.Tensor
+        Graph connectivity tensor
+    edge_attr : torch.Tensor
+        Edge feature matrix
+    name : str
+        Name of the NapistuData object
+
+    Raises
+    ------
+    TypeError
+        If any argument is not of the expected type
+    ValueError
+        If name is empty
+    """
+    if not isinstance(x, torch.Tensor):
+        raise TypeError(f"x must be a torch.Tensor, got {type(x)}")
+    if not isinstance(edge_index, torch.Tensor):
+        raise TypeError(f"edge_index must be a torch.Tensor, got {type(edge_index)}")
+    if not isinstance(edge_attr, torch.Tensor):
+        raise TypeError(f"edge_attr must be a torch.Tensor, got {type(edge_attr)}")
+    if not isinstance(name, str):
+        raise TypeError(f"name must be a str, got {type(name)}")
+    if not name:
+        raise ValueError("name cannot be an empty string")

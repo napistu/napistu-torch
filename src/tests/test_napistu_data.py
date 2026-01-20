@@ -584,6 +584,188 @@ def test_get_symmetrical_relation_indices():
         assert source_type == target_type, f"Index {idx} ({name}) should be symmetric"
 
 
+@pytest.mark.parametrize(
+    "input_type,slice_range",
+    [
+        ("list", slice(0, 5)),
+        ("series", slice(5, 10)),
+    ],
+)
+def test_get_vertex_indices(napistu_data, input_type, slice_range):
+    """Test get_vertex_indices with list and Series inputs."""
+    vertex_names = napistu_data.get_vertex_names()
+    assert vertex_names is not None, "NapistuData should have vertex names"
+
+    # Create input based on parameter
+    query_names_list = list(vertex_names[slice_range])
+    if input_type == "list":
+        query_input = query_names_list
+    else:  # series
+        query_input = pd.Series(query_names_list)
+
+    # Get indices
+    indices = napistu_data.get_vertex_indices(query_input)
+
+    # Verify return type and values
+    assert isinstance(indices, list)
+    assert len(indices) == len(query_names_list)
+    assert all(isinstance(idx, int) for idx in indices)
+    assert all(0 <= idx < napistu_data.num_nodes for idx in indices)
+
+    # Verify indices correspond to correct vertices
+    for name, idx in zip(query_names_list, indices):
+        assert vertex_names[idx] == name
+
+
+def test_get_vertex_indices_missing(napistu_data):
+    """Test get_vertex_indices raises error for missing vertex names."""
+    # Test with a non-existent vertex name
+    with pytest.raises(ValueError, match="Vertex names not found"):
+        napistu_data.get_vertex_indices(["nonexistent_vertex_12345"])
+
+    # Test with mixed existing and missing
+    vertex_names = napistu_data.get_vertex_names()
+    assert vertex_names is not None
+    mixed_names = [vertex_names[0], "nonexistent_vertex_12345"]
+    with pytest.raises(ValueError, match="Vertex names not found"):
+        napistu_data.get_vertex_indices(mixed_names)
+
+
+def test_get_vertex_indices_invalid_type(napistu_data):
+    """Test get_vertex_indices raises TypeError for invalid input types."""
+    with pytest.raises(TypeError, match="vertex_names must be a list or pd.Series"):
+        napistu_data.get_vertex_indices("not a list or series")
+
+    with pytest.raises(TypeError, match="vertex_names must be a list or pd.Series"):
+        napistu_data.get_vertex_indices({"key": "value"})
+
+
+def test_get_edge_indices_from_dataframe(napistu_data):
+    """Test get_edge_indices with a DataFrame containing vertex names."""
+    # Get vertex names from NapistuData
+    vertex_names = napistu_data.get_vertex_names()
+    edge_names = napistu_data.get_edge_names()
+    assert vertex_names is not None
+    assert edge_names is not None
+
+    # Create a DataFrame with 'from' and 'to' columns
+    # edge_names is a DataFrame with 'from' and 'to' columns
+    test_df = pd.DataFrame(
+        {
+            "from": edge_names["from"][:10].tolist(),
+            "to": edge_names["to"][:10].tolist(),
+        }
+    )
+
+    # Get edge indices
+    edge_indices = napistu_data.get_edge_indices(test_df, from_col="from", to_col="to")
+
+    # Verify return type and shape
+    assert isinstance(edge_indices, torch.Tensor)
+    assert edge_indices.shape == (2, len(test_df))
+    assert edge_indices.dtype == torch.long
+
+    # Verify edges match the original edge_index
+    for i in range(edge_indices.shape[1]):
+        edge = edge_indices[:, i]
+        # Check if this edge exists in the original edge_index
+        source_match = napistu_data.edge_index[0] == edge[0]
+        target_match = napistu_data.edge_index[1] == edge[1]
+        both_match = source_match & target_match
+        assert both_match.any(), f"Edge {edge.tolist()} should exist in edge_index"
+
+
+def test_get_edge_indices_error_cases(napistu_data):
+    """Test get_edge_indices raises appropriate errors for missing columns and vertices."""
+    vertex_names = napistu_data.get_vertex_names()
+    edge_names = napistu_data.get_edge_names()
+    assert vertex_names is not None
+    assert edge_names is not None
+
+    # Test 1: Missing 'to' column
+    test_df_missing_to = pd.DataFrame(
+        {
+            "from": vertex_names[:5].tolist(),
+            "wrong_col": vertex_names[5:10].tolist(),
+        }
+    )
+    with pytest.raises(KeyError, match="Column 'to' not found"):
+        napistu_data.get_edge_indices(test_df_missing_to, from_col="from", to_col="to")
+
+    # Test 2: Missing 'from' column
+    with pytest.raises(KeyError, match="Column 'wrong_from' not found"):
+        napistu_data.get_edge_indices(
+            test_df_missing_to, from_col="wrong_from", to_col="wrong_col"
+        )
+
+    # Test 3: Missing vertex names
+    test_df_missing_vertices = pd.DataFrame(
+        {
+            "from": [edge_names["from"].iloc[0], "nonexistent_vertex_12345"],
+            "to": [edge_names["to"].iloc[0], "another_nonexistent_vertex"],
+        }
+    )
+    with pytest.raises(ValueError, match="Vertex names not found"):
+        napistu_data.get_edge_indices(
+            test_df_missing_vertices, from_col="from", to_col="to"
+        )
+
+
+def test_has_edges(napistu_data):
+    """Test has_edges with existing, non-existent, and mixed edges."""
+    # Test 1: Existing edges should return True
+    existing_edges = napistu_data.edge_index[:, :5]  # First 5 edges
+    matches = napistu_data.has_edges(existing_edges)
+    assert isinstance(matches, torch.Tensor)
+    assert matches.dtype == torch.bool
+    assert matches.shape == (5,)
+    assert matches.all(), "All existing edges should be found"
+
+    # Test 2: Non-existent edges should return False
+    max_vertex_idx = napistu_data.num_nodes - 1
+    nonexistent_edges = torch.tensor(
+        [
+            [max_vertex_idx + 1, max_vertex_idx + 2],
+            [max_vertex_idx + 3, max_vertex_idx + 4],
+        ],
+        dtype=torch.long,
+    ).T  # Shape (2, 2)
+    matches = napistu_data.has_edges(nonexistent_edges)
+    assert isinstance(matches, torch.Tensor)
+    assert matches.dtype == torch.bool
+    assert matches.shape == (2,)
+    assert not matches.any(), "Non-existent edges should not be found"
+
+    # Test 3: Mixed edges should correctly identify which exist
+    existing_subset = napistu_data.edge_index[:, :3]  # First 3 edges
+    nonexistent_subset = torch.tensor(
+        [
+            [max_vertex_idx + 1, max_vertex_idx + 2],
+        ],
+        dtype=torch.long,
+    ).T  # Shape (2, 1)
+    mixed_edges = torch.cat([existing_subset, nonexistent_subset], dim=1)
+    matches = napistu_data.has_edges(mixed_edges)
+    assert matches.shape == (4,)
+    assert matches[:3].all(), "First 3 edges should exist"
+    assert not matches[3], "Last edge should not exist"
+
+
+def test_has_edges_invalid_shape(napistu_data):
+    """Test has_edges raises ValueError for invalid tensor shapes."""
+    # Test with wrong number of dimensions
+    invalid_edges = torch.tensor([1, 2, 3])  # 1D tensor
+    with pytest.raises(ValueError, match="edge_indices must be a 2D tensor"):
+        napistu_data.has_edges(invalid_edges)
+
+    # Test with wrong first dimension
+    invalid_edges = torch.tensor(
+        [[1, 2], [3, 4], [5, 6]]
+    )  # Shape (3, 2) instead of (2, 3)
+    with pytest.raises(ValueError, match="edge_indices must be a 2D tensor"):
+        napistu_data.has_edges(invalid_edges)
+
+
 def test_get_symmetrical_relation_indices_failure_cases(edge_masked_napistu_data):
     """Test get_symmetrical_relation_types raises errors for invalid cases."""
 
