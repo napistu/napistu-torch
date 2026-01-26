@@ -115,6 +115,13 @@ HUGGING_FACE_REPOS = SimpleNamespace(
 
 VALID_HUGGING_FACE_REPOS = list(HUGGING_FACE_REPOS.__dict__.values())
 
+HUGGING_FACE_ID_TYPES = SimpleNamespace(
+    REPO="repo",
+    SPACE="space",
+)
+
+VALID_HUGGING_FACE_ID_TYPES = list(HUGGING_FACE_ID_TYPES.__dict__.values())
+
 # wandb
 
 WANDB_INFO = SimpleNamespace(
