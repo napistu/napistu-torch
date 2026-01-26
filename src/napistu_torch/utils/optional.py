@@ -5,6 +5,8 @@ Decorators
 ----------
 require_bionty
     Decorator ensuring bionty is available before calling *func*.
+require_gradio_client
+    Decorator ensuring gradio_client is available before calling *func*.
 require_lightning
     Decorator ensuring pytorch_lightning is available before calling *func*.
 require_modelgenerator
@@ -24,6 +26,8 @@ Public Functions
 ----------------
 import_bionty:
     Import and return bionty, raising an informative error if missing.
+import_gradio_client:
+    Import and return gradio_client, raising an informative error if missing.
 import_lightning:
     Import and return pytorch_lightning, raising an informative error if missing.
 import_modelgenerator:
@@ -62,7 +66,7 @@ def import_bionty():
     except ModuleNotFoundError as exc:  # pragma: no cover
         raise ImportError(
             "This functionality requires `bionty`. "
-            "Install with `pip install bionty` or `pip install lamindb[bionty]`."
+            "Install with `pip install bionty` or `pip install 'lamindb[bionty]'`."
         ) from exc
 
 
@@ -87,6 +91,39 @@ def require_bionty(func: _F) -> _F:
     return cast(_F, wrapper)
 
 
+def import_gradio_client():
+    """Import and return gradio_client, raising an informative error if missing."""
+
+    try:
+        return importlib.import_module("gradio_client")
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        raise ImportError(
+            "This functionality requires `gradio_client`. "
+            "Install with `pip install gradio-client`."
+        ) from exc
+
+
+def require_gradio_client(func: _F) -> _F:
+    """Decorator ensuring gradio_client is available before calling *func*.
+
+    Use this decorator for functions that require gradio_client.
+
+    Examples
+    --------
+    >>> @require_gradio_client
+    >>> def connect_to_space(space_id):
+    ...     from gradio_client import Client
+    ...     return Client(space_id)
+    """
+
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any):
+        import_gradio_client()
+        return func(*args, **kwargs)
+
+    return cast(_F, wrapper)
+
+
 def import_lightning():
     """Import and return pytorch_lightning, raising an informative error if missing."""
 
@@ -97,7 +134,7 @@ def import_lightning():
     ) as exc:  # pragma: no cover - executed when dependency missing
         raise ImportError(
             "This functionality requires `pytorch_lightning`. "
-            f"Install with `pip install napistu-torch[{OPTIONAL_DEFS.LIGHTNING_EXTRA}]`."
+            f"Install with `pip install 'napistu-torch[{OPTIONAL_DEFS.LIGHTNING_EXTRA}]'`."
         ) from exc
 
 
@@ -277,7 +314,7 @@ def import_seaborn():
     ) as exc:  # pragma: no cover - executed when dependency missing
         raise ImportError(
             "This functionality requires `seaborn`. "
-            f"Install with `pip install napistu-torch[{OPTIONAL_DEFS.SEABORN_EXTRA}]`."
+            f"Install with `pip install 'napistu-torch[{OPTIONAL_DEFS.SEABORN_EXTRA}]'`."
         ) from exc
 
 

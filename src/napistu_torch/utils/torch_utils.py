@@ -9,7 +9,7 @@ delete_tensors(tensors)
     Delete one or more tensors without emptying cache.
 empty_cache(device)
     Empty the cache for a given device.
-ensure_device(device, allow_autoselect=False)
+ensure_device(device, allow_autoselect=False, mps_valid=True)
     Ensure the device is a torch.device.
 memory_manager(device)
     Context manager for general memory management.
@@ -104,7 +104,9 @@ def empty_cache(device: Union[str, torch_device]) -> None:
 
 
 def ensure_device(
-    device: Optional[Union[str, torch_device]], allow_autoselect: bool = False
+    device: Optional[Union[str, torch_device]],
+    allow_autoselect: bool = False,
+    mps_valid: bool = True,
 ) -> torch_device:
     """
     Ensure the device is a torch.device.
@@ -115,11 +117,13 @@ def ensure_device(
         The device to ensure
     allow_autoselect : bool
         Whether to allow automatic selection of the device if the device is not specified
+    mps_valid : bool
+        Whether to use MPS if available.
     """
 
     if device is None:
         if allow_autoselect:
-            return select_device()
+            return select_device(mps_valid=mps_valid)
         else:
             raise ValueError("An explicit device is required but was not specified")
 
@@ -164,7 +168,7 @@ def memory_manager(device: torch_device = torch_device(DEVICE.CPU)):
         gc.collect()
 
 
-def select_device(mps_valid: bool = True):
+def select_device(mps_valid: bool = True) -> torch_device:
     """
     Selects the device to use for the model.
     If MPS is available and mps_valid is True, use MPS.

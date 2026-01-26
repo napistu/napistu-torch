@@ -38,7 +38,9 @@ from napistu_torch.load.checkpoints import Checkpoint
 from napistu_torch.ml.constants import (
     DEFAULT_HUGGING_FACE_TAGS,
     DEVICE,
+    HUGGING_FACE_ID_TYPES,
     HUGGING_FACE_REPOS,
+    VALID_HUGGING_FACE_ID_TYPES,
     VALID_HUGGING_FACE_REPOS,
 )
 from napistu_torch.ml.wandb import WandbRunInfo, get_wandb_metrics_table
@@ -46,6 +48,7 @@ from napistu_torch.models.constants import RELATION_AWARE_HEADS
 from napistu_torch.napistu_data_store import NapistuDataStore
 from napistu_torch.tasks.constants import TASK_DESCRIPTIONS
 from napistu_torch.utils.base_utils import ensure_path
+from napistu_torch.utils.optional import require_gradio_client
 from napistu_torch.utils.table_utils import format_metrics_as_markdown
 
 logger = logging.getLogger(__name__)
@@ -56,7 +59,7 @@ class HFClient:
     Base client for interacting with HuggingFace Hub.
 
     Provides common functionality for authentication, validation, and repo operations.
-    Subclassed by HFModelPublisher and HFModelLoader for specific workflows.
+    Subclassed by HFDatasetLoader, HFDatasetPublisher, HFModelPublisher, HFModelLoader, and HFSpacesClient for specific workflows.
 
     Attributes
     ----------
@@ -79,8 +82,8 @@ class HFClient:
         Create or get repository URL
     _validate_authentication() : None
         Verify HuggingFace authentication is working
-    _validate_repo_id(repo_id) : None
-        Validate repository ID format
+    _validate_id(id_str, id_type=HUGGING_FACE_ID_TYPES.REPO) : None
+        Validate repository or space ID format
     """
 
     # Class-level cache to avoid repeated authentication checks
@@ -286,30 +289,43 @@ class HFClient:
                 f"Error: {e}"
             )
 
-    def _validate_repo_id(self, repo_id: str) -> None:
+    def _validate_id(
+        self, id_str: str, id_type: str = HUGGING_FACE_ID_TYPES.REPO
+    ) -> None:
         """
-        Validate repository ID format.
+        Validate repository or space ID format.
 
         Parameters
         ----------
-        repo_id : str
-            Repository ID to validate
+        id_str : str
+            ID string to validate (repository or space ID)
+        id_type : str
+            Type of ID to validate. Must be either "repo" or "space".
+            Defaults to "repo".
 
         Raises
         ------
         ValueError
-            If repo_id format is invalid
+            If id_str format is invalid or id_type is not "repo" or "space"
         """
-        if "/" not in repo_id:
+        if id_type not in VALID_HUGGING_FACE_ID_TYPES:
             raise ValueError(
-                f"Invalid repo_id format: '{repo_id}'\n"
-                f"Expected format: 'username/repo-name'"
+                f"Invalid id_type: '{id_type}'. Must be either '{HUGGING_FACE_ID_TYPES.REPO}' or '{HUGGING_FACE_ID_TYPES.SPACE}'"
             )
-        parts = repo_id.split("/")
+
+        id_label = f"{id_type}_id"
+        name_type = f"{id_type}-name"
+
+        if "/" not in id_str:
+            raise ValueError(
+                f"Invalid {id_label} format: '{id_str}'\n"
+                f"Expected format: 'username/{name_type}'"
+            )
+        parts = id_str.split("/")
         if len(parts) != 2 or not all(parts):
             raise ValueError(
-                f"Invalid repo_id format: '{repo_id}'\n"
-                f"Expected format: 'username/repo-name'"
+                f"Invalid {id_label} format: '{id_str}'\n"
+                f"Expected format: 'username/{name_type}'"
             )
 
 
@@ -382,7 +398,7 @@ class HFDatasetLoader(HFClient):
         self.revision = revision or "main"
 
         # Validate repo_id format
-        self._validate_repo_id(repo_id)
+        self._validate_id(repo_id, id_type=HUGGING_FACE_ID_TYPES.REPO)
 
         # Check if repo exists
         if not self._check_repo_exists(repo_id, repo_type=HUGGING_FACE_REPOS.DATASET):
@@ -656,7 +672,7 @@ class HFDatasetPublisher(HFClient):
         ... )
         """
         # Validate inputs
-        self._validate_repo_id(repo_id)
+        self._validate_id(repo_id, id_type=HUGGING_FACE_ID_TYPES.REPO)
         revision = revision or "main"
 
         # Validate that store has at least one NapistuData artifact
@@ -927,7 +943,7 @@ class HFModelLoader(HFClient):
         self.cache_dir = cache_dir
 
         # Validate repo_id format
-        self._validate_repo_id(repo_id)
+        self._validate_id(repo_id, id_type=HUGGING_FACE_ID_TYPES.REPO)
 
         # Check if repo exists
         if not self._check_repo_exists(repo_id):
@@ -1159,7 +1175,7 @@ class HFModelPublisher(HFClient):
         config = manifest.experiment_config
 
         # Validate inputs
-        self._validate_repo_id(repo_id)
+        self._validate_id(repo_id, id_type=HUGGING_FACE_ID_TYPES.REPO)
         if not checkpoint_path.exists():
             raise FileNotFoundError(f"Checkpoint not found: {checkpoint_path}")
 
@@ -1346,6 +1362,160 @@ class HFModelPublisher(HFClient):
             commit_message=commit_message,
         )
         logger.info("✓ Uploaded run info: wandb_run_info.yaml")
+
+
+class HFSpacesClient(HFClient):
+    """
+    Client for interacting with HuggingFace Spaces for inference.
+
+    Unlike HFClient which handles model/dataset repositories, HFSpacesClient
+    interfaces with Spaces applications that provide inference endpoints.
+
+    Parameters
+    ----------
+    space_id : str
+        HuggingFace Space ID (e.g., "reginabarzilaygroup/DiffDock-Web")
+    hf_token : Optional[str]
+        HuggingFace API token for authentication. If None, uses default token.
+
+    Attributes
+    ----------
+    space_id : str
+        The HuggingFace Space identifier
+    client : gradio_client.Client
+        Gradio client for Space interaction
+    api : HfApi
+        HuggingFace API client (inherited from HFClient)
+
+    Examples
+    --------
+    >>> client = HFSpacesClient("username/space-name")
+    >>> result = client.predict(input1="value1", api_name="/predict")
+    """
+
+    def __init__(self, space_id: str, hf_token: Optional[str] = None):
+        """
+        Initialize HuggingFace Spaces client.
+
+        Parameters
+        ----------
+        space_id : str
+            HuggingFace Space ID in format "username/space-name"
+        hf_token : Optional[str]
+            HuggingFace API token. If None, uses default authentication.
+        """
+        super().__init__(token=hf_token)
+        self.space_id = space_id
+        self._token = hf_token
+        self._client = None
+
+        # Validate space ID format
+        self._validate_id(space_id, id_type=HUGGING_FACE_ID_TYPES.SPACE)
+
+    @property
+    @require_gradio_client
+    def client(self):
+        """
+        Lazy-load Gradio client.
+
+        Returns
+        -------
+        gradio_client.Client
+            Initialized Gradio client for the Space
+        """
+        if self._client is None:
+            from gradio_client import Client
+
+            logger.info(f"Connecting to HuggingFace Space: {self.space_id}")
+
+            # Initialize client - token is handled via HF_TOKEN env var if needed
+            if self._token is not None:
+                import os
+
+                # Set token as environment variable for gradio_client to use
+                os.environ["HF_TOKEN"] = self._token
+
+            self._client = Client(self.space_id)
+
+            logger.info(f"✓ Connected to Space: {self.space_id}")
+
+        return self._client
+
+    def predict(self, *args, api_name: str = "/predict", **kwargs) -> Any:
+        """
+        Call a prediction endpoint on the Space.
+
+        Parameters
+        ----------
+        *args
+            Positional arguments to pass to the endpoint
+        api_name : str
+            Name of the API endpoint (default: "/predict")
+        **kwargs
+            Keyword arguments to pass to the endpoint
+
+        Returns
+        -------
+        Any
+            Result from the Space prediction
+
+        Examples
+        --------
+        >>> client = HFSpacesClient("username/space-name")
+        >>> result = client.predict(
+        ...     input_text="Hello",
+        ...     api_name="/generate"
+        ... )
+        """
+        try:
+            result = self.client.predict(*args, api_name=api_name, **kwargs)
+            return result
+        except Exception as e:
+            logger.error(f"Space prediction failed: {e}")
+            raise RuntimeError(
+                f"Failed to get prediction from Space {self.space_id}. " f"Error: {e}"
+            ) from e
+
+    @require_gradio_client
+    @staticmethod
+    def test_generic_space():
+        """
+        Test HFSpacesClient with a known working Space.
+
+        Uses gradio/chatbot_streaming_main as a reliable test Space
+        that should remain available and functional.
+        """
+
+        # Use a stable, well-maintained Space
+        space_id = "gradio/chatbot_streaming_main"
+
+        # Initialize client
+        client = HFSpacesClient(space_id)
+
+        # Verify client was created successfully
+        assert client is not None
+        assert client.space_id == space_id
+
+        # Verify we can view the API
+        api_info = client.view_api()
+        assert api_info is not None
+
+        # Verify the client object has the gradio_client Client
+        assert client.client is not None
+
+        print(f"✓ HFSpacesClient test passed with {space_id}")
+
+    def view_api(self) -> None:
+        """
+        Display the API information for this Space.
+
+        Shows available endpoints and their parameters.
+        """
+        try:
+            return self.client.view_api()
+        except Exception as e:
+            logger.warning(f"Could not view API: {e}")
+            raise
 
 
 # public functions
