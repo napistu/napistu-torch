@@ -1047,6 +1047,7 @@ class FoundationModel(BaseModel):
         apply_softmax: bool = False,
         by_absolute_value: bool = True,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
     ) -> pd.DataFrame:
@@ -1078,6 +1079,9 @@ class FoundationModel(BaseModel):
         compute_ranks : bool, optional
             If True, compute ranks of attention values relative to the full attention tensor
             for each layer and add them to the output table (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         device : str or torch.device, optional
             Device to perform computation on (default: None to automatically select)
         verbose : bool, optional
@@ -1112,6 +1116,9 @@ class FoundationModel(BaseModel):
         >>>
         >>> # Rank by raw value instead of absolute value
         >>> top_edges = model.get_top_attentions(k=1000, by_absolute_value=False)
+        >>>
+        >>> # Exclude self-attention edges
+        >>> top_edges = model.get_top_attentions(k=1000, ignore_self_attention=True)
         """
 
         device = ensure_device(device, allow_autoselect=True)
@@ -1158,6 +1165,7 @@ class FoundationModel(BaseModel):
                     layer_idx=layer_idx,
                     gene_ids=target_ids,
                     by_absolute_value=by_absolute_value,
+                    ignore_self_attention=ignore_self_attention,
                 )
 
                 results.append(layer_df)
@@ -1550,6 +1558,7 @@ class FoundationModels(BaseModel):
         reextract_union: bool = False,
         apply_softmax: bool = False,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         return_original_and_reextracted: bool = False,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
@@ -1587,6 +1596,9 @@ class FoundationModels(BaseModel):
             (default: False)
         apply_softmax : bool, optional
             Whether to apply softmax before computing consensus (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         return_original_and_reextracted : bool, optional
             If True and reextract_union=True, return tuple (original, reextracted).
             If False and reextract_union=True, return only reextracted DataFrame.
@@ -1684,6 +1696,7 @@ class FoundationModels(BaseModel):
                 layer_idx=None,  # No layer for consensus
                 gene_ids=common_ids,
                 by_absolute_value=by_absolute_value,
+                ignore_self_attention=ignore_self_attention,
             )
             model_top_k[FM_EDGELIST.MODEL] = model.full_name
 
@@ -1866,6 +1879,7 @@ class FoundationModels(BaseModel):
         reextract_union: bool = False,
         apply_softmax: bool = False,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         return_original_and_reextracted: bool = False,
         verbose: bool = False,
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -1893,6 +1907,9 @@ class FoundationModels(BaseModel):
         compute_ranks : bool, optional
             If True, compute ranks of attention values and add them to the output table.
             Ranks are computed within each model and layer group (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         return_original_and_reextracted : bool, optional
             If True and reextract_union=True, return tuple (original, reextracted).
             If False and reextract_union=True, return only reextracted DataFrame.
@@ -1976,6 +1993,7 @@ class FoundationModels(BaseModel):
                 apply_softmax=apply_softmax,
                 by_absolute_value=by_absolute_value,
                 compute_ranks=compute_ranks,
+                ignore_self_attention=ignore_self_attention,
                 verbose=verbose,
             ).assign(model=model_name)
 
@@ -2630,6 +2648,7 @@ def _find_top_k_edges_in_attention_layer(
     layer_idx: Optional[int] = None,
     gene_ids: Optional[List[str]] = None,
     by_absolute_value: bool = True,
+    ignore_self_attention: bool = False,
 ) -> pd.DataFrame:
     """
     Extract top-k edges from an attention matrix.
@@ -2653,6 +2672,9 @@ def _find_top_k_edges_in_attention_layer(
     by_absolute_value : bool, optional
         If True, rank edges by absolute attention value (default: True).
         If False, rank edges by raw attention value.
+    ignore_self_attention : bool, optional
+        If True, exclude self-attention edges (where from_gene == to_gene) from
+        top-k selection (default: False).
 
     Returns
     -------
@@ -2684,6 +2706,9 @@ def _find_top_k_edges_in_attention_layer(
     >>>
     >>> # Rank by raw value instead of absolute value
     >>> top_edges = find_top_k_edges(attention, k=100, by_absolute_value=False)
+    >>>
+    >>> # Exclude self-attention edges
+    >>> top_edges = find_top_k_edges(attention, k=1000, ignore_self_attention=True)
     """
 
     # Get device from attention tensor for memory management
@@ -2696,6 +2721,7 @@ def _find_top_k_edges_in_attention_layer(
             attention,
             k=k,
             by_absolute_value=by_absolute_value,
+            ignore_self_attention=ignore_self_attention,
         )
 
         # Build base DataFrame with indices and attention

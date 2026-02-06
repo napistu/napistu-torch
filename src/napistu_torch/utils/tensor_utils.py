@@ -732,6 +732,7 @@ def find_top_k(
     tensor: torch.Tensor,
     k: int,
     by_absolute_value: bool = True,
+    ignore_self_attention: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Extract top-k values and indices from a 2D tensor.
@@ -750,6 +751,10 @@ def find_top_k(
     by_absolute_value : bool, optional
         If True, rank by absolute value but return original signed values (default: True).
         If False, rank by raw values (largest values).
+    ignore_self_attention : bool, optional
+        If True, exclude diagonal elements (where row == col) from top-k selection
+        (default: False). Useful for attention matrices where self-attention edges
+        (from_gene == to_gene) should be excluded.
 
     Returns
     -------
@@ -777,6 +782,9 @@ def find_top_k(
     >>> row_idx, col_idx, values = find_top_k(tensor, k=2)
     >>> len(values)  # May be 3 if both 5.0 values are in top-2
     3
+    >>>
+    >>> # Exclude self-attention (diagonal)
+    >>> row_idx, col_idx, values = find_top_k(attention, k=100, ignore_self_attention=True)
     """
     if tensor.ndim != 2:
         raise ValueError(f"Expected 2D tensor, got shape {tensor.shape}")
@@ -787,12 +795,39 @@ def find_top_k(
     else:
         ranking_tensor = tensor
 
+    # Mask diagonal if ignore_self_attention is True
+    # Only applies to square matrices (n_rows == n_cols)
+    diagonal_mask = None
+    if ignore_self_attention:
+        n_rows, n_cols = ranking_tensor.shape
+        if n_rows != n_cols:
+            logger.warning(
+                f"ignore_self_attention=True ignored: tensor is not square "
+                f"(shape: {tensor.shape}). Self-attention filtering only applies to square matrices."
+            )
+            ignore_self_attention = False  # Disable for non-square matrices
+
+    if ignore_self_attention:
+        # Create diagonal mask and set diagonal to negative infinity
+        # This ensures diagonal elements are never selected in top-k
+        diagonal_mask = torch.eye(
+            ranking_tensor.shape[0], device=ranking_tensor.device, dtype=torch.bool
+        )
+        ranking_tensor[diagonal_mask] = float("-inf")
+
     # Get the k-th largest value (the threshold)
+    # Note: If ignore_self_attention=True, diagonal elements are set to -inf above,
+    # so torch.topk will naturally skip them. No need to adjust k.
     k_actual = min(k, ranking_tensor.numel())
+    
     kth_value = torch.topk(ranking_tensor.flatten(), k_actual).values[-1]
 
     # Find ALL positions where value >= kth_value (work on 2D tensor directly!)
     mask = ranking_tensor >= kth_value
+    # Explicitly exclude diagonal elements if ignore_self_attention is True
+    # This ensures diagonal is never returned, even if kth_value is -inf
+    if ignore_self_attention and diagonal_mask is not None:
+        mask = mask & ~diagonal_mask
     row_indices, col_indices = torch.where(mask)
 
     # Get original signed values at those positions

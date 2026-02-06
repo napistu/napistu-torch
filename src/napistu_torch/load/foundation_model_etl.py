@@ -320,24 +320,16 @@ def process_scprint(
     -------
     None
     """
-    from huggingface_hub import hf_hub_download
-
-    if model_path is None:
-        model_path = os.path.join("data", "scPRINT")
-
+    
     # Get version ID and checkpoint filename from the version key
     version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
-    checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
     file_prefix = f"{SCPRINT_DEFS.MODEL_NAME}_{version_id}"
 
     logger.info(f"Extracting: scPRINT {version_id} ({version_key})")
 
     # 1. Download and load model
-    logger.info("\n1. Downloading/loading model if needed...")
-    checkpoint_file = hf_hub_download(
-        repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
-    )
-
+    checkpoint_file = _get_scprint_checkpoint(version_key, model_path)
+    
     logger.info("Loading scPRINT model")
     model, gene_annotations, model_metadata = _scprint_load_model(
         checkpoint_file, version=version_id
@@ -639,6 +631,34 @@ def _create_and_save_foundation_model(
     foundation_model.save(output_dir, file_prefix)
     logger.info("Successfully saved all results!")
     return foundation_model
+
+
+@require_scprint
+def _get_scprint_checkpoint(version_key: str, model_path: str) -> str:
+    """Get the checkpoint file for a given version key.
+
+    Parameters
+    ----------
+    version_key : str
+      Version key
+    model_path : str
+      Model path
+
+    Returns
+    -------
+    str
+      Path to checkpoint file
+    """
+    from huggingface_hub import hf_hub_download
+
+    # Get version ID and checkpoint filename from the version key
+    version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
+    checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
+    
+    logger.info(f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed...")
+    return hf_hub_download(
+        repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
+    )
 
 
 def _extract_attention_from_state_dict(
