@@ -26,13 +26,13 @@ def test_embeddings_field_validation():
         ordered_genes=[f"gene_{i}" for i in range(10)],
         category_dict={0: "type1", 1: "type2"},
     )
-    assert isinstance(expr_emb.embeddings, torch.Tensor)
+    assert isinstance(expr_emb.embeddings, np.ndarray)
     assert expr_emb.embeddings.shape == (2, 10, 32)
 
     # Numpy converted to torch before validation (single category, no ordered_genes needed)
     numpy_embeddings = np.random.randn(1, 5, 16)
     expr_emb = ExpressionEmbeddings(embeddings=numpy_embeddings)
-    assert isinstance(expr_emb.embeddings, torch.Tensor)
+    assert isinstance(expr_emb.embeddings, np.ndarray)
     assert expr_emb.embeddings.shape == (1, 5, 16)
 
     # Invalid: 2D array (validation runs in __init__ before accessing shape[0])

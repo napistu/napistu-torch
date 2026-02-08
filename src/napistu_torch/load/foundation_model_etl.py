@@ -21,7 +21,7 @@ import json
 import logging
 import os
 import warnings
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -67,6 +67,8 @@ warnings.filterwarnings("ignore")
 
 if TYPE_CHECKING:
     from anndata import AnnData
+    from scgpt.model.transformer_model import TransformerModel
+    from scgpt.tokenizer.gene_tokenizer import GeneVocab
     from scprint.model import scPrint
 
     pass
@@ -74,15 +76,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# Public API
-# ============================================================================
-
-
 @require_bionty
 @require_scdataloader
 def populate_lamin_db() -> None:
-    """Populate the lamin database.
+    """
+    Populate the lamin database.
 
     Add species, identifiers, and other metadata to the lamin database
 
@@ -112,15 +110,16 @@ def populate_lamin_db() -> None:
 
 @require_modelgenerator
 def process_aidocell(model_class: Any, output_dir: str) -> None:
-    """Process a given AIDOCell model class and save the results.
+    """
+    Process a given AIDOCell model class and save the results.
 
     Parameters
     ----------
     model_class : Any
-      AIDOCell model class to load. Can be a class or a class name string.
-      If string, uses AIDOCELL_CLASSES to look up the backbone.
+        AIDOCell model class to load. Can be a class or a class name string.
+        If string, uses AIDOCELL_CLASSES to look up the backbone.
     output_dir : str
-      Output directory to save the results
+        Output directory to save the results
 
     Returns
     -------
@@ -167,18 +166,19 @@ def process_scfoundation(
     output_prefix: Optional[str] = None,
     cache_dir: Optional[str] = None,
 ) -> None:
-    """Process scFoundation checkpoint and save to disk.
+    """
+    Process scFoundation checkpoint and save to disk.
 
     Parameters
     ----------
     output_dir : str
-      Directory to save processed model
+        Directory to save processed model
     checkpoint_path : str, optional
-      Path to local checkpoint. If None, downloads from HuggingFace.
+        Path to local checkpoint. If None, downloads from HuggingFace.
     output_prefix : str, optional
-      Prefix for output files (default: "scFoundation")
+        Prefix for output files (default: "scFoundation")
     cache_dir : str, optional
-      Cache directory for HuggingFace downloads
+        Cache directory for HuggingFace downloads
 
     Returns
     -------
@@ -253,9 +253,13 @@ def process_scfoundation(
 
 @require_scgpt
 def process_scgpt(
-    model_dir: str, output_dir: str, annotations_path: Optional[str] = None
+    model_dir: str,
+    output_dir: str,
+    annotations_path: Optional[str] = None,
+    datasets_config: Optional[DatasetsConfig] = None,
 ) -> None:
-    """Process the scGPT model and save the results to the output directory.
+    """
+    Process the scGPT model and save the results to the output directory.
 
     Parameters
     ----------
@@ -265,6 +269,8 @@ def process_scgpt(
         Output directory to save the results
     annotations_path : str, optional
         Path to gene annotations file. If None, downloads from GENE_IDENTIFIERS_URL
+    datasets_config : DatasetsConfig, optional
+        Datasets configuration
 
     Returns
     -------
@@ -306,9 +312,28 @@ def process_scgpt(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
 
-    # 4. Create FoundationModel and save
+    # 4. Extract dataset expression embeddings
+    logger.info("3. Extracting dataset expression embeddings...")
+    dataset_expression_embeddings = list()
+    for config in datasets_config.data.values():
+        expression_embeddings = _scgpt_get_expression_embeddings(
+            model,
+            config.load_h5ad(),
+            gene_annotations,
+            vocab,
+            dataset_name=config.name,
+            dataset_uri=config.uri,
+        )
+        dataset_expression_embeddings.append(expression_embeddings)
+
+    # 5. Create FoundationModel and save
     _create_and_save_foundation_model(
-        weights, gene_annotations, model_metadata, output_dir, file_prefix
+        weights,
+        gene_annotations,
+        model_metadata,
+        dataset_expression_embeddings,
+        output_dir,
+        file_prefix,
     )
 
     return None
@@ -343,10 +368,9 @@ def process_scprint(
     version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
     file_prefix = f"{SCPRINT_DEFS.MODEL_NAME}_{version_id}"
 
-    logger.info(f"Extracting: scPRINT {version_id} ({version_key})")
-
     # 1. Download and load model
-    checkpoint_file = _get_scprint_checkpoint(version_key, model_path)
+    logger.info(f"Extracting: scPRINT {version_id} ({version_key})")
+    checkpoint_file = _scprint_get_checkpoint(version_key, model_path)
 
     logger.info("Loading scPRINT model")
     model, gene_annotations, model_metadata = _scprint_load_model(
@@ -393,17 +417,18 @@ def process_scprint(
 
 @require_modelgenerator
 def _aidocell_extract_attention_weights(model: Any) -> List[AttentionLayer]:
-    """Extract core attention weights (Q, K, V, O) from all layers.
+    """
+    Extract core attention weights (Q, K, V, O) from all layers.
 
     Parameters
     ----------
     model : Any
-      The AIDOCell model
+        The AIDOCell model
 
     Returns
     -------
     List[AttentionLayer]
-      List of AttentionLayer instances
+        List of AttentionLayer instances
     """
     attention_layers = []
     encoder = model.encoder
@@ -430,17 +455,18 @@ def _aidocell_extract_attention_weights(model: Any) -> List[AttentionLayer]:
 
 @require_modelgenerator
 def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
-    """Extract model weights in the standardized format.
+    """
+    Extract model weights in the standardized format.
 
     Parameters
     ----------
     model : Any
-      The AIDOCell model
+        The AIDOCell model
 
     Returns
     -------
     FoundationModelWeights
-      FoundationModelWeights instance containing gene_embedding and attention_layers
+        FoundationModelWeights instance containing gene_embedding and attention_layers
     """
     # Extract gene embeddings
     encoder = model.encoder
@@ -460,19 +486,20 @@ def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
 
 @require_modelgenerator
 def _aidocell_format_metadata(model: Any, model_class_name: str) -> Dict:
-    """Extract model architecture metadata.
+    """
+    Extract model architecture metadata.
 
     Parameters
     ----------
     model : Any
-      The AIDOCell model
+        The AIDOCell model
     model_class_name : str
-      Name of the model class
+        Name of the model class
 
     Returns
     -------
     Dict
-      Dictionary with model metadata
+        Dictionary with model metadata
     """
     encoder = model.encoder
     gene_annotations = _aidocell_load_gene_annotations()
@@ -497,17 +524,18 @@ def _aidocell_format_metadata(model: Any, model_class_name: str) -> Dict:
 
 @require_modelgenerator
 def _aidocell_get_backbone(class_name: str) -> Any:
-    """Get AIDOCell backbone class by name.
+    """
+    Get AIDOCell backbone class by name.
 
     Parameters
     ----------
     class_name : str
-      AIDOCell class name (e.g., "aido_cell_3m", "aido_cell_10m", "aido_cell_100m")
+        AIDOCell class name (e.g., "aido_cell_3m", "aido_cell_10m", "aido_cell_100m")
 
     Returns
     -------
     Any
-      The AIDOCell backbone class
+        The AIDOCell backbone class
 
     Examples
     --------
@@ -537,14 +565,15 @@ def _aidocell_get_backbone(class_name: str) -> Any:
 
 @require_modelgenerator
 def _aidocell_load_gene_annotations() -> pd.DataFrame:
-    """Load gene annotations from AIDOCell model.
+    """
+    Load gene annotations from AIDOCell model.
 
     This is a flat file which is bundled with the package
 
     Returns
     -------
     pd.DataFrame
-      DataFrame with gene annotations
+        DataFrame with gene annotations
     """
     import modelgenerator.cell.utils as cell_utils
 
@@ -573,17 +602,18 @@ def _aidocell_load_gene_annotations() -> pd.DataFrame:
 
 @require_modelgenerator
 def _aidocell_load_model(model_class: Any) -> Any:
-    """Load AIDOCell model in eval mode.
+    """
+    Load AIDOCell model in eval mode.
 
     Parameters
     ----------
     model_class : Any
-      AIDOCell model class to load
+        AIDOCell model class to load
 
     Returns
     -------
     Any
-      The AIDOCell model in eval mode
+        The AIDOCell model in eval mode
     """
     model = model_class(
         legacy_adapter_type=None, default_config=None, from_scratch=False
@@ -594,17 +624,18 @@ def _aidocell_load_model(model_class: Any) -> Any:
 
 @require_modelgenerator
 def _aidocell_load_model_full(model_class: Any) -> Tuple[Any, pd.DataFrame, Dict]:
-    """Load the AIDOCell model and return model, gene annotations, and metadata.
+    """
+    Load the AIDOCell model and return model, gene annotations, and metadata.
 
     Parameters
     ----------
     model_class : Any
-      AIDOCell model class to load
+        AIDOCell model class to load
 
     Returns
     -------
     Tuple[Any, pd.DataFrame, Dict]
-      Tuple of (model, gene_annotations, model_metadata)
+        Tuple of (model, gene_annotations, model_metadata)
     """
     logger.info("Loading AIDOCell model")
     model = _aidocell_load_model(model_class)
@@ -669,101 +700,125 @@ def _create_and_save_foundation_model(
     return foundation_model
 
 
-@require_scprint
-def _get_scprint_checkpoint(version_key: str, model_path: str) -> str:
-    """Get the checkpoint file for a given version key.
+def _embed_expression_batch(
+    model: TransformerModel,
+    model_type: str,
+    expression: torch.Tensor,
+    gene_emb: torch.Tensor,
+    gene_indices: Optional[torch.Tensor] = None,  # For scGPT
+    batch_size: int = 64,
+    device: Optional[torch.device] = None,
+    verbose: bool = False,
+) -> torch.Tensor:
+    """
+    Create expression-aware embeddings by processing cells in batches.
+
+    Universal pattern for all models:
+    1. Batch cells through model-specific encoder
+    2. Accumulate expression embeddings across cells
+    3. Average and add to static gene embeddings
 
     Parameters
     ----------
-    version_key : str
-        Version key
-    model_path : str
-        Model path
+    model : Any
+        The foundation model
+    model_type : str
+        One of: "scprint", "scgpt", "aidocell", "scfoundation"
+    expression : torch.Tensor
+        Expression matrix (n_cells, n_genes)
+    gene_emb : torch.Tensor
+        Static gene embeddings (n_genes, embed_dim)
+    gene_indices : torch.Tensor, optional
+        Gene vocabulary indices (required for scGPT)
+    batch_size : int
+        Number of cells to process at once
+    device : torch.device, optional
+        Device for computation
+    verbose : bool, optional
+        Whether to print progress
 
     Returns
     -------
-    str
-        Path to checkpoint file
+    torch.Tensor
+        Contextualized gene embeddings (n_genes, embed_dim)
     """
-    from huggingface_hub import hf_hub_download
+    device = ensure_device(device, allow_autoselect=True)
 
-    # Get version ID and checkpoint filename from the version key
-    version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
-    checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
+    _validate_embed_expression_inputs(expression, gene_emb, model_type, gene_indices)
 
-    logger.info(
-        f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed..."
-    )
-    return hf_hub_download(
-        repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
-    )
+    t_expression = expression.to(device)
+    t_gene_emb = gene_emb.to(device)
+    t_model = model.to(device)
+    t_gene_indices = None
+    if gene_indices is not None:
+        t_gene_indices = gene_indices.to(device)
 
+    n_cells = t_expression.shape[0]
+    n_genes = t_gene_emb.shape[0]
+    embed_dim = t_gene_emb.shape[1]
 
-def _extract_attention_from_state_dict(
-    state_dict: Dict[str, torch.Tensor],
-    n_layers: int,
-    embed_dim: int,
-    layer_prefix: str = "transformer_encoder.layers",
-    qkv_key_template: str = "{layer_idx}.self_attn.Wqkv.weight",
-    out_proj_key_template: str = "{layer_idx}.self_attn.out_proj.weight",
-) -> List[AttentionLayer]:
-    """
-    Extract attention layers from a state dict using configurable key templates.
+    # Accumulate expression embeddings
+    expr_emb_sum = torch.zeros(n_genes, embed_dim, device=device)
 
-    Parameters
-    ----------
-    state_dict : Dict[str, torch.Tensor]
-        Model state dictionary
-    n_layers : int
-        Number of transformer layers
-    embed_dim : int
-        Embedding dimension
-    layer_prefix : str
-        Prefix for layer keys (default: "transformer_encoder.layers")
-    qkv_key_template : str
-        Template for QKV weight key, use {layer_idx} placeholder
-        (default: "{layer_idx}.self_attn.Wqkv.weight")
-    out_proj_key_template : str
-        Template for output projection key, use {layer_idx} placeholder
-        (default: "{layer_idx}.self_attn.out_proj.weight")
+    with memory_manager(device):
+        for i in range(0, n_cells, batch_size):
+            if verbose:
+                logger.info(
+                    f"Processing batch {i // batch_size + 1} of {n_cells // batch_size}"
+                )
 
-    Returns
-    -------
-    List[AttentionLayer]
-        List of AttentionLayer instances
+            batch_expr = t_expression[i : i + batch_size]
+            batch_size_actual = batch_expr.shape[0]
 
-    Examples
-    --------
-    >>> layers = _extract_attention_from_state_dict(
-    ...     state_dict, n_layers=12, embed_dim=512
-    ... )
-    """
-    attention_layers = []
+            # Model-specific encoding
+            if model_type == "scprint":
+                batch_input = batch_expr.unsqueeze(-1)  # (batch, n_genes, 1)
+                batch_expr_emb = t_model.expr_encoder(
+                    batch_input
+                )  # (batch, n_genes, 1, 256)
+                batch_expr_emb = batch_expr_emb.squeeze(2)  # (batch, n_genes, 256)
 
-    for layer_idx in range(n_layers):
-        # Format keys with layer index
-        qkv_key = f"{layer_prefix}.{qkv_key_template.format(layer_idx=layer_idx)}"
-        out_proj_key = (
-            f"{layer_prefix}.{out_proj_key_template.format(layer_idx=layer_idx)}"
-        )
+            elif model_type == "scgpt":
+                # Prepare inputs for scGPT
+                src = t_gene_indices.unsqueeze(0).expand(batch_size_actual, -1)
+                values = batch_expr  # (batch, n_genes) - ContinuousValueEncoder will unsqueeze internally
 
-        if qkv_key not in state_dict:
-            raise KeyError(f"Could not find {qkv_key} in state_dict")
-        if out_proj_key not in state_dict:
-            raise KeyError(f"Could not find {out_proj_key} in state_dict")
+                src_key_padding_mask = torch.zeros(
+                    batch_size_actual, n_genes, dtype=torch.bool, device=device
+                )
 
-        # Extract and convert to numpy
-        qkv_weight = state_dict[qkv_key].clone().cpu().detach().numpy()
-        out_proj = state_dict[out_proj_key].clone().cpu().detach().numpy()
+                # Get contextualized embeddings from transformer
+                batch_expr_emb = t_model._encode(
+                    src, values, src_key_padding_mask, batch_labels=None
+                )
 
-        # Split QKV
-        w_q, w_k, w_v = _split_qkv_weights(qkv_weight, embed_dim)
+                del src, values, src_key_padding_mask
 
-        attention_layers.append(
-            AttentionLayer(layer_idx=layer_idx, W_q=w_q, W_k=w_k, W_v=w_v, W_o=out_proj)
-        )
+            elif model_type == "aidocell":
+                raise NotImplementedError("AIDO.Cell not yet implemented")
 
-    return attention_layers
+            elif model_type == "scfoundation":
+                raise NotImplementedError("scFoundation not yet implemented")
+
+            else:
+                raise ValueError(f"Unknown model_type: {model_type}")
+
+            # Accumulate
+            expr_emb_sum += batch_expr_emb.sum(dim=0)
+
+            # Cleanup
+            del batch_expr_emb
+            empty_cache(device)
+
+    # Average expression embeddings across cells
+    mean_expr_emb = expr_emb_sum / n_cells
+
+    # Combine with static gene embeddings (universal pattern)
+    contextual_gene_emb = t_gene_emb + mean_expr_emb
+
+    del t_expression, t_gene_emb, t_model, t_gene_indices, mean_expr_emb, expr_emb_sum
+
+    return contextual_gene_emb.cpu()
 
 
 def _format_base_metadata(
@@ -960,7 +1015,11 @@ def _scfoundation_extract_weights(
 @require_scgpt
 @require_torchtext
 def _scgpt_extract_weights(
-    model: Any, vocab: Any, model_metadata: dict, checkpoint_path: str
+    model: TransformerModel,
+    vocab: GeneVocab,
+    model_metadata: dict,
+    checkpoint_path: str,
+    device: Optional[Union[str, torch.device]] = None,
 ) -> FoundationModelWeights:
     """Extract weights from scGPT model.
 
@@ -969,22 +1028,26 @@ def _scgpt_extract_weights(
 
     Parameters
     ----------
-    model : Any
-      scGPT TransformerModel
-    vocab : Any
-      scGPT vocabulary object
+    model : TransformerModel
+        scGPT TransformerModel
+    vocab : GeneVocab
+        scGPT vocabulary object
     model_metadata : dict
-      Model metadata dictionary
+        Model metadata dictionary
     checkpoint_path : str
-      Path to checkpoint file
+        Path to checkpoint file
+    device : Optional[Union[str, torch.device]], optional
+        Device to use for computation
 
     Returns
     -------
     FoundationModelWeights
-      Extracted model weights
+        Extracted model weights
     """
-    # Extract gene embeddings
-    gene_ids = torch.arange(len(vocab))
+    # Forward pass on selected device (MPS/CUDA/CPU); move model and inputs explicitly
+    device = ensure_device(device, allow_autoselect=True)
+    model = model.to(device)
+    gene_ids = torch.arange(len(vocab), device=device)
     embeddings = model.encoder(gene_ids).detach().cpu().numpy()
 
     # Load weights directly from checkpoint file (model.state_dict() is unreliable)
@@ -1070,6 +1133,153 @@ def _scgpt_format_metadata(model_configs: dict, vocab: Any) -> Dict:
     )
 
 
+@require_scgpt
+def _scgpt_get_expression_embeddings(
+    model: TransformerModel,
+    adata: AnnData,
+    gene_annotations: pd.DataFrame,
+    vocab: GeneVocab,
+    dataset_name: Optional[str] = None,
+    dataset_uri: Optional[str] = None,
+) -> ExpressionEmbeddings:
+    """
+    Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    gene_annotations : pd.DataFrame
+        The gene annotations
+    vocab : GeneVocab
+        The vocabulary
+    dataset_name : Optional[str] = None
+        The name of the dataset
+    dataset_uri : Optional[str] = None
+        The URI of the dataset
+
+    Returns
+    -------
+    ExpressionEmbeddings
+        Expression embeddings for the dataset
+    """
+
+    cluster_embeddings, selected_genes, cell_cluster_dict = (
+        _scgpt_get_gene_embedding_by_cell_type(model, adata, gene_annotations, vocab)
+    )
+
+    expression_embeddings = ExpressionEmbeddings(
+        cluster_embeddings,
+        ordered_genes=selected_genes,
+        category_dict=cell_cluster_dict,
+        dataset_name=dataset_name,
+        dataset_uri=dataset_uri,
+    )
+
+    return expression_embeddings
+
+
+@require_scgpt
+def _scgpt_get_gene_embedding_by_cell_type(
+    model: TransformerModel,
+    adata: AnnData,
+    gene_annotations: pd.DataFrame,
+    vocab: GeneVocab,
+) -> Tuple[torch.Tensor, List[str], Dict[str, str]]:
+    """
+    Get the gene embeddings for each cell type in an AnnData object.
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    gene_annotations : List[str]
+        The common genes to use for the embeddings
+    vocab : GeneVocab
+        The vocabulary
+
+    Returns
+    -------
+    Tuple[torch.Tensor, Dict[str, str]]
+        Tuple of (cluster_embeddings, cell_cluster_dict)
+        - cluster_embeddings : torch.Tensor
+            The gene embeddings for each cell type
+        - selected_genes : List[str]
+            The selected genes (ensembl gene ids)
+        - cell_cluster_dict : Dict[str, str]
+            A dictionary mapping cell type indices to cell type names
+    """
+
+    device = select_device(mps_valid=True)
+
+    # 1. Get indices into model vocabulary
+    # Get common genes between model and data
+    common_genes_df = gene_annotations.query(
+        f"{ONTOLOGIES.ENSEMBL_GENE} in @adata.var_names"
+    ).assign(index=lambda x: x["vocab_name"].apply(lambda v: vocab[v]))
+    gene_indices = common_genes_df["index"].values
+
+    # 2. Track cell types to setup creating cell-type masks
+    cell_clusters = (
+        adata.obs.value_counts(["cell_type", "leiden_scVI"])
+        .drop_duplicates()
+        .reset_index(drop=False)
+        .sort_values("leiden_scVI")
+    )
+    cell_cluster_dict = cell_clusters.set_index("leiden_scVI")["cell_type"].to_dict()
+
+    # filter to highly variable genes and bin expression values (as per the training data)
+    adata_subset, selected_genes, gene_indices = _scgpt_preprocess_dataset(
+        adata, model, vocab, gene_annotations
+    )
+
+    # static embeddings
+    d_gene_indices = gene_indices.to(device)
+    gene_embeddings = model.encoder(d_gene_indices)
+    del d_gene_indices
+
+    # Allocate output
+    cluster_embeddings = torch.zeros(
+        len(cell_clusters),
+        len(selected_genes),
+        model.d_model,
+    )
+
+    # 3. Embed each cell type
+    model.eval()
+    with torch.no_grad():
+        for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
+            cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
+            cluster_adata = adata_subset[cluster_mask]
+
+            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+
+            if model.input_emb_style == "continuous":
+                cluster_expr = torch.tensor(cluster_adata.X, dtype=torch.float32)
+            else:
+                cluster_expr = torch.tensor(cluster_adata.X)
+
+            # Use batched processing
+            cluster_embeddings[i] = _embed_expression_batch(
+                model=model,
+                model_type="scgpt",
+                expression=cluster_expr,
+                gene_emb=gene_embeddings,
+                gene_indices=gene_indices,
+                batch_size=64,
+                device=device,
+            )
+
+            logger.info(f"  ✓ Completed cluster {i}")
+
+    return cluster_embeddings, selected_genes, cell_cluster_dict
+
+
+@require_scgpt
 def _scgpt_load_gene_annotations(annotations_path: str) -> pd.DataFrame:
     """Load gene annotations for scGPT.
 
@@ -1201,6 +1411,144 @@ def _scgpt_load_model_from_file(
     return model
 
 
+def _scgpt_preprocess_dataset(
+    adata: AnnData,
+    model: Any,
+    vocab: Any,
+    gene_annotations: pd.DataFrame,
+    input_style: str = "binned",
+    max_seq_len: int = 1200,
+    n_bins: int = 51,
+) -> Tuple[AnnData, List[str], torch.Tensor, torch.Tensor]:
+    """
+    Preprocess entire dataset for scGPT model according to model's training config.
+
+    Performs:
+    1. Filter to common genes between adata and model vocab
+    2. HVG selection (to max_seq_len)
+    3. Normalization and binning
+
+    Parameters
+    ----------
+    adata : AnnData
+        The full dataset to preprocess
+    model : Any
+        The scGPT model
+    vocab : Any
+        The scGPT vocabulary
+    gene_annotations : pd.DataFrame
+        Gene annotation mappings
+    input_style : str
+        The input style to use (from the model's args.json file).
+    max_seq_len : int
+        Maximum sequence length (from model's args.json)
+    n_bins : int
+        Number of bins (from model's args.json)
+
+    Returns
+    -------
+    adata_processed : AnnData
+        Preprocessed AnnData with HVG-selected genes as the X attribute
+    selected_genes : List[str]
+        List of selected gene names (Ensembl IDs)
+    gene_indices : torch.Tensor
+        Vocabulary indices for selected genes, shape (n_genes,)
+    """
+    from scgpt.preprocess import Preprocessor
+
+    # 1. Get common genes between adata and vocab
+    common_genes_df = gene_annotations.query(
+        f"{ONTOLOGIES.ENSEMBL_GENE} in @adata.var_names"
+    ).assign(index=lambda x: x["vocab_name"].apply(lambda v: vocab[v]))
+    common_genes = common_genes_df[ONTOLOGIES.ENSEMBL_GENE].values.tolist()
+
+    logger.info(f"Found {len(common_genes)} common genes between data and model vocab")
+
+    # 2. Subset to common genes
+    adata_subset = adata[:, common_genes].copy()
+
+    # 3. Determine preprocessing based on model config
+    if not hasattr(model, "input_emb_style"):
+        raise ValueError("Model does not have input_emb_style attribute")
+
+    input_style = model.input_emb_style
+
+    logger.info(f"Model input_style: {input_style}")
+
+    # 4. Run preprocessing pipeline
+    if input_style == "binned":
+        # Model expects binned integer values
+        n_bins = (
+            model.value_encoder.num_embeddings
+            if hasattr(model.value_encoder, "num_embeddings")
+            else n_bins
+        )
+
+        preprocessor = Preprocessor(
+            use_key="X",
+            normalize_total=1e4,
+            log1p=True,
+            subset_hvg=max_seq_len,  # Select top N HVGs
+            hvg_flavor="seurat_v3",
+            binning=n_bins,
+            result_binned_key="X_binned",
+        )
+        preprocessor(adata_subset)
+
+        # Store binned values in .X for easy access
+        if issparse(adata_subset.layers["X_binned"]):
+            adata_subset.X = adata_subset.layers["X_binned"].toarray()
+        else:
+            adata_subset.X = adata_subset.layers["X_binned"]
+
+    elif input_style == "continuous":
+        # Model expects continuous normalized values
+        # Even though model is "continuous", we still bin according to input_style
+        preprocessor = Preprocessor(
+            use_key="X",
+            normalize_total=1e4,
+            log1p=True,
+            subset_hvg=max_seq_len,
+            hvg_flavor="seurat_v3",
+            binning=n_bins,  # Still bin! Model treats bins as continuous
+            result_binned_key="X_binned",
+        )
+        preprocessor(adata_subset)
+
+        # Store binned values as float (ContinuousValueEncoder treats them as continuous)
+        if issparse(adata_subset.layers["X_binned"]):
+            adata_subset.X = adata_subset.layers["X_binned"].toarray().astype(float)
+        else:
+            adata_subset.X = adata_subset.layers["X_binned"].astype(float)
+    else:
+        raise ValueError(f"Unknown input_style: {input_style}")
+
+    # 5. Get selected genes after HVG filtering
+    selected_genes = adata_subset.var_names.tolist()
+    logger.info(f"Selected {len(selected_genes)} HVGs for processing")
+
+    # 6. Get gene indices and embeddings for selected genes
+    selected_genes_df = gene_annotations[
+        gene_annotations[ONTOLOGIES.ENSEMBL_GENE].isin(selected_genes)
+    ].copy()
+    selected_genes_df["vocab_index"] = selected_genes_df["vocab_name"].apply(
+        lambda x: vocab[x]
+    )
+
+    # Ensure order matches adata_subset.var_names
+    selected_genes_df = (
+        selected_genes_df.set_index(ONTOLOGIES.ENSEMBL_GENE)
+        .loc[selected_genes]
+        .reset_index()
+    )
+
+    gene_indices = torch.tensor(
+        selected_genes_df["vocab_index"].values, dtype=torch.long
+    )
+
+    return adata_subset, selected_genes, gene_indices
+
+
 @require_scprint
 def _scprint_extract_attention_weights(model: Any) -> List[AttentionLayer]:
     """Extract self-attention weights (Q, K, V, O) from all layers.
@@ -1270,74 +1618,6 @@ def _scprint_extract_weights(model: Any) -> FoundationModelWeights:
 
 
 @require_scprint
-def _scprint_embed_expression(model, expression, gene_emb, batch_size=64, device=None):
-    """
-    Create expression-aware embeddings by processing cells in batches.
-
-    Parameters
-    ----------
-    model : scprint.model.model.scPrint
-        The scPRINT model
-    expression : torch.Tensor
-        The expression matrix (n_cells, n_genes) to aggregate
-    gene_emb : torch.Tensor
-        The gene embeddings (n_genes, embed_dim)
-    batch_size : int
-        Number of cells to process at once
-    device : Optional[torch.device]
-        The device to use for the operation
-
-    Returns
-    -------
-    torch.Tensor, shape (n_genes, embed_dim)
-    """
-    device = ensure_device(device, allow_autoselect=True)
-
-    t_expression = expression.to(device)
-    t_gene_emb = gene_emb.to(device)
-    t_model = model.to(device)
-
-    n_cells = t_expression.shape[0]
-    n_genes = t_gene_emb.shape[0]
-    embed_dim = t_gene_emb.shape[1]
-
-    # Accumulate weighted sum
-    expr_emb_sum = torch.zeros(n_genes, embed_dim, device=device)
-    total_weight = 0
-
-    with memory_manager(device):
-        for i in range(0, n_cells, batch_size):
-            batch_expr = t_expression[i : i + batch_size]
-            batch_size_actual = batch_expr.shape[0]
-
-            # Process this batch
-            batch_input = batch_expr.unsqueeze(-1)  # (batch, n_genes, 1)
-            batch_expr_emb = t_model.expr_encoder(
-                batch_input
-            )  # (batch, n_genes, 1, 256)
-
-            # Squeeze out the extra dimension
-            batch_expr_emb = batch_expr_emb.squeeze(2)  # (batch, n_genes, 256)
-
-            # Accumulate: sum across cells (dim=0)
-            expr_emb_sum += batch_expr_emb.sum(dim=0)
-            total_weight += batch_size_actual
-
-            # Free memory
-            del batch_expr_emb, batch_input
-            empty_cache(device)
-
-    # Sanity check
-    assert total_weight == n_cells, f"Weight mismatch: {total_weight} != {n_cells}"
-
-    # Average and combine
-    mean_expr_emb = expr_emb_sum / total_weight
-    contextual_gene_emb = t_gene_emb + mean_expr_emb
-
-    return contextual_gene_emb.cpu()  # Move back to CPU before returning
-
-
-@require_scprint
 def _scprint_format_metadata(model: Any, version: Optional[str] = None) -> Dict:
     """Extract model architecture metadata.
 
@@ -1376,6 +1656,36 @@ def _scprint_format_metadata(model: Any, version: Optional[str] = None) -> Dict:
         n_layers=n_layers,
         n_heads=n_heads,
         model_variant=version,
+    )
+
+
+@require_scprint
+def _scprint_get_checkpoint(version_key: str, model_path: str) -> str:
+    """Get the checkpoint file for a given version key.
+
+    Parameters
+    ----------
+    version_key : str
+        Version key
+    model_path : str
+        Model path
+
+    Returns
+    -------
+    str
+        Path to checkpoint file
+    """
+    from huggingface_hub import hf_hub_download
+
+    # Get version ID and checkpoint filename from the version key
+    version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
+    checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
+
+    logger.info(
+        f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed..."
+    )
+    return hf_hub_download(
+        repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
     )
 
 
@@ -1471,6 +1781,7 @@ def _scprint_get_gene_embedding_by_cell_type(
         model.d_model,
     )
 
+    # 3. Embed each cell type
     with torch.no_grad():
         for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
             cluster_mask = adata.obs["leiden_scVI"] == cluster
@@ -1481,8 +1792,12 @@ def _scprint_get_gene_embedding_by_cell_type(
             cluster_expr = _scprint_normalize_expression(cluster_adata, common_genes)
 
             # Use batched processing
-            cluster_embeddings[i] = _scprint_embed_expression(
-                model, cluster_expr, gene_emb, batch_size=64
+            cluster_embeddings[i] = _embed_expression_batch(
+                model,
+                "scprint",
+                cluster_expr,
+                gene_emb,
+                batch_size=64,
             )
 
             logger.info(f"  ✓ Completed cluster {i}")
@@ -1670,3 +1985,104 @@ def _split_qkv_weights(
     w_v = qkv_weight[2 * embed_dim :, :]
 
     return w_q, w_k, w_v
+
+
+def _validate_embed_expression_inputs(
+    expression: torch.Tensor,
+    gene_emb: torch.Tensor,
+    model_type: str,
+    gene_indices: Optional[torch.Tensor] = None,
+) -> None:
+    """
+    Validate inputs for _embed_expression_batch.
+
+    Checks:
+    - Tensor dimensions are correct
+    - Gene counts match across inputs
+    - Model-specific requirements are met
+
+    Parameters
+    ----------
+    expression : torch.Tensor
+        Expression matrix (n_cells, n_genes)
+    gene_emb : torch.Tensor
+        Static gene embeddings (n_genes, embed_dim)
+    model_type : str
+        One of: "scprint", "scgpt", "aidocell", "scfoundation"
+    gene_indices : torch.Tensor, optional
+        Gene vocabulary indices (required for scGPT), shape (n_genes,)
+
+    Raises
+    ------
+    ValueError
+        If any dimension checks fail
+    """
+    # Check expression tensor
+    if expression.ndim != 2:
+        raise ValueError(
+            f"expression must be 2D (n_cells, n_genes), got {expression.ndim}D "
+            f"with shape {expression.shape}"
+        )
+
+    n_cells, n_genes_expr = expression.shape
+
+    # Check gene_emb tensor
+    if gene_emb.ndim != 2:
+        raise ValueError(
+            f"gene_emb must be 2D (n_genes, embed_dim), got {gene_emb.ndim}D "
+            f"with shape {gene_emb.shape}"
+        )
+
+    n_genes_emb, embed_dim = gene_emb.shape
+
+    # Check gene dimension compatibility
+    if n_genes_expr != n_genes_emb:
+        raise ValueError(
+            f"Gene count mismatch:\n"
+            f"  expression: {n_genes_expr} genes (shape {expression.shape})\n"
+            f"  gene_emb:   {n_genes_emb} genes (shape {gene_emb.shape})\n"
+            f"These must match!"
+        )
+
+    n_genes = n_genes_emb
+
+    # Model-specific validation
+    if model_type == "scgpt":
+        if gene_indices is None:
+            raise ValueError(
+                "scGPT requires gene_indices parameter. "
+                "Pass the vocabulary indices for the genes."
+            )
+
+        if gene_indices.ndim != 1:
+            raise ValueError(
+                f"gene_indices must be 1D (n_genes,), got {gene_indices.ndim}D "
+                f"with shape {gene_indices.shape}"
+            )
+
+        n_genes_indices = len(gene_indices)
+        if n_genes_indices != n_genes:
+            raise ValueError(
+                f"Gene count mismatch:\n"
+                f"  expression:    {n_genes_expr} genes\n"
+                f"  gene_emb:      {n_genes_emb} genes\n"
+                f"  gene_indices:  {n_genes_indices} genes\n"
+                f"All must match!"
+            )
+
+    elif model_type in ["scprint", "aidocell", "scfoundation"]:
+        # These models don't need gene_indices
+        pass
+
+    else:
+        raise ValueError(
+            f"Unknown model_type: {model_type}. "
+            f"Must be one of: scprint, scgpt, aidocell, scfoundation"
+        )
+
+    # Success message with summary
+    logger.debug(
+        f"Input validation passed for {model_type}:\n"
+        f"  {n_cells} cells x {n_genes} genes\n"
+        f"  Embedding dimension: {embed_dim}"
+    )
