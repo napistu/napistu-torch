@@ -375,7 +375,7 @@ def test_find_top_k_with_ties():
 
 def test_find_top_k_ignore_self_attention(caplog):
     """Test find_top_k with ignore_self_attention=True across multiple scenarios."""
-    
+
     # Test 1: Standard behavior - square matrix with k < available elements
     tensor = torch.tensor(
         [
@@ -387,43 +387,57 @@ def test_find_top_k_ignore_self_attention(caplog):
     )
     # Diagonal: [10.0, 9.0, 8.0, 4.0] - these should be excluded
     # Top 5 non-diagonal: 8.0, 7.0, 6.0, 5.0, 4.0 (off-diagonal)
-    
+
     row_idx, col_idx, values = find_top_k(
         tensor, k=5, ignore_self_attention=True, by_absolute_value=True
     )
-    
+
     # Verify no diagonal elements are included
     for r, c in zip(row_idx, col_idx):
-        assert r.item() != c.item(), f"Diagonal element ({r.item()}, {c.item()}) should not be included"
-    
+        assert (
+            r.item() != c.item()
+        ), f"Diagonal element ({r.item()}, {c.item()}) should not be included"
+
     # Verify we got results (should have at least 5, possibly more if ties)
     assert len(values) >= 5
     # Verify all returned values are from off-diagonal positions
     diagonal_positions = set((i, i) for i in range(tensor.shape[0]))
     returned_positions = set((r.item(), c.item()) for r, c in zip(row_idx, col_idx))
-    assert diagonal_positions.isdisjoint(returned_positions), "No diagonal positions should be returned"
-    
+    assert diagonal_positions.isdisjoint(
+        returned_positions
+    ), "No diagonal positions should be returned"
+
     # Test 2: k > rows * cols - should still exclude diagonal even when k is very large
     # This tests the edge case where kth_value might be -inf
     row_idx_large, col_idx_large, values_large = find_top_k(
         tensor, k=100, ignore_self_attention=True, by_absolute_value=True
     )
-    
+
     # Should return all non-diagonal elements (16 total - 4 diagonal = 12)
     max_available = tensor.numel() - tensor.shape[0]  # 16 - 4 = 12
-    assert len(values_large) <= max_available, f"Should return at most {max_available} non-diagonal elements"
-    
+    assert (
+        len(values_large) <= max_available
+    ), f"Should return at most {max_available} non-diagonal elements"
+
     # Verify no diagonal elements are included even with large k
     for r, c in zip(row_idx_large, col_idx_large):
-        assert r.item() != c.item(), f"Diagonal element ({r.item()}, {c.item()}) should not be included even with large k"
-    
+        assert (
+            r.item() != c.item()
+        ), f"Diagonal element ({r.item()}, {c.item()}) should not be included even with large k"
+
     # Verify all non-diagonal positions are included
-    all_positions = set((i, j) for i in range(tensor.shape[0]) for j in range(tensor.shape[1]))
+    all_positions = set(
+        (i, j) for i in range(tensor.shape[0]) for j in range(tensor.shape[1])
+    )
     diagonal_positions = set((i, i) for i in range(tensor.shape[0]))
     expected_positions = all_positions - diagonal_positions
-    returned_positions_large = set((r.item(), c.item()) for r, c in zip(row_idx_large, col_idx_large))
-    assert returned_positions_large == expected_positions, "All non-diagonal positions should be returned when k is large"
-    
+    returned_positions_large = set(
+        (r.item(), c.item()) for r, c in zip(row_idx_large, col_idx_large)
+    )
+    assert (
+        returned_positions_large == expected_positions
+    ), "All non-diagonal positions should be returned when k is large"
+
     # Test 3: Non-square matrix - should issue warning and ignore ignore_self_attention
     non_square = torch.tensor(
         [
@@ -431,7 +445,7 @@ def test_find_top_k_ignore_self_attention(caplog):
             [8.0, 9.0, 4.0],
         ]
     )  # 2x3 matrix
-    
+
     # Capture logger warnings
     with caplog.at_level(logging.WARNING):
         row_idx_ns, col_idx_ns, values_ns = find_top_k(
@@ -440,7 +454,7 @@ def test_find_top_k_ignore_self_attention(caplog):
         # Verify warning was logged
         assert "ignore_self_attention=True ignored" in caplog.text
         assert "not square" in caplog.text
-    
+
     # Should behave as if ignore_self_attention=False (diagonal concept doesn't apply)
     # For a 2x3 matrix, all 6 elements are available
     assert len(values_ns) >= 3

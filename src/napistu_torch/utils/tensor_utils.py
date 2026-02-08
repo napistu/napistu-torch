@@ -819,7 +819,7 @@ def find_top_k(
     # Note: If ignore_self_attention=True, diagonal elements are set to -inf above,
     # so torch.topk will naturally skip them. No need to adjust k.
     k_actual = min(k, ranking_tensor.numel())
-    
+
     kth_value = torch.topk(ranking_tensor.flatten(), k_actual).values[-1]
 
     # Find ALL positions where value >= kth_value (work on 2D tensor directly!)

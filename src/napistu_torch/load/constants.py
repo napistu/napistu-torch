@@ -224,6 +224,7 @@ FM_CLASSES = SimpleNamespace(
     FOUNDATION_MODEL="FoundationModel",
     FOUNDATION_MODEL_WEIGHTS="FoundationModelWeights",
     ATTENTION_LAYER="AttentionLayer",
+    EXPRESSION_EMBEDDINGS="ExpressionEmbeddings",
 )
 
 FM_DEFS = SimpleNamespace(
@@ -255,6 +256,13 @@ FM_DEFS = SimpleNamespace(
     # filename/variable name templates
     WEIGHTS_TEMPLATE="{prefix}_weights.npz",
     METADATA_TEMPLATE="{prefix}_metadata.json",
+    # expression embeddings
+    EMBEDDINGS="embeddings",
+    ORDERED_GENES="ordered_genes",
+    CATEGORY_DICT="category_dict",
+    DATASET_NAME="dataset_name",
+    DATASET_URI="dataset_uri",
+    DATASET_EXPRESSION_EMBEDDINGS="dataset_expression_embeddings",  # a list of ExpressionEmbeddings
 )
 
 FM_EDGELIST = SimpleNamespace(

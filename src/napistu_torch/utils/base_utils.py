@@ -16,8 +16,13 @@ shortest_common_prefix(names: List[str], min_length: int = 3) -> str
     Find shortest common prefix respecting word boundaries.
 """
 
+import logging
 from pathlib import Path
 from typing import List, Union
+
+from napistu.utils.path_utils import ensure_path as ensure_path_napistu
+
+logger = logging.getLogger(__name__)
 
 
 class CorruptionError(ValueError):
@@ -56,13 +61,10 @@ def ensure_path(path: Union[str, Path], expand_user: bool = True) -> Path:
     >>> ensure_path("~/data", expand_user=False)
     PosixPath('~/data')
     """
-    if not isinstance(path, (str, Path)):
-        raise TypeError(f"path must be a str or Path object, got {type(path).__name__}")
-    if isinstance(path, str):
-        path = Path(path)
-    if expand_user:
-        path = path.expanduser()
-    return path
+    logger.warning(
+        "base_utils.ensure_path is deprecated, use napistu.utils.base_utils.ensure_path instead"
+    )
+    return ensure_path_napistu(path, expand_user)
 
 
 def normalize_and_validate_indices(

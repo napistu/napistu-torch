@@ -15,6 +15,8 @@ process_scprint:
     Process a scPRINT model and save the results.
 """
 
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -25,7 +27,9 @@ import numpy as np
 import pandas as pd
 import torch
 from napistu.constants import ONTOLOGIES
+from napistu.genomics.scverse_loading import DatasetsConfig
 from napistu.utils import download_wget
+from scipy.sparse import issparse
 
 from napistu_torch.load.constants import (
     AIDOCELL_CLASSES,
@@ -37,6 +41,7 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.foundation_models import (
     AttentionLayer,
+    ExpressionEmbeddings,
     FoundationModel,
     FoundationModelWeights,
 )
@@ -49,13 +54,21 @@ from napistu_torch.utils.optional import (
     require_scprint,
     require_torchtext,
 )
-from napistu_torch.utils.torch_utils import select_device
+from napistu_torch.utils.torch_utils import (
+    empty_cache,
+    ensure_device,
+    memory_manager,
+    select_device,
+)
 
 # Set up warnings for scGPT
 os.environ["KMP_WARNINGS"] = "off"
 warnings.filterwarnings("ignore")
 
 if TYPE_CHECKING:
+    from anndata import AnnData
+    from scprint.model import scPrint
+
     pass
 
 logger = logging.getLogger(__name__)
@@ -247,11 +260,11 @@ def process_scgpt(
     Parameters
     ----------
     model_dir : str
-      Directory containing the scGPT model files (args.json, best_model.pt, vocab.json)
+        Directory containing the scGPT model files (args.json, best_model.pt, vocab.json)
     output_dir : str
-      Output directory to save the results
+        Output directory to save the results
     annotations_path : str, optional
-      Path to gene annotations file. If None, downloads from GENE_IDENTIFIERS_URL
+        Path to gene annotations file. If None, downloads from GENE_IDENTIFIERS_URL
 
     Returns
     -------
@@ -303,24 +316,29 @@ def process_scgpt(
 
 @require_scprint
 def process_scprint(
-    version_key: str, output_dir: str, model_path: Optional[str] = None
+    version_key: str,
+    output_dir: str,
+    model_path: Optional[str] = None,
+    datasets_config: Optional[DatasetsConfig] = None,
 ) -> None:
     """Process a given scPRINT model version and save the results to the output directory.
 
     Parameters
     ----------
     version_key : str
-      scPRINT version key (e.g., "SMALL", "MEDIUM", "LARGE")
+        scPRINT version key (e.g., "SMALL", "MEDIUM", "LARGE")
     output_dir : str
-      Output directory to save the results
+        Output directory to save the results
     model_path : str, optional
-      Path to directory where models are cached. If None, uses default "data/scPRINT"
+        Path to directory where models are cached. If None, uses default "data/scPRINT"
+    datasets_config : DatasetsConfig, optional
+        Datasets configuration
 
     Returns
     -------
     None
     """
-    
+
     # Get version ID and checkpoint filename from the version key
     version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
     file_prefix = f"{SCPRINT_DEFS.MODEL_NAME}_{version_id}"
@@ -329,7 +347,7 @@ def process_scprint(
 
     # 1. Download and load model
     checkpoint_file = _get_scprint_checkpoint(version_key, model_path)
-    
+
     logger.info("Loading scPRINT model")
     model, gene_annotations, model_metadata = _scprint_load_model(
         checkpoint_file, version=version_id
@@ -346,9 +364,23 @@ def process_scprint(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
 
-    # 3. Create FoundationModel and save
+    # 3. Extract dataset expression embeddings
+    logger.info("3. Extracting dataset expression embeddings...")
+    dataset_expression_embeddings = list()
+    for config in datasets_config.data.values():
+        expression_embeddings = _scprint_get_expression_embeddings(
+            model, config.load_h5ad(), dataset_name=config.name, dataset_uri=config.uri
+        )
+        dataset_expression_embeddings.append(expression_embeddings)
+
+    # 4. Create FoundationModel and save
     _create_and_save_foundation_model(
-        weights, gene_annotations, model_metadata, output_dir, file_prefix
+        weights,
+        gene_annotations,
+        model_metadata,
+        dataset_expression_embeddings,
+        output_dir,
+        file_prefix,
     )
 
     return None
@@ -592,6 +624,7 @@ def _create_and_save_foundation_model(
     weights: FoundationModelWeights,
     gene_annotations: pd.DataFrame,
     model_metadata: Dict,
+    dataset_expression_embeddings: List[ExpressionEmbeddings],
     output_dir: str,
     file_prefix: str,
 ) -> FoundationModel:
@@ -601,20 +634,22 @@ def _create_and_save_foundation_model(
     Parameters
     ----------
     weights : FoundationModelWeights
-      Model weights
+        Model weights
     gene_annotations : pd.DataFrame
-      Gene annotations DataFrame
+        Gene annotations DataFrame
     model_metadata : Dict
-      Model metadata dictionary
+        Model metadata dictionary
+    dataset_expression_embeddings : List[ExpressionEmbeddings]
+        Contexutalized gene embeddings for 0+ datasets
     output_dir : str
-      Output directory for saving
+        Output directory for saving
     file_prefix : str
-      Prefix for output files
+        Prefix for output files
 
     Returns
     -------
     FoundationModel
-      Created FoundationModel instance
+        Created FoundationModel instance
 
     Examples
     --------
@@ -627,6 +662,7 @@ def _create_and_save_foundation_model(
         weights=weights,
         gene_annotations=gene_annotations,
         model_metadata=model_metadata,
+        dataset_expression_embeddings=dataset_expression_embeddings,
     )
     foundation_model.save(output_dir, file_prefix)
     logger.info("Successfully saved all results!")
@@ -640,22 +676,24 @@ def _get_scprint_checkpoint(version_key: str, model_path: str) -> str:
     Parameters
     ----------
     version_key : str
-      Version key
+        Version key
     model_path : str
-      Model path
+        Model path
 
     Returns
     -------
     str
-      Path to checkpoint file
+        Path to checkpoint file
     """
     from huggingface_hub import hf_hub_download
 
     # Get version ID and checkpoint filename from the version key
     version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
     checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
-    
-    logger.info(f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed...")
+
+    logger.info(
+        f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed..."
+    )
     return hf_hub_download(
         repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
     )
@@ -675,24 +713,24 @@ def _extract_attention_from_state_dict(
     Parameters
     ----------
     state_dict : Dict[str, torch.Tensor]
-      Model state dictionary
+        Model state dictionary
     n_layers : int
-      Number of transformer layers
+        Number of transformer layers
     embed_dim : int
-      Embedding dimension
+        Embedding dimension
     layer_prefix : str
-      Prefix for layer keys (default: "transformer_encoder.layers")
+        Prefix for layer keys (default: "transformer_encoder.layers")
     qkv_key_template : str
-      Template for QKV weight key, use {layer_idx} placeholder
-      (default: "{layer_idx}.self_attn.Wqkv.weight")
+        Template for QKV weight key, use {layer_idx} placeholder
+        (default: "{layer_idx}.self_attn.Wqkv.weight")
     out_proj_key_template : str
-      Template for output projection key, use {layer_idx} placeholder
-      (default: "{layer_idx}.self_attn.out_proj.weight")
+        Template for output projection key, use {layer_idx} placeholder
+        (default: "{layer_idx}.self_attn.out_proj.weight")
 
     Returns
     -------
     List[AttentionLayer]
-      List of AttentionLayer instances
+        List of AttentionLayer instances
 
     Examples
     --------
@@ -745,28 +783,28 @@ def _format_base_metadata(
     Parameters
     ----------
     model_name : str
-      Model name (e.g., "scGPT", "scFoundation")
+        Model name (e.g., "scGPT", "scFoundation")
     n_genes : int
-      Number of genes
+        Number of genes
     n_vocab : int
-      Vocabulary size (may include special tokens)
+        Vocabulary size (may include special tokens)
     vocab_list : List[str]
-      Ordered vocabulary list
+        Ordered vocabulary list
     embed_dim : int
-      Embedding dimension
+        Embedding dimension
     n_layers : int
-      Number of transformer layers
+        Number of transformer layers
     n_heads : int
-      Number of attention heads
+        Number of attention heads
     model_variant : str, optional
-      Model variant identifier (e.g., "small", "medium")
-    **extra_metadata : Dict
-      Additional metadata to include
+        Model variant identifier (e.g., "small", "medium")
+    **extra_metadata : Dict, optional
+        Additional metadata to include
 
     Returns
     -------
     Dict
-      Metadata dictionary with standard FM_DEFS keys
+        Metadata dictionary with standard FM_DEFS keys
 
     Examples
     --------
@@ -802,14 +840,14 @@ def _scfoundation_extract_metadata(
     Parameters
     ----------
     checkpoint : dict
-      Loaded checkpoint for gene encoder
+        Loaded checkpoint for gene encoder
     gene_annotations : pd.DataFrame
-      Gene annotations table
+        Gene annotations table
 
     Returns
     -------
     Dict
-      Metadata dictionary for FoundationModel
+        Metadata dictionary for FoundationModel
     """
     logger.info("Extracting metadata...")
 
@@ -839,14 +877,14 @@ def _scfoundation_extract_weights(
     Parameters
     ----------
     checkpoint : dict
-      Loaded checkpoint for specific variant
+        Loaded checkpoint for specific variant
     gene_annotations : pd.DataFrame
-      Gene annotations table (used to determine N_GENES)
+        Gene annotations table (used to determine N_GENES)
 
     Returns
     -------
     FoundationModelWeights
-      Extracted weights in standard format
+        Extracted weights in standard format
     """
     logger.info("Extracting model weights...")
     state_dict = checkpoint["state_dict"]
@@ -1000,14 +1038,14 @@ def _scgpt_format_metadata(model_configs: dict, vocab: Any) -> Dict:
     Parameters
     ----------
     model_configs : dict
-      Model configuration dictionary
+        Model configuration dictionary
     vocab : Any
-      scGPT vocabulary object
+        scGPT vocabulary object
 
     Returns
     -------
     Dict
-      Metadata dictionary with standard FM_DEFS keys
+        Metadata dictionary with standard FM_DEFS keys
     """
     # Get vocabulary as list of tokens in order
     vocab_list = vocab.get_itos()
@@ -1038,12 +1076,12 @@ def _scgpt_load_gene_annotations(annotations_path: str) -> pd.DataFrame:
     Parameters
     ----------
     annotations_path : str
-      Path to gene annotations CSV file
+        Path to gene annotations CSV file
 
     Returns
     -------
     pd.DataFrame
-      DataFrame with gene annotations
+        DataFrame with gene annotations
     """
     return (
         pd.read_csv(annotations_path, index_col=0)
@@ -1066,12 +1104,12 @@ def _scgpt_load_model(model_dir: str) -> Tuple[Any, Any, dict, str]:
     Parameters
     ----------
     model_dir : str
-      Directory containing scGPT model files
+        Directory containing scGPT model files
 
     Returns
     -------
     Tuple[Any, Any, dict, str]
-      Tuple of (model, vocab, model_metadata, checkpoint_path)
+        Tuple of (model, vocab, model_metadata, checkpoint_path)
     """
     from scgpt.tokenizer.gene_tokenizer import GeneVocab
 
@@ -1109,16 +1147,16 @@ def _scgpt_load_model_from_file(
     Parameters
     ----------
     model_file : str
-      Path to model checkpoint file
+        Path to model checkpoint file
     vocab : Any
-      scGPT vocabulary object
+        scGPT vocabulary object
     model_configs : dict
-      Model configuration dictionary
+        Model configuration dictionary
 
     Returns
     -------
     Any
-      Loaded scGPT TransformerModel
+        Loaded scGPT TransformerModel
     """
     from scgpt.model import TransformerModel
 
@@ -1170,12 +1208,12 @@ def _scprint_extract_attention_weights(model: Any) -> List[AttentionLayer]:
     Parameters
     ----------
     model : Any
-      The scPRINT model
+        The scPRINT model
 
     Returns
     -------
     List[AttentionLayer]
-      List of AttentionLayer instances
+        List of AttentionLayer instances
     """
     attention_layers = []
     d_model = model.d_model
@@ -1213,12 +1251,12 @@ def _scprint_extract_weights(model: Any) -> FoundationModelWeights:
     Parameters
     ----------
     model : Any
-      The scPRINT model
+        The scPRINT model
 
     Returns
     -------
     FoundationModelWeights
-      FoundationModelWeights instance containing gene_embedding and attention_layers
+        FoundationModelWeights instance containing gene_embedding and attention_layers
     """
     # Extract gene embeddings
     gene_embedding = model.gene_encoder.embeddings.weight.detach().cpu().numpy()
@@ -1232,20 +1270,88 @@ def _scprint_extract_weights(model: Any) -> FoundationModelWeights:
 
 
 @require_scprint
+def _scprint_embed_expression(model, expression, gene_emb, batch_size=64, device=None):
+    """
+    Create expression-aware embeddings by processing cells in batches.
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    expression : torch.Tensor
+        The expression matrix (n_cells, n_genes) to aggregate
+    gene_emb : torch.Tensor
+        The gene embeddings (n_genes, embed_dim)
+    batch_size : int
+        Number of cells to process at once
+    device : Optional[torch.device]
+        The device to use for the operation
+
+    Returns
+    -------
+    torch.Tensor, shape (n_genes, embed_dim)
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    t_expression = expression.to(device)
+    t_gene_emb = gene_emb.to(device)
+    t_model = model.to(device)
+
+    n_cells = t_expression.shape[0]
+    n_genes = t_gene_emb.shape[0]
+    embed_dim = t_gene_emb.shape[1]
+
+    # Accumulate weighted sum
+    expr_emb_sum = torch.zeros(n_genes, embed_dim, device=device)
+    total_weight = 0
+
+    with memory_manager(device):
+        for i in range(0, n_cells, batch_size):
+            batch_expr = t_expression[i : i + batch_size]
+            batch_size_actual = batch_expr.shape[0]
+
+            # Process this batch
+            batch_input = batch_expr.unsqueeze(-1)  # (batch, n_genes, 1)
+            batch_expr_emb = t_model.expr_encoder(
+                batch_input
+            )  # (batch, n_genes, 1, 256)
+
+            # Squeeze out the extra dimension
+            batch_expr_emb = batch_expr_emb.squeeze(2)  # (batch, n_genes, 256)
+
+            # Accumulate: sum across cells (dim=0)
+            expr_emb_sum += batch_expr_emb.sum(dim=0)
+            total_weight += batch_size_actual
+
+            # Free memory
+            del batch_expr_emb, batch_input
+            empty_cache(device)
+
+    # Sanity check
+    assert total_weight == n_cells, f"Weight mismatch: {total_weight} != {n_cells}"
+
+    # Average and combine
+    mean_expr_emb = expr_emb_sum / total_weight
+    contextual_gene_emb = t_gene_emb + mean_expr_emb
+
+    return contextual_gene_emb.cpu()  # Move back to CPU before returning
+
+
+@require_scprint
 def _scprint_format_metadata(model: Any, version: Optional[str] = None) -> Dict:
     """Extract model architecture metadata.
 
     Parameters
     ----------
     model : Any
-      The scPRINT model
+        The scPRINT model
     version : str, optional
-      Version string (e.g., "small-v1", "medium-v1.5", "large-v1")
+        Version string (e.g., "small-v1", "medium-v1.5", "large-v1")
 
     Returns
     -------
     Dict
-      Dictionary with model metadata
+        Dictionary with model metadata
     """
     # Extract architecture parameters from model
     d_model = int(model.d_model)
@@ -1273,18 +1379,130 @@ def _scprint_format_metadata(model: Any, version: Optional[str] = None) -> Dict:
     )
 
 
-def _scprint_load_gene_annotations(model: Any) -> pd.DataFrame:
+@require_scprint
+def _scprint_get_expression_embeddings(
+    model: scPrint,
+    adata: AnnData,
+    dataset_name: Optional[str] = None,
+    dataset_uri: Optional[str] = None,
+) -> Tuple[torch.Tensor, Dict[str, str], List[str]]:
+    """
+    Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    dataset_name : Optional[str] = None
+        The name of the dataset
+    dataset_uri : Optional[str] = None
+        The URI of the dataset
+
+    Returns
+    -------
+    Tuple[torch.Tensor, Dict[str, str], List[str]]
+        Tuple of (cluster_embeddings, cell_cluster_dict, common_genes)
+    """
+
+    model_genes = model.genes  # The 44,756 genes
+    common_genes = [g for g in model_genes if g in adata.var_names]
+
+    cluster_embeddings, cell_cluster_dict = _scprint_get_gene_embedding_by_cell_type(
+        model, adata, common_genes
+    )
+
+    expression_embeddings = ExpressionEmbeddings(
+        cluster_embeddings,
+        ordered_genes=common_genes,
+        category_dict=cell_cluster_dict,
+        dataset_name=dataset_name,
+        dataset_uri=dataset_uri,
+    )
+
+    return expression_embeddings
+
+
+@require_scprint
+def _scprint_get_gene_embedding_by_cell_type(
+    model: scPrint, adata: AnnData, common_genes: List[str]
+) -> Tuple[torch.Tensor, Dict[str, str]]:
+    """
+    Get the gene embeddings for each cell type in an AnnData object.
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    common_genes : List[str]
+        The common genes to use for the embeddings
+
+    Returns
+    -------
+    Tuple[torch.Tensor, Dict[str, str]]
+        Tuple of (cluster_embeddings, cell_cluster_dict)
+        - cluster_embeddings : torch.Tensor
+            The gene embeddings for each cell type
+        - cell_cluster_dict : Dict[str, str]
+            A dictionary mapping cell type indices to cell type names
+    """
+
+    # 1. Get indices into model vocabulary
+    gene_indices = [model.genes.index(g) for g in common_genes]
+    gene_emb_full = model.gene_encoder.embeddings.weight.data  # (44756, 256)
+    gene_emb = gene_emb_full[gene_indices]  # (n_common, 256)
+
+    # 2. Track cell types to setup creating cell-type masks
+    cell_clusters = (
+        adata.obs.value_counts(["cell_type", "leiden_scVI"])
+        .drop_duplicates()
+        .reset_index(drop=False)
+        .sort_values("leiden_scVI")
+    )
+    cell_cluster_dict = cell_clusters.set_index("leiden_scVI")["cell_type"].to_dict()
+
+    # Allocate output
+    cluster_embeddings = torch.zeros(
+        len(cell_clusters),
+        len(common_genes),
+        model.d_model,
+    )
+
+    with torch.no_grad():
+        for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
+            cluster_mask = adata.obs["leiden_scVI"] == cluster
+            cluster_adata = adata[cluster_mask]
+
+            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+
+            cluster_expr = _scprint_normalize_expression(cluster_adata, common_genes)
+
+            # Use batched processing
+            cluster_embeddings[i] = _scprint_embed_expression(
+                model, cluster_expr, gene_emb, batch_size=64
+            )
+
+            logger.info(f"  ✓ Completed cluster {i}")
+
+    return cluster_embeddings, cell_cluster_dict
+
+
+@require_scprint
+def _scprint_load_gene_annotations(model: scPrint) -> pd.DataFrame:
     """Load gene annotations from scPRINT model.
 
     Parameters
     ----------
     model : Any
-      The scPRINT model
+        The scPRINT model
 
     Returns
     -------
     pd.DataFrame
-      DataFrame with gene annotations
+        DataFrame with gene annotations
     """
     gene_table = pd.DataFrame(
         {
@@ -1320,16 +1538,16 @@ def _scprint_load_model(
     Parameters
     ----------
     checkpoint_path : str
-      Path to the scPRINT checkpoint file
+        Path to the scPRINT checkpoint file
     transformer : str, optional
-      Transformer type, by default "normal"
+        Transformer type, by default "normal"
     version : str, optional
-      Version string (e.g., "small-v1", "medium-v1.5", "large-v1")
+        Version string (e.g., "small-v1", "medium-v1.5", "large-v1")
 
     Returns
     -------
     Tuple[Any, pd.DataFrame, Dict]
-      Tuple of (model, gene_annotations, model_metadata)
+        Tuple of (model, gene_annotations, model_metadata)
     """
     logger.info("Loading scPRINT model")
     model = _scprint_load_model_from_file(checkpoint_path, transformer)
@@ -1352,14 +1570,14 @@ def _scprint_load_model_from_file(
     Parameters
     ----------
     checkpoint_path : str
-      Path to the scPRINT checkpoint file
+        Path to the scPRINT checkpoint file
     transformer : str, optional
-      Transformer type, by default "normal"
+        Transformer type, by default "normal"
 
     Returns
     -------
     Any
-      The scPRINT model
+        The scPRINT model
     """
     from scprint import scPrint
 
@@ -1381,7 +1599,40 @@ def _scprint_load_model_from_file(
         )
 
     model.eval()
+
     return model
+
+
+@require_scprint
+def _scprint_normalize_expression(
+    adata: AnnData, common_genes: List[str]
+) -> torch.Tensor:
+    """
+    Normalize the expression matrix of an AnnData object.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        The AnnData object containing the cells to normalize
+    common_genes : List[str]
+        The common genes to subset the AnnData object to
+
+    Returns
+    -------
+    torch.Tensor
+        The normalized expression matrix
+    """
+    # 1. Subset adata to just the "common_genes" across the model and adata
+    adata_subset = adata[:, common_genes]
+
+    # 2. Get expression matrix (raw counts)
+    if issparse(adata_subset.X):
+        expression = torch.from_numpy(adata_subset.X.toarray())
+    else:
+        expression = torch.from_numpy(adata_subset.X)
+
+    # 3. Normalize (sum method)
+    return expression / expression.sum(1, keepdim=True)  # Per-cell normalization
 
 
 def _split_qkv_weights(
@@ -1393,14 +1644,14 @@ def _split_qkv_weights(
     Parameters
     ----------
     qkv_weight : np.ndarray
-      Combined QKV weight matrix of shape (3 * embed_dim, embed_dim)
+        Combined QKV weight matrix of shape (3 * embed_dim, embed_dim)
     embed_dim : int
-      Embedding dimension
+        Embedding dimension
 
     Returns
     -------
     Tuple[np.ndarray, np.ndarray, np.ndarray]
-      Tuple of (W_q, W_k, W_v) matrices, each of shape (embed_dim, embed_dim)
+        Tuple of (W_q, W_k, W_v) matrices, each of shape (embed_dim, embed_dim)
 
     Examples
     --------
