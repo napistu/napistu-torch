@@ -69,6 +69,9 @@ warnings.filterwarnings("ignore")
 
 if TYPE_CHECKING:
     from anndata import AnnData
+    from modelgenerator.huggingface_models.scfoundation.pretrainmodels.mae_autobin import (
+        MaeAutobin,
+    )
     from scgpt.model.transformer_model import TransformerModel
     from scgpt.tokenizer.gene_tokenizer import GeneVocab
     from scprint.model import scPrint
@@ -189,6 +192,7 @@ def process_scfoundation(
     checkpoint_path: Optional[str] = None,
     output_prefix: Optional[str] = None,
     cache_dir: Optional[str] = None,
+    datasets_config: Optional[DatasetsConfig] = None,
 ) -> None:
     """
     Process scFoundation checkpoint and save to disk.
@@ -203,6 +207,8 @@ def process_scfoundation(
         Prefix for output files (default: "scFoundation")
     cache_dir : str, optional
         Cache directory for HuggingFace downloads
+    datasets_config : DatasetsConfig, optional
+        Datasets configuration
 
     Returns
     -------
@@ -221,6 +227,10 @@ def process_scfoundation(
     """
     # Gene annotations are shared between AIDOCell and scFoundation
     from huggingface_hub import hf_hub_download
+    from modelgenerator.huggingface_models.scfoundation.load_scfoundation import (
+        convertconfig,
+        select_model,
+    )
 
     logger.info("Extracting: scFoundation")
 
@@ -239,7 +249,7 @@ def process_scfoundation(
     logger.info(
         f"Loading scFoundation checkpoint (gene encoder: {SCFOUNDATION_DEFS.GENE_ENCODER})"
     )
-    full_checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    full_checkpoint = torch.load(checkpoint_path, map_location=DEVICE.CPU)
 
     if SCFOUNDATION_DEFS.GENE_ENCODER not in full_checkpoint:
         raise ValueError(
@@ -248,6 +258,11 @@ def process_scfoundation(
         )
 
     checkpoint = full_checkpoint[SCFOUNDATION_DEFS.GENE_ENCODER]
+    model_data = convertconfig(checkpoint)
+    config = model_data["config"]
+    model = select_model(config)
+    model.load_state_dict(model_data["model_state_dict"])
+    model.eval()
 
     # Extract components
     logger.info("2. Extracting weights...")
@@ -263,13 +278,29 @@ def process_scfoundation(
         f"   Attention weights: {metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
 
+    dataset_expression_embeddings = list()
+    for config in datasets_config.data.values():
+        expression_embeddings = _scfoundation_get_expression_embeddings(
+            model,
+            config.load_h5ad(),
+            gene_annotations,
+            dataset_name=config.name,
+            dataset_uri=config.uri,
+        )
+        dataset_expression_embeddings.append(expression_embeddings)
+
     # Set default prefix if not provided
     if output_prefix is None:
         output_prefix = SCFOUNDATION_DEFS.MODEL_NAME
 
     # Build model and save
     _create_and_save_foundation_model(
-        weights, gene_annotations, metadata, output_dir, output_prefix
+        weights,
+        gene_annotations,
+        metadata,
+        dataset_expression_embeddings,
+        output_dir,
+        output_prefix,
     )
 
     return None
@@ -831,7 +862,7 @@ def _aidocell_preprocess_dataset(
     -------
     adata_subset : AnnData
         The preprocessed AnnData object.
-    common_genes : List[str]
+    selected_genes : List[str]
         The list of genes (ensembl genes) which are shared between the model and the adata object.
     """
     import scanpy as sc
@@ -845,11 +876,11 @@ def _aidocell_preprocess_dataset(
 
     # retain genes which are shared between the model and the adata object
     model_genes = gene_annotations[ONTOLOGIES.ENSEMBL_GENE]  # The 44,756 genes
-    common_genes = [g for g in model_genes if g in adata_subset.var_names]
+    selected_genes = [g for g in model_genes if g in adata_subset.var_names]
 
-    adata_subset = adata_subset[:, common_genes]
+    adata_subset = adata_subset[:, selected_genes]
 
-    return adata_subset, common_genes
+    return adata_subset, selected_genes
 
 
 def _create_and_save_foundation_model(
@@ -979,32 +1010,32 @@ def _embed_expression_batch(
                 )  # (batch, n_genes, 1, 256)
                 batch_expr_emb = batch_expr_emb.squeeze(2)  # (batch, n_genes, 256)
 
+                del batch_input
             elif model_type == FOUNDATION_MODEL_NAMES.SCGPT:
                 # Prepare inputs for scGPT
                 src = t_gene_indices.unsqueeze(0).expand(batch_size_actual, -1)
-                values = batch_expr  # (batch, n_genes) - ContinuousValueEncoder will unsqueeze internally
-
                 src_key_padding_mask = torch.zeros(
                     batch_size_actual, n_genes, dtype=torch.bool, device=device
                 )
 
                 # Get contextualized embeddings from transformer
                 batch_expr_emb = t_model._encode(
-                    src, values, src_key_padding_mask, batch_labels=None
+                    src, batch_expr, src_key_padding_mask, batch_labels=None
                 )
 
-                del src, values, src_key_padding_mask
+                del src, src_key_padding_mask
 
             elif model_type == FOUNDATION_MODEL_NAMES.AIDOCELL:
                 # batch_expr: (batch_size, n_genes) with raw counts
                 batch_input = batch_expr.unsqueeze(-1)  # (batch_size, n_genes, 1)
-
                 # Auto-discretization (expression component)
                 batch_expr_emb = t_model.encoder.gene_embedding(batch_input)
+                del batch_input
 
             elif model_type == FOUNDATION_MODEL_NAMES.SCFOUNDATION:
-                raise NotImplementedError("scFoundation not yet implemented")
-
+                batch_input = batch_expr.unsqueeze(-1).float()
+                batch_expr_emb = t_model.token_emb(batch_input, output_weight=0)
+                del batch_input
             else:
                 raise ValueError(
                     f"Unknown model_type: {model_type}. Defined types: {VALID_FOUNDATION_MODEL_NAMES}"
@@ -1097,7 +1128,8 @@ def _format_base_metadata(
 def _scfoundation_extract_metadata(
     checkpoint: dict, gene_annotations: pd.DataFrame
 ) -> Dict:
-    """Extract model metadata from scFoundation checkpoint config.
+    """
+    Extract model metadata from scFoundation checkpoint config.
 
     Parameters
     ----------
@@ -1134,7 +1166,8 @@ def _scfoundation_extract_metadata(
 def _scfoundation_extract_weights(
     checkpoint: dict, gene_annotations: pd.DataFrame
 ) -> FoundationModelWeights:
-    """Extract gene embeddings and attention weights from scFoundation checkpoint.
+    """
+    Extract gene embeddings and attention weights from scFoundation checkpoint.
 
     Parameters
     ----------
@@ -1219,6 +1252,192 @@ def _scfoundation_extract_weights(
     )
 
 
+@require_modelgenerator
+def _scfoundation_get_expression_embeddings(
+    model: MaeAutobin,
+    adata: AnnData,
+    gene_annotations: pd.DataFrame,
+    dataset_name: Optional[str] = None,
+    dataset_uri: Optional[str] = None,
+) -> ExpressionEmbeddings:
+    """
+    Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
+
+    Parameters
+    ----------
+    model : MaeAutobin
+        The scFoundation model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    gene_annotations : pd.DataFrame
+        The gene annotations
+    vocab : GeneVocab
+        The vocabulary
+    dataset_name : Optional[str] = None
+        The name of the dataset
+    dataset_uri : Optional[str] = None
+        The URI of the dataset
+
+    Returns
+    -------
+    ExpressionEmbeddings
+        Expression embeddings for the dataset
+    """
+
+    cluster_embeddings, selected_genes, cell_cluster_dict = (
+        _scfoundation_get_gene_embedding_by_cell_type(model, adata, gene_annotations)
+    )
+
+    expression_embeddings = ExpressionEmbeddings(
+        cluster_embeddings,
+        ordered_genes=selected_genes,
+        category_dict=cell_cluster_dict,
+        dataset_name=dataset_name,
+        dataset_uri=dataset_uri,
+    )
+
+    return expression_embeddings
+
+
+@require_modelgenerator
+def _scfoundation_get_gene_embedding_by_cell_type(
+    model: MaeAutobin,
+    adata: AnnData,
+    gene_annotations: pd.DataFrame,
+    device: Optional[Union[torch.device, str]] = None,
+) -> Tuple[torch.Tensor, List[str], Dict[str, str]]:
+    """
+    Get the gene embeddings for each cell type in an AnnData object.
+
+    Parameters
+    ----------
+    model : scprint.model.model.scPrint
+        The scPRINT model
+    adata : anndata.AnnData
+        The AnnData object containing the cells to embed
+    gene_annotations : List[str]
+        The common genes to use for the embeddings
+    vocab : GeneVocab
+        The vocabulary
+    device : Optional[Union[torch.device, str]]
+        The device to use for the embeddings
+
+    Returns
+    -------
+    Tuple[torch.Tensor, Dict[str, str]]
+        Tuple of (cluster_embeddings, cell_cluster_dict)
+        - cluster_embeddings : torch.Tensor
+            The gene embeddings for each cell type
+        - selected_genes : List[str]
+            The selected genes (ensembl gene ids)
+        - cell_cluster_dict : Dict[str, str]
+            A dictionary mapping cell type indices to cell type names
+    """
+
+    device = ensure_device(device, allow_autoselect=True)
+
+    # 1. Get indices into model vocabulary
+    adata_subset, selected_genes = _scfoundation_preprocess_dataset(
+        adata, gene_annotations
+    )
+
+    # 2. Get the gene embeddings and filter to selected genes
+    annotations_w_index = gene_annotations.assign(
+        position=range(len(gene_annotations))
+    ).query("ensembl_gene in @selected_genes")
+    annotations_name_to_index = annotations_w_index.set_index(ONTOLOGIES.ENSEMBL_GENE)[
+        "position"
+    ].to_dict()
+
+    with torch.no_grad():
+        gene_positions = [annotations_name_to_index[g] for g in selected_genes]
+        pos_embedding = model.pos_emb.weight[(torch.tensor(gene_positions)), :]
+
+    # 3. Track cell types to setup creating cell-type masks
+    cell_clusters = (
+        adata.obs.value_counts(["cell_type", "leiden_scVI"])
+        .drop_duplicates()
+        .reset_index(drop=False)
+        .sort_values("leiden_scVI")
+    )
+    cell_cluster_dict = cell_clusters.set_index("leiden_scVI")["cell_type"].to_dict()
+
+    # Allocate output
+    cluster_embeddings = torch.zeros(
+        len(cell_clusters),
+        len(selected_genes),
+        pos_embedding.shape[1],
+    )
+
+    # 4. Embed each cell type
+    with torch.no_grad():
+        for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
+            cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
+            cluster_adata = adata_subset[cluster_mask]
+
+            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+
+            if issparse(cluster_adata.X):
+                cluster_expr = torch.from_numpy(cluster_adata.X.toarray())
+            else:
+                cluster_expr = torch.from_numpy(cluster_adata.X)
+
+            # Use batched processing
+            cluster_embeddings[i] = _embed_expression_batch(
+                model=model,
+                model_type=FOUNDATION_MODEL_NAMES.SCFOUNDATION,
+                expression=cluster_expr,
+                gene_emb=pos_embedding,  # Position embeddings serve as "static" gene identity
+                batch_size=64,
+            )
+
+            logger.info(f"  ✓ Completed cluster {i}")
+
+    return cluster_embeddings, selected_genes, cell_cluster_dict
+
+
+@require_modelgenerator
+def _scfoundation_preprocess_dataset(
+    adata: AnnData, gene_annotations: pd.DataFrame
+) -> Tuple[AnnData, List[str]]:
+    """
+    Preprocess an annData object for scFoundation model.
+
+    Parameters
+    ----------
+    adata : AnnData
+        The AnnData object to preprocess.
+    gene_annotations : pd.DataFrame
+        The gene annotations for the scFoundation model.
+
+    Returns
+    -------
+    adata_subset : AnnData
+        The preprocessed AnnData object.
+    selected_genes : List[str]
+        The list of genes (ensembl genes) which are shared between the model and the adata object.
+    """
+    import scanpy as sc
+
+    adata_subset = adata.copy()
+
+    # scFoundation QC filtering
+    sc.pp.filter_cells(adata_subset, min_genes=200)
+    # No gene filtering (min_cells=0)
+
+    # Normalize: 1e4 total counts + log1p
+    sc.pp.normalize_total(adata_subset, target_sum=1e4)
+    sc.pp.log1p(adata_subset)
+
+    # Retain genes shared between model and adata
+    model_genes = gene_annotations[ONTOLOGIES.ENSEMBL_GENE]  # 19,264 genes
+    selected_genes = [g for g in model_genes if g in adata_subset.var_names]
+
+    adata_subset = adata_subset[:, selected_genes]
+
+    return adata_subset, selected_genes
+
+
 @require_scgpt
 @require_torchtext
 def _scgpt_extract_weights(
@@ -1228,7 +1447,8 @@ def _scgpt_extract_weights(
     checkpoint_path: str,
     device: Optional[Union[str, torch.device]] = None,
 ) -> FoundationModelWeights:
-    """Extract weights from scGPT model.
+    """
+    Extract weights from scGPT model.
 
     Note: Weights must be loaded directly from the checkpoint file because
     model.state_dict() returns incorrect/shared weights across layers.
