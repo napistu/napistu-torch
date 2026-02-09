@@ -196,6 +196,8 @@ FOUNDATION_MODEL_NAMES = SimpleNamespace(
     SCPRINT="scPRINT",
 )
 
+VALID_FOUNDATION_MODEL_NAMES = list(FOUNDATION_MODEL_NAMES.__dict__.values())
+
 AIDOCELL_CLASSES = SimpleNamespace(
     THREE_M="aido_cell_3m",
     TEN_M="aido_cell_10m",
