@@ -1,4 +1,27 @@
-"""CLI for Napistu-Torch training"""
+"""
+CLI for Napistu-Torch training
+
+Commands
+--------
+train
+    Train a GNN model using the specified configuration.
+resume
+    Resume training for an existing experiment.
+test
+    Run evaluation for a finished experiment located at EXPERIMENT_DIR.
+
+utils command group
+-------------------
+utils create_template_yaml_cmd
+    Create a minimal YAML template file for experiment configuration.
+
+publish command group
+---------------------
+publish model
+    Publish a trained model to HuggingFace Hub.
+publish dataset
+    Publish a NapistuDataStore to HuggingFace Hub as a dataset.
+"""
 
 from __future__ import annotations
 

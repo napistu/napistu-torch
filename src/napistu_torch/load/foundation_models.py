@@ -8,6 +8,10 @@ Classes
 -------
 AttentionLayer
     Attention weights for a single transformer layer.
+DatasetExpressionEmbeddings
+    Container for multiple ExpressionEmbeddings keyed by dataset name.
+ExpressionEmbeddings
+    Expression-aware gene embeddings for multiple cell categories in a dataset.
 FoundationModelWeights
     Weight matrices from a foundation model.
 GeneAnnotations
@@ -29,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
-from napistu.constants import ONTOLOGIES
+from napistu.ontologies.constants import ONTOLOGIES
 from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
@@ -91,7 +95,6 @@ class AttentionLayer(BaseModel):
     W_o: np.ndarray
 
     @field_validator(FM_DEFS.W_Q, FM_DEFS.W_K, FM_DEFS.W_V, FM_DEFS.W_O)
-    @classmethod
     def validate_weight_matrix(cls, v):
         if not isinstance(v, np.ndarray):
             raise ValueError("Weight matrix must be a numpy array")
@@ -190,8 +193,365 @@ class AttentionLayer(BaseModel):
             return out_attention
 
 
+class ExpressionEmbeddings(BaseModel):
+    """
+    Expression-aware gene embeddings for multiple cell categories in a dataset.
+
+    The embeddings tensor has shape (n_categories, n_genes, embed_dim) where each
+    category represents a different cell type, cluster, or condition. This allows
+    efficient storage and computation across all categories in a dataset.
+
+    Attributes
+    ----------
+    embeddings : np.ndarray
+        Expression-contextualized gene embeddings
+        Shape: (n_categories, n_genes, embed_dim)
+        embeddings[i] is the mean embedding for category i
+    ordered_genes : List[str]
+        Ordered list of gene identifiers matching embedding dimension 1
+        Length must equal embeddings.shape[1]
+    dataset_name : str
+        Name/identifier for this dataset (e.g., "efthymiou", "tabula_sapiens")
+    dataset_uri : Optional[str]
+        Path or URI to source data (e.g., "/path/to/efthymiou.h5ad")
+    category_dict : Dict[int, str]
+        Maps category index to category name (e.g., cell type)
+
+    Properties
+    ----------
+    n_categories : int
+        Number of categories in the embeddings
+    n_genes : int
+        Number of genes in the embeddings
+    embed_dim : int
+        Embedding dimension
+
+    Public Methods
+    --------------
+    get_category_embedding(category_key)
+        Get embeddings for a specific category (returns shape: n_genes, embed_dim)
+    list_categories()
+        Return list of available category names
+    """
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
+
+    # Define fields as Pydantic fields so validators can run
+    embeddings: Union[np.ndarray, torch.Tensor] = Field(...)
+    ordered_genes: Optional[List[str]] = None
+    category_dict: Optional[Dict[int, str]] = None
+    dataset_name: Optional[str] = None
+    dataset_uri: Optional[str] = None
+
+    def __init__(
+        self,
+        embeddings: Union[np.ndarray, torch.Tensor],
+        ordered_genes: List[str] = None,
+        category_dict: Optional[Dict[int, Dict[str, Any]]] = None,
+        dataset_name: Optional[str] = None,
+        dataset_uri: Optional[str] = None,
+    ):
+        """
+        Initialize ExpressionEmbeddings.
+
+        Parameters
+        ----------
+        embeddings : Union[np.ndarray, torch.Tensor]
+            Pre-computed embeddings (n_categories, n_genes, embed_dim)
+        ordered_genes : List[str], optional
+            Gene IDs for pre-computed embeddings
+        dataset_name : str, optional
+            Name for this dataset
+        dataset_uri : str, optional
+            Path/URI to source h5ad file
+        category_dict : Dict[int, Dict], optional
+            Category metadata for pre-computed embeddings
+        """
+
+        # Convert numpy to torch if needed (before validation)
+        if isinstance(embeddings, torch.Tensor):
+            embeddings = embeddings.numpy()
+
+        # Quick validation: embeddings must be 3D (full validation happens in field_validator)
+        # This allows us to set default category_dict based on shape
+        if isinstance(embeddings, torch.Tensor):
+            v_np = embeddings.numpy()
+        else:
+            v_np = embeddings
+        if v_np.ndim != 3:
+            raise ValueError(
+                f"{FM_DEFS.EMBEDDINGS} must be 3-dimensional (n_categories, n_genes, embed_dim), "
+                f"got shape {v_np.shape}"
+            )
+
+        # Set default category_dict based on embeddings shape (before validation)
+        if category_dict is None:
+            logger.warning(
+                f"No {FM_DEFS.CATEGORY_DICT} provided. Using default category names."
+            )
+            category_dict = {i: f"category_{i}" for i in range(v_np.shape[0])}
+
+        # Set defaults
+        if dataset_name is None:
+            logger.warning("No dataset name provided. Using 'unknown'.")
+            dataset_name = "unknown"
+
+        if dataset_uri is None:
+            logger.warning("No dataset URI provided. Using 'unknown'.")
+            dataset_uri = "unknown"
+
+        # Call super().__init__() to trigger Pydantic validation
+        # This will run @field_validator("embeddings") which ensures shape is 3D
+        super().__init__(
+            embeddings=embeddings,
+            ordered_genes=ordered_genes,
+            category_dict=category_dict,
+            dataset_name=dataset_name,
+            dataset_uri=dataset_uri,
+        )
+
+    @property
+    def n_categories(self) -> int:
+        """Number of categories in the embeddings."""
+        return self.embeddings.shape[0]
+
+    @property
+    def n_genes(self) -> int:
+        """Number of genes in the embeddings."""
+        return self.embeddings.shape[1]
+
+    @property
+    def embed_dim(self) -> int:
+        """Embedding dimension."""
+        return self.embeddings.shape[2]
+
+    @field_validator(FM_DEFS.EMBEDDINGS)
+    def validate_embeddings_shape(cls, v):
+        # Convert torch.Tensor to numpy for validation if needed
+        if isinstance(v, torch.Tensor):
+            v_np = v.numpy()
+        else:
+            v_np = v
+
+        if not isinstance(v_np, np.ndarray):
+            raise ValueError("embeddings must be a numpy array or torch.Tensor")
+        if v_np.ndim != 3:
+            raise ValueError(
+                f"{FM_DEFS.EMBEDDINGS} must be 3-dimensional (n_categories, n_genes, embed_dim), "
+                f"got shape {v_np.shape}"
+            )
+        return v
+
+    @model_validator(mode="after")
+    def validate_consistency(self):
+        """Cross-validate shapes and lengths."""
+        n_categories, n_genes, _ = self.embeddings.shape
+
+        # Check ordered_genes length (if provided)
+        if self.ordered_genes is not None:
+            if len(self.ordered_genes) != n_genes:
+                raise ValueError(
+                    f"{FM_DEFS.ORDERED_GENES} has {len(self.ordered_genes)} entries but "
+                    f"{FM_DEFS.EMBEDDINGS} has {n_genes} genes"
+                )
+
+        # Check category_dict keys
+        if set(self.category_dict.keys()) != set(range(n_categories)):
+            raise ValueError(
+                f"{FM_DEFS.CATEGORY_DICT} must have keys 0 to {n_categories-1}, "
+                f"got {sorted(self.category_dict.keys())}"
+            )
+
+        return self
+
+    def get_category_embedding(self, category_key: Union[int, str]) -> np.ndarray:
+        """
+        Get embeddings for a specific category.
+
+        Parameters
+        ----------
+        category_key : int or str
+            Either category index (int) or category name (str)
+
+        Returns
+        -------
+        np.ndarray
+            Embeddings of shape (n_genes, embed_dim)
+
+        Examples
+        --------
+        >>> # By index
+        >>> cluster_0_emb = expr_emb.get_category_embedding(0)
+        >>> # By name
+        >>> tcell_emb = expr_emb.get_category_embedding("T_cell")
+        """
+        if isinstance(category_key, str):
+            # Find index by name
+            idx = self._get_category_index(category_key)
+        else:
+            idx = category_key
+
+        if idx not in self.category_dict:
+            raise ValueError(
+                f"Category index {idx} not found. "
+                f"Available: {list(self.category_dict.keys())}"
+            )
+
+        return self.embeddings[idx]
+
+    def list_categories(self) -> List[Dict[str, Any]]:
+        """
+        List all available categories with metadata.
+
+        Returns
+        -------
+        List[Dict]
+            List of dicts, each containing category metadata
+
+        Examples
+        --------
+        >>> categories = expr_emb.list_categories()
+        >>> for cat in categories:
+        ...     print(f"{cat['index']}: {cat['name']} ({cat['n_cells']} cells)")
+        """
+        return [
+            {"index": idx, **metadata}
+            for idx, metadata in sorted(self.category_dict.items())
+        ]
+
+    def _get_category_index(self, category_name: str) -> int:
+        """Find category index by name."""
+        for idx, metadata in self.category_dict.items():
+            if metadata.get("name") == category_name:
+                return idx
+        raise ValueError(
+            f"Category '{category_name}' not found. "
+            f"Available: {[m.get('name') for m in self.category_dict.values()]}"
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"ExpressionEmbeddings("
+            f"dataset={self.dataset_name}, "
+            f"n_categories={self.n_categories}, "
+            f"n_genes={self.n_genes}, "
+            f"embed_dim={self.embed_dim}"
+            f")"
+        )
+
+
+class DatasetExpressionEmbeddings:
+    """
+    Container for multiple ExpressionEmbeddings instances keyed by dataset name.
+
+    Parallel to the Napistu-py DatasetsConfig / DatasetConfig abstraction, this class
+    holds multiple ExpressionEmbeddings instances and provides dictionary-style access
+    by dataset name.
+
+    Attributes
+    ----------
+    data : Dict[str, ExpressionEmbeddings]
+        Dictionary mapping dataset names to ExpressionEmbeddings objects.
+
+    Public Methods
+    --------------
+    get:
+        Get ExpressionEmbeddings by dataset name, raising KeyError if not found.
+    keys:
+        Return dataset names.
+    values:
+        Return ExpressionEmbeddings instances.
+    items:
+        Return (name, ExpressionEmbeddings) pairs.
+    Examples
+    --------
+    >>> data = {
+    ...     "efthymiou": expr_emb_1,
+    ...     "tabula_sapiens": expr_emb_2,
+    ... }
+    >>> container = DatasetExpressionEmbeddings(data)
+    >>> emb = container.get("efthymiou")
+    >>> "tabula_sapiens" in container
+    True
+    >>> for name, emb in container.items():
+    ...     print(f"{name}: {emb.n_genes} genes")
+    """
+
+    def __init__(
+        self,
+        data: Union[
+            Dict[str, ExpressionEmbeddings],
+            List[ExpressionEmbeddings],
+        ],
+    ):
+        """
+        Initialize DatasetExpressionEmbeddings from a dict or list.
+
+        Parameters
+        ----------
+        data : Dict[str, ExpressionEmbeddings] or List[ExpressionEmbeddings]
+            Either a dict mapping dataset names to ExpressionEmbeddings, or a list
+            of ExpressionEmbeddings (keys derived from dataset_name attribute).
+        """
+        self.data: Dict[str, ExpressionEmbeddings] = {}
+
+        if isinstance(data, dict):
+            for name, emb in data.items():
+                if not isinstance(emb, ExpressionEmbeddings):
+                    raise ValueError(
+                        f"Values must be ExpressionEmbeddings instances, got {type(emb)}"
+                    )
+                self.data[name] = emb
+        else:
+            for emb in data:
+                if not isinstance(emb, ExpressionEmbeddings):
+                    raise ValueError(
+                        f"List must contain ExpressionEmbeddings instances, got {type(emb)}"
+                    )
+                name = emb.dataset_name if emb.dataset_name else "unknown"
+                if name in self.data:
+                    raise ValueError(
+                        f"Duplicate dataset name '{name}'. Use unique dataset_name per item."
+                    )
+                self.data[name] = emb
+
+    def get(self, key: str) -> ExpressionEmbeddings:
+        """Get ExpressionEmbeddings by dataset name, raising KeyError if not found."""
+        if key not in self.data:
+            available_keys = list(self.data.keys())
+            raise KeyError(
+                f"Dataset '{key}' not found. Available datasets: {available_keys}"
+            )
+        return self.data[key]
+
+    def __getitem__(self, key: str) -> ExpressionEmbeddings:
+        """Support dictionary-style access."""
+        return self.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        """Support 'in' operator."""
+        return key in self.data
+
+    def keys(self):
+        """Return dataset names."""
+        return self.data.keys()
+
+    def values(self):
+        """Return ExpressionEmbeddings instances."""
+        return self.data.values()
+
+    def items(self):
+        """Return (name, ExpressionEmbeddings) pairs."""
+        return self.data.items()
+
+    def __repr__(self) -> str:
+        names = list(self.data.keys())
+        return f"DatasetExpressionEmbeddings(datasets={names})"
+
+
 class FoundationModelWeights(BaseModel):
-    """Weight matrices from a foundation model.
+    """
+    Weight matrices from a foundation model.
 
     Attributes
     ----------
@@ -214,7 +574,6 @@ class FoundationModelWeights(BaseModel):
     attention_layers: List[AttentionLayer]
 
     @field_validator(FM_DEFS.GENE_EMBEDDING)
-    @classmethod
     def validate_gene_embedding(cls, v):
         if not isinstance(v, np.ndarray):
             raise ValueError("gene_embedding must be a numpy array")
@@ -223,7 +582,6 @@ class FoundationModelWeights(BaseModel):
         return v
 
     @field_validator(FM_DEFS.ATTENTION_LAYERS)
-    @classmethod
     def validate_attention_weights_structure(cls, v):
         if not isinstance(v, list):
             raise ValueError("attention_layers must be a list")
@@ -377,7 +735,6 @@ class GeneAnnotations(BaseModel):
     annotations: pd.DataFrame
 
     @field_validator("annotations")
-    @classmethod
     def validate_annotations_structure(cls, v):
         if not isinstance(v, pd.DataFrame):
             raise ValueError("annotations must be a pandas DataFrame")
@@ -458,14 +815,12 @@ class ModelMetadata(BaseModel):
         FM_DEFS.N_LAYERS,
         FM_DEFS.N_HEADS,
     )
-    @classmethod
     def validate_positive_integers(cls, v):
         if not isinstance(v, int) or v <= 0:
             raise ValueError(f"Value must be a positive integer, got: {v}")
         return v
 
     @field_validator(FM_DEFS.ORDERED_VOCABULARY)
-    @classmethod
     def validate_ordered_vocabulary(cls, v):
         if not isinstance(v, list):
             raise ValueError("ordered_vocabulary must be a list")
@@ -493,8 +848,10 @@ class FoundationModel(BaseModel):
 
     Attributes
     ----------
-    weights : FoundationModelWeights
-        Model weight matrices (embeddings and attention layers)
+    dataset_expression_embeddings : Optional[DatasetExpressionEmbeddings]
+        Contexutalized gene embeddings for 0+ datasets, keyed by dataset name
+    embed_dim : int
+        Embedding dimension
     gene_annotations : pd.DataFrame
         Gene annotations with columns: vocab_name, ensembl_gene, symbol (optional)
     model_name : str
@@ -503,16 +860,16 @@ class FoundationModel(BaseModel):
         Variant of the foundation model (e.g., 'aido_cell_3m', 'aido_cell_10m', 'aido_cell_100m')
     n_genes : int
         Number of actual genes (excluding special tokens)
+    n_heads : int
+        Number of attention heads per layer
+    n_layers : int
+        Number of transformer layers
     n_vocab : int
         Total vocabulary size (may include special tokens like <pad>, <cls>)
     ordered_vocabulary : List[str]
         Vocabulary terms in same order as embedding matrix rows
-    embed_dim : int
-        Embedding dimension
-    n_layers : int
-        Number of transformer layers
-    n_heads : int
-        Number of attention heads per layer
+    weights : FoundationModelWeights
+        Model weight matrices (embeddings and attention layers)
 
     Public Methods
     --------------
@@ -540,8 +897,9 @@ class FoundationModel(BaseModel):
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     # Core data
-    weights: FoundationModelWeights
+    dataset_expression_embeddings: Optional[DatasetExpressionEmbeddings] = None
     gene_annotations: pd.DataFrame
+    weights: FoundationModelWeights
 
     # Metadata as direct attributes
     model_name: str
@@ -558,6 +916,9 @@ class FoundationModel(BaseModel):
         weights: FoundationModelWeights,
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
+        dataset_expression_embeddings: Optional[
+            Union[DatasetExpressionEmbeddings, List[ExpressionEmbeddings]]
+        ] = None,
         **kwargs,
     ):
         """
@@ -572,6 +933,9 @@ class FoundationModel(BaseModel):
         model_metadata : dict or ModelMetadata
             Model metadata containing model_name, n_genes, n_vocab, ordered_vocabulary,
             embed_dim, n_layers, n_heads
+        dataset_expression_embeddings : DatasetExpressionEmbeddings or List, optional
+            Contexutalized gene embeddings for 0+ datasets. Accepts DatasetExpressionEmbeddings
+            or a list (converted to DatasetExpressionEmbeddings internally).
         **kwargs
             Additional keyword arguments (ignored, for compatibility)
 
@@ -609,13 +973,30 @@ class FoundationModel(BaseModel):
             ModelMetadata(**model_metadata)
             metadata_dict = model_metadata
 
+        if dataset_expression_embeddings is not None:
+            if isinstance(dataset_expression_embeddings, list):
+                dataset_expression_embeddings = DatasetExpressionEmbeddings(
+                    dataset_expression_embeddings
+                )
+            elif not isinstance(
+                dataset_expression_embeddings, DatasetExpressionEmbeddings
+            ):
+                raise ValueError(
+                    "dataset_expression_embeddings must be DatasetExpressionEmbeddings "
+                    f"or list, got {type(dataset_expression_embeddings)}"
+                )
+        else:
+            dataset_expression_embeddings = None
+
         # Call parent __init__ with unpacked metadata
         super().__init__(
-            weights=weights, gene_annotations=gene_annotations_df, **metadata_dict
+            weights=weights,
+            gene_annotations=gene_annotations_df,
+            dataset_expression_embeddings=dataset_expression_embeddings,
+            **metadata_dict,
         )
 
     @field_validator(FM_DEFS.GENE_ANNOTATIONS)
-    @classmethod
     def validate_gene_annotations(cls, v):
         if not isinstance(v, pd.DataFrame):
             raise ValueError("gene_annotations must be a pandas DataFrame")
@@ -627,6 +1008,15 @@ class FoundationModel(BaseModel):
 
         return v
 
+    @field_validator(FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS)
+    def validate_dataset_expression_embeddings(cls, v):
+        if v is not None and not isinstance(v, DatasetExpressionEmbeddings):
+            raise ValueError(
+                "dataset_expression_embeddings must be DatasetExpressionEmbeddings or None, "
+                f"got {type(v)}"
+            )
+        return v
+
     @field_validator(
         FM_DEFS.N_GENES,
         FM_DEFS.N_VOCAB,
@@ -634,14 +1024,12 @@ class FoundationModel(BaseModel):
         FM_DEFS.N_LAYERS,
         FM_DEFS.N_HEADS,
     )
-    @classmethod
     def validate_positive_integers(cls, v):
         if not isinstance(v, int) or v <= 0:
             raise ValueError(f"Value must be a positive integer, got: {v}")
         return v
 
     @field_validator(FM_DEFS.ORDERED_VOCABULARY)
-    @classmethod
     def validate_ordered_vocabulary(cls, v):
         if not isinstance(v, list):
             raise ValueError("ordered_vocabulary must be a list")
@@ -1047,6 +1435,7 @@ class FoundationModel(BaseModel):
         apply_softmax: bool = False,
         by_absolute_value: bool = True,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
     ) -> pd.DataFrame:
@@ -1078,6 +1467,9 @@ class FoundationModel(BaseModel):
         compute_ranks : bool, optional
             If True, compute ranks of attention values relative to the full attention tensor
             for each layer and add them to the output table (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         device : str or torch.device, optional
             Device to perform computation on (default: None to automatically select)
         verbose : bool, optional
@@ -1112,6 +1504,9 @@ class FoundationModel(BaseModel):
         >>>
         >>> # Rank by raw value instead of absolute value
         >>> top_edges = model.get_top_attentions(k=1000, by_absolute_value=False)
+        >>>
+        >>> # Exclude self-attention edges
+        >>> top_edges = model.get_top_attentions(k=1000, ignore_self_attention=True)
         """
 
         device = ensure_device(device, allow_autoselect=True)
@@ -1158,6 +1553,7 @@ class FoundationModel(BaseModel):
                     layer_idx=layer_idx,
                     gene_ids=target_ids,
                     by_absolute_value=by_absolute_value,
+                    ignore_self_attention=ignore_self_attention,
                 )
 
                 results.append(layer_df)
@@ -1212,9 +1608,12 @@ class FoundationModel(BaseModel):
         --------
         >>> model = FoundationModel.load('/path/to/output', 'scGPT')
         """
-        weights_dict, gene_annotations, model_metadata = _load_results(
-            output_dir, prefix
-        )
+        (
+            weights_dict,
+            gene_annotations,
+            model_metadata,
+            expression_embeddings_metadata,
+        ) = _load_results(output_dir, prefix)
 
         # Infer model_variant from prefix if not in metadata
         if (
@@ -1246,10 +1645,41 @@ class FoundationModel(BaseModel):
             attention_layers=attention_layers,
         )
 
+        # Reconstruct ExpressionEmbeddings from saved data
+        expr_emb_list: List[ExpressionEmbeddings] = []
+        if expression_embeddings_metadata:
+            logger.info(
+                f"Loading {len(expression_embeddings_metadata)} expression embeddings"
+            )
+            for i, expr_emb_meta in enumerate(expression_embeddings_metadata):
+                # Get embeddings tensor from weights_dict
+                embeddings_key = f"expression_embeddings_{i}"
+                if embeddings_key in weights_dict:
+                    embeddings = weights_dict[embeddings_key]
+                    # Create ExpressionEmbeddings instance
+                    expr_emb = ExpressionEmbeddings(
+                        embeddings=embeddings,
+                        ordered_genes=expr_emb_meta.get(FM_DEFS.ORDERED_GENES),
+                        category_dict=expr_emb_meta.get(FM_DEFS.CATEGORY_DICT),
+                        dataset_name=expr_emb_meta.get(FM_DEFS.DATASET_NAME),
+                        dataset_uri=expr_emb_meta.get(FM_DEFS.DATASET_URI),
+                    )
+                    expr_emb_list.append(expr_emb)
+                else:
+                    logger.warning(
+                        f"Expression embeddings metadata found but embeddings tensor "
+                        f"'{embeddings_key}' not found in weights file"
+                    )
+
+        dataset_expression_embeddings = (
+            DatasetExpressionEmbeddings(expr_emb_list) if expr_emb_list else None
+        )
+
         return cls(
             weights=weights,
             gene_annotations=gene_annotations,
             model_metadata=model_metadata,
+            dataset_expression_embeddings=dataset_expression_embeddings,
         )
 
     def save(self, output_dir: str, prefix: str) -> None:
@@ -1257,8 +1687,8 @@ class FoundationModel(BaseModel):
         Save foundation model to files.
 
         Creates two files:
-        - {prefix}_weights.npz: Contains gene embeddings and attention weights
-        - {prefix}_metadata.json: Contains gene annotations and model metadata
+        - {prefix}_weights.npz: Contains gene embeddings, attention weights, and expression embeddings tensors
+        - {prefix}_metadata.json: Contains gene annotations, model metadata, and expression embeddings metadata
 
         Parameters
         ----------
@@ -1299,6 +1729,13 @@ class FoundationModel(BaseModel):
             FM_DEFS.ATTENTION_WEIGHTS: attention_weights_dict,
         }
 
+        # Add expression embeddings tensors to weights_dict
+        if self.dataset_expression_embeddings:
+            expr_emb_list = list(self.dataset_expression_embeddings.values())
+            logger.info(f"Saving {len(expr_emb_list)} expression embeddings")
+            for i, expr_emb in enumerate(expr_emb_list):
+                weights_dict[f"expression_embeddings_{i}"] = expr_emb.embeddings
+
         # Save weights to npz
         np.savez(weights_path, **weights_dict)
 
@@ -1314,10 +1751,23 @@ class FoundationModel(BaseModel):
             FM_DEFS.N_HEADS: self.n_heads,
         }
 
+        # Prepare expression embeddings metadata
+        expression_embeddings_metadata = []
+        if self.dataset_expression_embeddings:
+            for expr_emb in self.dataset_expression_embeddings.values():
+                expr_emb_meta = {
+                    FM_DEFS.ORDERED_GENES: expr_emb.ordered_genes,
+                    FM_DEFS.CATEGORY_DICT: expr_emb.category_dict,
+                    FM_DEFS.DATASET_NAME: expr_emb.dataset_name,
+                    FM_DEFS.DATASET_URI: expr_emb.dataset_uri,
+                }
+                expression_embeddings_metadata.append(expr_emb_meta)
+
         # Combine gene_annotations and model_metadata into single JSON
         combined_metadata = {
             FM_DEFS.MODEL_METADATA: model_metadata,
             FM_DEFS.GENE_ANNOTATIONS: self.gene_annotations.to_dict("records"),
+            FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS: expression_embeddings_metadata,
         }
 
         with open(metadata_path, "w") as f:
@@ -1442,7 +1892,6 @@ class FoundationModels(BaseModel):
     models: List[FoundationModel]
 
     @field_validator(FM_DEFS.MODELS)
-    @classmethod
     def validate_models_list(cls, v):
         if not isinstance(v, list):
             raise ValueError("models must be a list")
@@ -1550,6 +1999,7 @@ class FoundationModels(BaseModel):
         reextract_union: bool = False,
         apply_softmax: bool = False,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         return_original_and_reextracted: bool = False,
         device: Optional[Union[str, torch.device]] = None,
         verbose: bool = False,
@@ -1587,6 +2037,9 @@ class FoundationModels(BaseModel):
             (default: False)
         apply_softmax : bool, optional
             Whether to apply softmax before computing consensus (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         return_original_and_reextracted : bool, optional
             If True and reextract_union=True, return tuple (original, reextracted).
             If False and reextract_union=True, return only reextracted DataFrame.
@@ -1684,6 +2137,7 @@ class FoundationModels(BaseModel):
                 layer_idx=None,  # No layer for consensus
                 gene_ids=common_ids,
                 by_absolute_value=by_absolute_value,
+                ignore_self_attention=ignore_self_attention,
             )
             model_top_k[FM_EDGELIST.MODEL] = model.full_name
 
@@ -1866,6 +2320,7 @@ class FoundationModels(BaseModel):
         reextract_union: bool = False,
         apply_softmax: bool = False,
         compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
         return_original_and_reextracted: bool = False,
         verbose: bool = False,
     ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -1893,6 +2348,9 @@ class FoundationModels(BaseModel):
         compute_ranks : bool, optional
             If True, compute ranks of attention values and add them to the output table.
             Ranks are computed within each model and layer group (default: False)
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (where from_gene == to_gene) from
+            top-k selection (default: False).
         return_original_and_reextracted : bool, optional
             If True and reextract_union=True, return tuple (original, reextracted).
             If False and reextract_union=True, return only reextracted DataFrame.
@@ -1976,6 +2434,7 @@ class FoundationModels(BaseModel):
                 apply_softmax=apply_softmax,
                 by_absolute_value=by_absolute_value,
                 compute_ranks=compute_ranks,
+                ignore_self_attention=ignore_self_attention,
                 verbose=verbose,
             ).assign(model=model_name)
 
@@ -2630,6 +3089,7 @@ def _find_top_k_edges_in_attention_layer(
     layer_idx: Optional[int] = None,
     gene_ids: Optional[List[str]] = None,
     by_absolute_value: bool = True,
+    ignore_self_attention: bool = False,
 ) -> pd.DataFrame:
     """
     Extract top-k edges from an attention matrix.
@@ -2653,6 +3113,9 @@ def _find_top_k_edges_in_attention_layer(
     by_absolute_value : bool, optional
         If True, rank edges by absolute attention value (default: True).
         If False, rank edges by raw attention value.
+    ignore_self_attention : bool, optional
+        If True, exclude self-attention edges (where from_gene == to_gene) from
+        top-k selection (default: False).
 
     Returns
     -------
@@ -2684,6 +3147,9 @@ def _find_top_k_edges_in_attention_layer(
     >>>
     >>> # Rank by raw value instead of absolute value
     >>> top_edges = find_top_k_edges(attention, k=100, by_absolute_value=False)
+    >>>
+    >>> # Exclude self-attention edges
+    >>> top_edges = find_top_k_edges(attention, k=1000, ignore_self_attention=True)
     """
 
     # Get device from attention tensor for memory management
@@ -2696,6 +3162,7 @@ def _find_top_k_edges_in_attention_layer(
             attention,
             k=k,
             by_absolute_value=by_absolute_value,
+            ignore_self_attention=ignore_self_attention,
         )
 
         # Build base DataFrame with indices and attention
@@ -2749,7 +3216,9 @@ def _find_top_k_edges_in_attention_layer(
     return df[col_order]
 
 
-def _load_results(output_dir: str, prefix: str) -> Tuple[dict, pd.DataFrame, dict]:
+def _load_results(
+    output_dir: str, prefix: str
+) -> Tuple[dict, pd.DataFrame, dict, List[dict]]:
     """
     Load foundation model results from files.
 
@@ -2768,6 +3237,8 @@ def _load_results(output_dir: str, prefix: str) -> Tuple[dict, pd.DataFrame, dic
         DataFrame with gene annotations
     model_metadata : dict
         Dictionary with model metadata
+    expression_embeddings_metadata : List[dict]
+        List of dictionaries containing expression embeddings metadata
     """
     weights_filename = FM_DEFS.WEIGHTS_TEMPLATE.format(prefix=prefix)
     metadata_filename = FM_DEFS.METADATA_TEMPLATE.format(prefix=prefix)
@@ -2796,6 +3267,16 @@ def _load_results(output_dir: str, prefix: str) -> Tuple[dict, pd.DataFrame, dic
     model_metadata = combined_metadata[FM_DEFS.MODEL_METADATA]
     gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
 
+    # Load expression embeddings metadata (if present)
+    expression_embeddings_metadata = combined_metadata.get(
+        FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS, []
+    )
+
     logger.info("Successfully loaded all results")
 
-    return weights_dict, gene_annotations, model_metadata
+    return (
+        weights_dict,
+        gene_annotations,
+        model_metadata,
+        expression_embeddings_metadata,
+    )
