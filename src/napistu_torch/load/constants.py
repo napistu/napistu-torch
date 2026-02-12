@@ -264,7 +264,7 @@ FM_DEFS = SimpleNamespace(
     CATEGORY_DICT="category_dict",
     DATASET_NAME="dataset_name",
     DATASET_URI="dataset_uri",
-    DATASET_EXPRESSION_EMBEDDINGS="dataset_expression_embeddings",  # a list of ExpressionEmbeddings
+    DATASET_EXPRESSION_EMBEDDINGS="dataset_expression_embeddings",  # optional DatasetExpressionEmbeddings
 )
 
 FM_EDGELIST = SimpleNamespace(

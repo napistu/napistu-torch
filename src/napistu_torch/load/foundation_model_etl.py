@@ -26,8 +26,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
-from napistu.constants import ONTOLOGIES
 from napistu.genomics.scverse_loading import DatasetsConfig
+from napistu.ontologies.constants import ONTOLOGIES
 from napistu.utils import download_wget
 from scipy.sparse import issparse
 
@@ -43,6 +43,7 @@ from napistu_torch.load.constants import (
 )
 from napistu_torch.load.foundation_models import (
     AttentionLayer,
+    DatasetExpressionEmbeddings,
     ExpressionEmbeddings,
     FoundationModel,
     FoundationModelWeights,
@@ -887,7 +888,9 @@ def _create_and_save_foundation_model(
     weights: FoundationModelWeights,
     gene_annotations: pd.DataFrame,
     model_metadata: Dict,
-    dataset_expression_embeddings: List[ExpressionEmbeddings],
+    dataset_expression_embeddings: Union[
+        List[ExpressionEmbeddings], DatasetExpressionEmbeddings
+    ],
     output_dir: str,
     file_prefix: str,
 ) -> FoundationModel:
@@ -902,7 +905,7 @@ def _create_and_save_foundation_model(
         Gene annotations DataFrame
     model_metadata : Dict
         Model metadata dictionary
-    dataset_expression_embeddings : List[ExpressionEmbeddings]
+    dataset_expression_embeddings : List[ExpressionEmbeddings] or DatasetExpressionEmbeddings
         Contexutalized gene embeddings for 0+ datasets
     output_dir : str
         Output directory for saving

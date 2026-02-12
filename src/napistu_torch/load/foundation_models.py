@@ -8,6 +8,8 @@ Classes
 -------
 AttentionLayer
     Attention weights for a single transformer layer.
+DatasetExpressionEmbeddings
+    Container for multiple ExpressionEmbeddings keyed by dataset name.
 ExpressionEmbeddings
     Expression-aware gene embeddings for multiple cell categories in a dataset.
 FoundationModelWeights
@@ -31,7 +33,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import torch
-from napistu.constants import ONTOLOGIES
+from napistu.ontologies.constants import ONTOLOGIES
 from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
@@ -438,6 +440,115 @@ class ExpressionEmbeddings(BaseModel):
         )
 
 
+class DatasetExpressionEmbeddings:
+    """
+    Container for multiple ExpressionEmbeddings instances keyed by dataset name.
+
+    Parallel to the Napistu-py DatasetsConfig / DatasetConfig abstraction, this class
+    holds multiple ExpressionEmbeddings instances and provides dictionary-style access
+    by dataset name.
+
+    Attributes
+    ----------
+    data : Dict[str, ExpressionEmbeddings]
+        Dictionary mapping dataset names to ExpressionEmbeddings objects.
+
+    Public Methods
+    --------------
+    get:
+        Get ExpressionEmbeddings by dataset name, raising KeyError if not found.
+    keys:
+        Return dataset names.
+    values:
+        Return ExpressionEmbeddings instances.
+    items:
+        Return (name, ExpressionEmbeddings) pairs.
+    Examples
+    --------
+    >>> data = {
+    ...     "efthymiou": expr_emb_1,
+    ...     "tabula_sapiens": expr_emb_2,
+    ... }
+    >>> container = DatasetExpressionEmbeddings(data)
+    >>> emb = container.get("efthymiou")
+    >>> "tabula_sapiens" in container
+    True
+    >>> for name, emb in container.items():
+    ...     print(f"{name}: {emb.n_genes} genes")
+    """
+
+    def __init__(
+        self,
+        data: Union[
+            Dict[str, ExpressionEmbeddings],
+            List[ExpressionEmbeddings],
+        ],
+    ):
+        """
+        Initialize DatasetExpressionEmbeddings from a dict or list.
+
+        Parameters
+        ----------
+        data : Dict[str, ExpressionEmbeddings] or List[ExpressionEmbeddings]
+            Either a dict mapping dataset names to ExpressionEmbeddings, or a list
+            of ExpressionEmbeddings (keys derived from dataset_name attribute).
+        """
+        self.data: Dict[str, ExpressionEmbeddings] = {}
+
+        if isinstance(data, dict):
+            for name, emb in data.items():
+                if not isinstance(emb, ExpressionEmbeddings):
+                    raise ValueError(
+                        f"Values must be ExpressionEmbeddings instances, got {type(emb)}"
+                    )
+                self.data[name] = emb
+        else:
+            for emb in data:
+                if not isinstance(emb, ExpressionEmbeddings):
+                    raise ValueError(
+                        f"List must contain ExpressionEmbeddings instances, got {type(emb)}"
+                    )
+                name = emb.dataset_name if emb.dataset_name else "unknown"
+                if name in self.data:
+                    raise ValueError(
+                        f"Duplicate dataset name '{name}'. Use unique dataset_name per item."
+                    )
+                self.data[name] = emb
+
+    def get(self, key: str) -> ExpressionEmbeddings:
+        """Get ExpressionEmbeddings by dataset name, raising KeyError if not found."""
+        if key not in self.data:
+            available_keys = list(self.data.keys())
+            raise KeyError(
+                f"Dataset '{key}' not found. Available datasets: {available_keys}"
+            )
+        return self.data[key]
+
+    def __getitem__(self, key: str) -> ExpressionEmbeddings:
+        """Support dictionary-style access."""
+        return self.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        """Support 'in' operator."""
+        return key in self.data
+
+    def keys(self):
+        """Return dataset names."""
+        return self.data.keys()
+
+    def values(self):
+        """Return ExpressionEmbeddings instances."""
+        return self.data.values()
+
+    def items(self):
+        """Return (name, ExpressionEmbeddings) pairs."""
+        return self.data.items()
+
+    def __repr__(self) -> str:
+        names = list(self.data.keys())
+        return f"DatasetExpressionEmbeddings(datasets={names})"
+
+
 class FoundationModelWeights(BaseModel):
     """
     Weight matrices from a foundation model.
@@ -737,8 +848,8 @@ class FoundationModel(BaseModel):
 
     Attributes
     ----------
-    dataset_expression_embeddings : List[ExpressionEmbeddings]
-        Contexutalized gene embeddings for 0+ datasets
+    dataset_expression_embeddings : Optional[DatasetExpressionEmbeddings]
+        Contexutalized gene embeddings for 0+ datasets, keyed by dataset name
     embed_dim : int
         Embedding dimension
     gene_annotations : pd.DataFrame
@@ -786,7 +897,7 @@ class FoundationModel(BaseModel):
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     # Core data
-    dataset_expression_embeddings: List[ExpressionEmbeddings]
+    dataset_expression_embeddings: Optional[DatasetExpressionEmbeddings] = None
     gene_annotations: pd.DataFrame
     weights: FoundationModelWeights
 
@@ -805,7 +916,9 @@ class FoundationModel(BaseModel):
         weights: FoundationModelWeights,
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
-        dataset_expression_embeddings: Optional[List[ExpressionEmbeddings]] = None,
+        dataset_expression_embeddings: Optional[
+            Union[DatasetExpressionEmbeddings, List[ExpressionEmbeddings]]
+        ] = None,
         **kwargs,
     ):
         """
@@ -820,8 +933,9 @@ class FoundationModel(BaseModel):
         model_metadata : dict or ModelMetadata
             Model metadata containing model_name, n_genes, n_vocab, ordered_vocabulary,
             embed_dim, n_layers, n_heads
-        dataset_expression_embeddings : List[ExpressionEmbeddings], optional
-            Contexutalized gene embeddings for 0+ datasets
+        dataset_expression_embeddings : DatasetExpressionEmbeddings or List, optional
+            Contexutalized gene embeddings for 0+ datasets. Accepts DatasetExpressionEmbeddings
+            or a list (converted to DatasetExpressionEmbeddings internally).
         **kwargs
             Additional keyword arguments (ignored, for compatibility)
 
@@ -859,8 +973,20 @@ class FoundationModel(BaseModel):
             ModelMetadata(**model_metadata)
             metadata_dict = model_metadata
 
-        if dataset_expression_embeddings is None:
-            dataset_expression_embeddings = list()
+        if dataset_expression_embeddings is not None:
+            if isinstance(dataset_expression_embeddings, list):
+                dataset_expression_embeddings = DatasetExpressionEmbeddings(
+                    dataset_expression_embeddings
+                )
+            elif not isinstance(
+                dataset_expression_embeddings, DatasetExpressionEmbeddings
+            ):
+                raise ValueError(
+                    "dataset_expression_embeddings must be DatasetExpressionEmbeddings "
+                    f"or list, got {type(dataset_expression_embeddings)}"
+                )
+        else:
+            dataset_expression_embeddings = None
 
         # Call parent __init__ with unpacked metadata
         super().__init__(
@@ -884,11 +1010,10 @@ class FoundationModel(BaseModel):
 
     @field_validator(FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS)
     def validate_dataset_expression_embeddings(cls, v):
-        if not isinstance(v, list):
-            raise ValueError("dataset_expression_embeddings must be a list")
-        if not all(isinstance(item, ExpressionEmbeddings) for item in v):
+        if v is not None and not isinstance(v, DatasetExpressionEmbeddings):
             raise ValueError(
-                "dataset_expression_embeddings must contain only ExpressionEmbeddings instances"
+                "dataset_expression_embeddings must be DatasetExpressionEmbeddings or None, "
+                f"got {type(v)}"
             )
         return v
 
@@ -1521,7 +1646,7 @@ class FoundationModel(BaseModel):
         )
 
         # Reconstruct ExpressionEmbeddings from saved data
-        dataset_expression_embeddings = []
+        expr_emb_list: List[ExpressionEmbeddings] = []
         if expression_embeddings_metadata:
             logger.info(
                 f"Loading {len(expression_embeddings_metadata)} expression embeddings"
@@ -1539,12 +1664,16 @@ class FoundationModel(BaseModel):
                         dataset_name=expr_emb_meta.get(FM_DEFS.DATASET_NAME),
                         dataset_uri=expr_emb_meta.get(FM_DEFS.DATASET_URI),
                     )
-                    dataset_expression_embeddings.append(expr_emb)
+                    expr_emb_list.append(expr_emb)
                 else:
                     logger.warning(
                         f"Expression embeddings metadata found but embeddings tensor "
                         f"'{embeddings_key}' not found in weights file"
                     )
+
+        dataset_expression_embeddings = (
+            DatasetExpressionEmbeddings(expr_emb_list) if expr_emb_list else None
+        )
 
         return cls(
             weights=weights,
@@ -1602,10 +1731,9 @@ class FoundationModel(BaseModel):
 
         # Add expression embeddings tensors to weights_dict
         if self.dataset_expression_embeddings:
-            logger.info(
-                f"Saving {len(self.dataset_expression_embeddings)} expression embeddings"
-            )
-            for i, expr_emb in enumerate(self.dataset_expression_embeddings):
+            expr_emb_list = list(self.dataset_expression_embeddings.values())
+            logger.info(f"Saving {len(expr_emb_list)} expression embeddings")
+            for i, expr_emb in enumerate(expr_emb_list):
                 weights_dict[f"expression_embeddings_{i}"] = expr_emb.embeddings
 
         # Save weights to npz
@@ -1625,14 +1753,15 @@ class FoundationModel(BaseModel):
 
         # Prepare expression embeddings metadata
         expression_embeddings_metadata = []
-        for expr_emb in self.dataset_expression_embeddings:
-            expr_emb_meta = {
-                FM_DEFS.ORDERED_GENES: expr_emb.ordered_genes,
-                FM_DEFS.CATEGORY_DICT: expr_emb.category_dict,
-                FM_DEFS.DATASET_NAME: expr_emb.dataset_name,
-                FM_DEFS.DATASET_URI: expr_emb.dataset_uri,
-            }
-            expression_embeddings_metadata.append(expr_emb_meta)
+        if self.dataset_expression_embeddings:
+            for expr_emb in self.dataset_expression_embeddings.values():
+                expr_emb_meta = {
+                    FM_DEFS.ORDERED_GENES: expr_emb.ordered_genes,
+                    FM_DEFS.CATEGORY_DICT: expr_emb.category_dict,
+                    FM_DEFS.DATASET_NAME: expr_emb.dataset_name,
+                    FM_DEFS.DATASET_URI: expr_emb.dataset_uri,
+                }
+                expression_embeddings_metadata.append(expr_emb_meta)
 
         # Combine gene_annotations and model_metadata into single JSON
         combined_metadata = {

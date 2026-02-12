@@ -5,7 +5,10 @@ import pytest
 import torch
 from pydantic import ValidationError
 
-from napistu_torch.load.foundation_models import ExpressionEmbeddings
+from napistu_torch.load.foundation_models import (
+    DatasetExpressionEmbeddings,
+    ExpressionEmbeddings,
+)
 
 
 def test_embeddings_field_validation():
@@ -108,3 +111,51 @@ def test_model_validation_and_defaults():
     assert "ordered_genes has 5 entries but embeddings has 10 genes" in str(
         exc_info.value
     )
+
+
+def test_dataset_expression_embeddings():
+    """Test DatasetExpressionEmbeddings: get, keys, values, items, dict and list init."""
+    emb1 = ExpressionEmbeddings(
+        embeddings=np.random.randn(2, 10, 32),
+        ordered_genes=[f"gene_{i}" for i in range(10)],
+        category_dict={0: "type1", 1: "type2"},
+        dataset_name="efthymiou",
+    )
+    emb2 = ExpressionEmbeddings(
+        embeddings=np.random.randn(3, 10, 32),
+        ordered_genes=[f"gene_{i}" for i in range(10)],
+        category_dict={0: "a", 1: "b", 2: "c"},
+        dataset_name="tabula_sapiens",
+    )
+
+    # Init from dict
+    container = DatasetExpressionEmbeddings({"efthymiou": emb1, "tabula_sapiens": emb2})
+    assert container.get("efthymiou") is emb1
+    assert container["efthymiou"] is emb1
+    assert container.get("tabula_sapiens") is emb2
+    assert "efthymiou" in container
+    assert "missing" not in container
+    assert set(container.keys()) == {"efthymiou", "tabula_sapiens"}
+    assert list(container.values()) == [emb1, emb2]
+    assert len(list(container.items())) == 2
+    assert "DatasetExpressionEmbeddings" in repr(container)
+
+    # Init from list (keys from dataset_name)
+    container2 = DatasetExpressionEmbeddings([emb1, emb2])
+    assert container2.get("efthymiou") is emb1
+    assert container2.get("tabula_sapiens") is emb2
+
+    # KeyError when not found
+    with pytest.raises(KeyError) as exc_info:
+        container.get("nonexistent")
+    assert "nonexistent" in str(exc_info.value)
+    assert "Available datasets" in str(exc_info.value)
+
+    # Duplicate dataset_name in list raises
+    emb_dup = ExpressionEmbeddings(
+        embeddings=np.random.randn(1, 10, 32),
+        dataset_name="efthymiou",
+    )
+    with pytest.raises(ValueError) as exc_info:
+        DatasetExpressionEmbeddings([emb1, emb_dup])
+    assert "Duplicate dataset name" in str(exc_info.value)

@@ -8,13 +8,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
-from napistu.constants import IDENTIFIERS, ONTOLOGIES
+from napistu.constants import IDENTIFIERS
 from napistu.network.constants import (
     NAPISTU_GRAPH,
     NAPISTU_GRAPH_EDGES,
     NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
+from napistu.ontologies.constants import ONTOLOGIES
 from utils import assert_tensors_equal
 
 from napistu_torch.constants import (
