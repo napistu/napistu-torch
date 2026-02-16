@@ -27,8 +27,10 @@ FoundationModels
 import json
 import logging
 import os
+from collections import Counter
+from functools import cached_property
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -62,6 +64,576 @@ from napistu_torch.utils.torch_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class GeneEmbeddings(BaseModel):
+    """
+    Immutable container co-locating a 2D embedding matrix with gene identifiers.
+
+    Ensures that the embedding matrix rows always correspond 1:1 with
+    ordered_gene_ids and gene_annotations rows. All reordering and filtering
+    operations return new instances rather than mutating state.
+
+    Attributes
+    ----------
+    embedding : np.ndarray
+        Gene embedding matrix of shape (n_genes, embed_dim).
+    ordered_gene_ids : List[str]
+        Gene identifiers in the same order as embedding rows.
+        Typically Ensembl gene IDs (e.g., 'ENSG00000141510').
+    gene_annotations : pd.DataFrame
+        Gene annotations with rows aligned to embedding rows.
+        Must contain at minimum a column matching the identifiers in
+        ordered_gene_ids (default: ONTOLOGIES.ENSEMBL_GENE).
+    model_name : Optional[str]
+        Name of the source foundation model (e.g., 'scGPT', 'AIDOCell').
+    model_variant : Optional[str]
+        Variant of the source model (e.g., 'aido_cell_100m').
+    dataset_name : Optional[str]
+        Name of the expression dataset used to contextualize embeddings.
+        None for static (non-expression-aware) gene embeddings.
+    category : Optional[str]
+        Category within the dataset (e.g., cell type, cluster).
+        None for static gene embeddings or dataset-level aggregations.
+
+    Properties
+    ----------
+    n_genes : int
+        Number of genes.
+    embed_dim : int
+        Embedding dimensionality.
+    gene_ids_set : FrozenSet[str]
+        Frozen set of gene IDs for O(1) membership checks.
+    source_label : str
+        Human-readable source descriptor combining model and dataset info.
+
+    Public Methods
+    --------------
+    align_to(target_ids)
+        Return a new GeneEmbeddings filtered and reordered to match target_ids.
+    compute_pairwise_distances(device=None)
+        Compute gene-gene cosine distance matrix.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> gene_ids = ['ENSG00000141510', 'ENSG00000157764', 'ENSG00000171862']
+    >>> embedding = np.random.randn(3, 512)
+    >>> annotations = pd.DataFrame({
+    ...     'ensembl_gene': gene_ids,
+    ...     'symbol': ['TP53', 'BRAF', 'PTEN'],
+    ... })
+    >>> ge = GeneEmbeddings(
+    ...     embedding=embedding,
+    ...     ordered_gene_ids=gene_ids,
+    ...     gene_annotations=annotations,
+    ...     model_name='scGPT',
+    ... )
+    >>> ge.n_genes
+    3
+    >>> ge.embed_dim
+    512
+    """
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
+
+    # Core data
+    embedding: np.ndarray = Field(
+        ...,
+        description="Gene embedding matrix of shape (n_genes, embed_dim)",
+    )
+    ordered_gene_ids: List[str] = Field(
+        ...,
+        description="Gene identifiers aligned with embedding rows",
+    )
+    gene_annotations: pd.DataFrame = Field(
+        ...,
+        description="Gene annotations with rows aligned to embedding rows",
+    )
+
+    # Source metadata
+    model_name: Optional[str] = None
+    model_variant: Optional[str] = None
+    dataset_name: Optional[str] = None
+    category: Optional[str] = None
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding(cls, v: np.ndarray) -> np.ndarray:
+        if not isinstance(v, np.ndarray):
+            raise ValueError("embedding must be a numpy array")
+        if v.ndim != 2:
+            raise ValueError(
+                f"embedding must be 2-dimensional (n_genes, embed_dim), "
+                f"got shape {v.shape}"
+            )
+        if v.shape[0] == 0:
+            raise ValueError("embedding must have at least one gene (row)")
+        return v
+
+    @field_validator("ordered_gene_ids")
+    @classmethod
+    def validate_ordered_gene_ids(cls, v: List[str]) -> List[str]:
+        if not isinstance(v, list):
+            raise ValueError("ordered_gene_ids must be a list")
+        if len(v) == 0:
+            raise ValueError("ordered_gene_ids must not be empty")
+        if not all(isinstance(gid, str) for gid in v):
+            raise ValueError("ordered_gene_ids must contain only strings")
+        if len(v) != len(set(v)):
+            raise ValueError("ordered_gene_ids must contain unique values")
+        return v
+
+    @field_validator("gene_annotations")
+    @classmethod
+    def validate_gene_annotations(cls, v: pd.DataFrame) -> pd.DataFrame:
+        GeneAnnotations(annotations=v)
+        return v
+
+    @model_validator(mode="after")
+    def validate_row_correspondence(self) -> "GeneEmbeddings":
+        """Validate that embedding rows, ordered_gene_ids, and gene_annotations are aligned."""
+        n_embedding_rows = self.embedding.shape[0]
+        n_gene_ids = len(self.ordered_gene_ids)
+        n_annotation_rows = len(self.gene_annotations)
+
+        if n_embedding_rows != n_gene_ids:
+            raise ValueError(
+                f"embedding has {n_embedding_rows} rows but "
+                f"ordered_gene_ids has {n_gene_ids} entries"
+            )
+
+        if n_embedding_rows != n_annotation_rows:
+            raise ValueError(
+                f"embedding has {n_embedding_rows} rows but "
+                f"gene_annotations has {n_annotation_rows} rows"
+            )
+
+        return self
+
+    @property
+    def n_genes(self) -> int:
+        """Number of genes."""
+        return self.embedding.shape[0]
+
+    @property
+    def embed_dim(self) -> int:
+        """Embedding dimensionality."""
+        return self.embedding.shape[1]
+
+    @cached_property
+    def gene_ids_set(self) -> FrozenSet[str]:
+        """Frozen set of gene IDs for O(1) membership checks."""
+        return frozenset(self.ordered_gene_ids)
+
+    @property
+    def source_label(self) -> str:
+        """Human-readable source descriptor."""
+        parts = []
+        if self.model_name:
+            label = self.model_name
+            if self.model_variant:
+                label = f"{label}_{self.model_variant}"
+            parts.append(label)
+        if self.dataset_name:
+            parts.append(self.dataset_name)
+        if self.category:
+            parts.append(self.category)
+        return "/".join(parts) if parts else "unknown"
+
+    def align_to(self, target_ids: List[str]) -> "GeneEmbeddings":
+        """Return a new GeneEmbeddings filtered and reordered to match target_ids.
+
+        Only genes present in both self and target_ids are retained.
+        The output order matches target_ids.
+
+        Parameters
+        ----------
+        target_ids : List[str]
+            Ordered list of gene identifiers to align to.
+            Genes in target_ids that are not in self are silently skipped.
+
+        Returns
+        -------
+        GeneEmbeddings
+            New instance with rows filtered and reordered to match the
+            intersection of target_ids and self.ordered_gene_ids,
+            preserving the order from target_ids.
+
+        Raises
+        ------
+        ValueError
+            If no genes in target_ids are found in this embedding.
+
+        Examples
+        --------
+        >>> common = ge1.common_genes(ge2)
+        >>> ge1_aligned = ge1.align_to(common)
+        >>> ge2_aligned = ge2.align_to(common)
+        """
+        # Filter target_ids to those present in self
+        my_ids = self.gene_ids_set
+        filtered_targets = [gid for gid in target_ids if gid in my_ids]
+
+        if len(filtered_targets) == 0:
+            raise ValueError(
+                "No genes in target_ids are present in this GeneEmbeddings instance"
+            )
+
+        if len(filtered_targets) < len(target_ids):
+            n_missing = len(target_ids) - len(filtered_targets)
+            logger.warning(
+                f"{n_missing} of {len(target_ids)} target_ids not found in "
+                f"this GeneEmbeddings (source: {self.source_label}); "
+                f"returning {len(filtered_targets)} genes"
+            )
+
+        # Build index mapping: gene_id -> current row position
+        id_to_idx = {gid: idx for idx, gid in enumerate(self.ordered_gene_ids)}
+        reorder_indices = np.array([id_to_idx[gid] for gid in filtered_targets])
+
+        return GeneEmbeddings(
+            embedding=self.embedding[reorder_indices],
+            ordered_gene_ids=filtered_targets,
+            gene_annotations=self.gene_annotations.iloc[reorder_indices].reset_index(
+                drop=True
+            ),
+            model_name=self.model_name,
+            model_variant=self.model_variant,
+            dataset_name=self.dataset_name,
+            category=self.category,
+        )
+
+    def compute_pairwise_distances(
+        self,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> np.ndarray:
+        """Compute gene-gene cosine distance matrix.
+
+        Parameters
+        ----------
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+
+        Returns
+        -------
+        np.ndarray
+            Symmetric distance matrix of shape (n_genes, n_genes).
+            Entry [i, j] is the cosine distance between gene i and gene j.
+            Values range from 0 (identical) to 2 (opposite).
+        """
+        return compute_cosine_distances_torch(self.embedding, device=device)
+
+    def gene_ids_in_ontology(self, ontology: str) -> List[str]:
+        """Return gene identifiers in the given ontology column, in row order."""
+        if ontology not in self.gene_annotations.columns:
+            raise ValueError(
+                f"Ontology '{ontology}' not in gene_annotations columns: "
+                f"{list(self.gene_annotations.columns)}"
+            )
+        return self.gene_annotations[ontology].tolist()
+
+    def __repr__(self) -> str:
+        return (
+            f"GeneEmbeddings("
+            f"source={self.source_label}, "
+            f"n_genes={self.n_genes}, "
+            f"embed_dim={self.embed_dim}"
+            f")"
+        )
+
+    def __len__(self) -> int:
+        return self.n_genes
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GeneEmbeddings):
+            return NotImplemented
+        return self.ordered_gene_ids == other.ordered_gene_ids and np.array_equal(
+            self.embedding, other.embedding
+        )
+
+
+class GeneEmbeddingsSet:
+    """
+    Container for multiple GeneEmbeddings instances aligned to a common gene set.
+
+    All stored embeddings have the same genes in the same row order (in terms of
+    the alignment ontology), though each may retain its own native vocabulary in
+    ``ordered_gene_ids``. This enables direct cross-embedding comparison without
+    repeated alignment overhead.
+
+    Attributes
+    ----------
+    common_gene_ids : List[str]
+        Gene identifiers (in the alignment ontology) shared across all embeddings,
+        in the order used for alignment.
+    align_on : str
+        The ontology column used for alignment.
+
+    Properties
+    ----------
+    n_embeddings : int
+        Number of stored embeddings.
+    n_common_genes : int
+        Number of common genes.
+    summary : pd.DataFrame
+        One row per embedding with source metadata and dimensionality info.
+
+    Public Methods
+    --------------
+    from_gene_embeddings(embeddings, align_on='ensembl_gene')
+        Classmethod: align embeddings and construct container.
+    get(key)
+        Return the aligned GeneEmbeddings for a given key.
+    keys()
+        Return embedding labels.
+    values()
+        Return GeneEmbeddings instances.
+    items()
+        Return (label, GeneEmbeddings) pairs.
+
+    Examples
+    --------
+    >>> from gene_embeddings import GeneEmbeddings, GeneEmbeddingsSet
+    >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
+    ...     [ge_scgpt, ge_aido, ge_scprint]
+    ... )
+    >>> aligned.n_common_genes
+    15234
+    >>> aligned.summary
+          key     model_name model_variant  ... n_genes embed_dim
+    0  scGPT          scGPT          None  ...   15234       512
+    1  AIDOCell_100m  AIDOCell  aido_cell_100m  ...   15234       768
+    >>> scgpt_emb = aligned["scGPT"]
+    """
+
+    def __init__(
+        self,
+        data: Dict[str, GeneEmbeddings],
+        common_gene_ids: List[str],
+        align_on: str,
+    ):
+        """Initialize GeneEmbeddingsSet.
+
+        Prefer using the ``from_gene_embeddings`` classmethod which handles
+        alignment automatically. This constructor assumes embeddings are
+        already aligned.
+
+        Parameters
+        ----------
+        data : Dict[str, GeneEmbeddings]
+            Mapping from label to aligned GeneEmbeddings.
+        common_gene_ids : List[str]
+            The common gene IDs (in the alignment ontology) shared by all
+            embeddings, in the order used for alignment.
+        align_on : str
+            The ontology column that was used for alignment.
+
+        Raises
+        ------
+        ValueError
+            If data is empty.
+            If any embedding's genes in the alignment ontology don't match
+            common_gene_ids.
+        """
+        if len(data) == 0:
+            raise ValueError("GeneEmbeddingsSet requires at least one embedding")
+
+        # Validate alignment
+        for key, emb in data.items():
+            emb_ids = emb.gene_ids_in_ontology(align_on)
+            if emb_ids != common_gene_ids:
+                raise ValueError(
+                    f"Embedding '{key}' gene IDs in ontology '{align_on}' do not "
+                    f"match common_gene_ids. First mismatch at index "
+                    f"{next(i for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)) if a != b)}"
+                )
+
+        self._data: Dict[str, GeneEmbeddings] = dict(data)
+        self._common_gene_ids: List[str] = list(common_gene_ids)
+        self._align_on: str = align_on
+
+    @classmethod
+    def from_gene_embeddings(
+        cls,
+        embeddings: List[GeneEmbeddings],
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    ) -> "GeneEmbeddingsSet":
+        """Align embeddings to common genes and construct container.
+
+        Uses ``align_gene_embeddings`` to find common genes across all
+        embeddings and reorder each to a consistent row ordering. Keys
+        are derived from each embedding's ``source_label``.
+
+        Parameters
+        ----------
+        embeddings : List[GeneEmbeddings]
+            Two or more GeneEmbeddings to align. Each must have unique
+            ``source_label`` values.
+        align_on : str, optional
+            Column in gene_annotations to align on (default: 'ensembl_gene').
+
+        Returns
+        -------
+        GeneEmbeddingsSet
+            Container with aligned embeddings.
+
+        Raises
+        ------
+        ValueError
+            If fewer than 2 embeddings are provided.
+            If source_label values are not unique.
+            If no common genes are found.
+
+        Examples
+        --------
+        >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
+        ...     [ge_scgpt, ge_aido],
+        ...     align_on='ensembl_gene',
+        ... )
+        """
+        if len(embeddings) < 2:
+            raise ValueError(
+                f"GeneEmbeddingsSet requires at least 2 embeddings, "
+                f"got {len(embeddings)}"
+            )
+
+        # Validate unique source_labels
+        labels = [emb.source_label for emb in embeddings]
+        label_counts = Counter(labels)
+        duplicates = {
+            label: count for label, count in label_counts.items() if count > 1
+        }
+        if duplicates:
+            raise ValueError(
+                f"Duplicate source_label values: {duplicates}. "
+                f"Set distinct model_name, model_variant, dataset_name, or category "
+                f"on each GeneEmbeddings to produce unique labels."
+            )
+
+        # Align
+        aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
+
+        # Extract common gene IDs from the first aligned embedding
+        common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
+
+        # Build dict
+        data = {
+            label: aligned_emb for label, aligned_emb in zip(labels, aligned_embeddings)
+        }
+
+        return cls(
+            data=data,
+            common_gene_ids=common_gene_ids,
+            align_on=align_on,
+        )
+
+    @property
+    def common_gene_ids(self) -> List[str]:
+        """Gene identifiers shared across all embeddings (in the alignment ontology)."""
+        return list(self._common_gene_ids)
+
+    @property
+    def align_on(self) -> str:
+        """The ontology column used for alignment."""
+        return self._align_on
+
+    @property
+    def n_embeddings(self) -> int:
+        """Number of stored embeddings."""
+        return len(self._data)
+
+    @property
+    def n_common_genes(self) -> int:
+        """Number of common genes."""
+        return len(self._common_gene_ids)
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """Summary DataFrame with one row per embedding.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: key, model_name, model_variant, dataset_name, category,
+            n_genes, embed_dim.
+        """
+        rows = []
+        for key, emb in self._data.items():
+            rows.append(
+                {
+                    "key": key,
+                    "model_name": emb.model_name,
+                    "model_variant": emb.model_variant,
+                    "dataset_name": emb.dataset_name,
+                    "category": emb.category,
+                    "n_genes": emb.n_genes,
+                    "embed_dim": emb.embed_dim,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    # --- Dict-like access ---
+
+    def get(self, key: str) -> GeneEmbeddings:
+        """Get aligned GeneEmbeddings by label.
+
+        Parameters
+        ----------
+        key : str
+            Label (source_label) of the embedding to retrieve.
+
+        Returns
+        -------
+        GeneEmbeddings
+            The aligned embedding.
+
+        Raises
+        ------
+        KeyError
+            If key is not found.
+        """
+        if key not in self._data:
+            raise KeyError(
+                f"Embedding '{key}' not found. "
+                f"Available keys: {list(self._data.keys())}"
+            )
+        return self._data[key]
+
+    def __getitem__(self, key: str) -> GeneEmbeddings:
+        return self.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys(self):
+        """Return embedding labels."""
+        return self._data.keys()
+
+    def values(self):
+        """Return GeneEmbeddings instances."""
+        return self._data.values()
+
+    def items(self):
+        """Return (label, GeneEmbeddings) pairs."""
+        return self._data.items()
+
+    # --- Dunder methods ---
+
+    def __repr__(self) -> str:
+        keys = list(self._data.keys())
+        return (
+            f"GeneEmbeddingsSet("
+            f"n_embeddings={self.n_embeddings}, "
+            f"n_common_genes={self.n_common_genes}, "
+            f"align_on='{self._align_on}', "
+            f"keys={keys}"
+            f")"
+        )
 
 
 class AttentionLayer(BaseModel):
@@ -1062,9 +1634,9 @@ class FoundationModel(BaseModel):
             Method for aggregating attention across layers to compute consensus.
             Currently supported:
             - "absolute-argmax" (default): Find layer with maximum absolute attention
-              and return that value with sign preserved
+                and return that value with sign preserved
             - "max": Find layer with maximum attention value (without taking absolute value)
-              and return that value
+                and return that value
             - "sum": Sum attention values across all layers
         gene_annotation_target_var : str, optional
             Column name in gene_annotations to match against target_ids
@@ -2021,12 +2593,12 @@ class FoundationModels(BaseModel):
         consensus_method : str, optional
             Method for aggregating attention across layers to compute consensus.
             Currently supported:
-            - "absolute-argmax" (default): Find layer with maximum absolute attention
-              and return that value with sign preserved
-            - "max": Find layer with maximum attention value (without taking absolute value)
-              and return that value
-            - "sum": Sum attention values across all layers
-            Options: 'absolute-argmax', 'max', 'sum'
+                - "absolute-argmax" (default): Find layer with maximum absolute attention
+                and return that value with sign preserved
+                - "max": Find layer with maximum attention value (without taking absolute value)
+                and return that value
+                - "sum": Sum attention values across all layers
+                Options: 'absolute-argmax', 'max', 'sum'
         by_absolute_value : bool, optional
             If True, rank edges by absolute attention value (default: True).
             If False, rank edges by raw attention value.
@@ -2744,6 +3316,139 @@ class FoundationModels(BaseModel):
 
 
 # Private utility functions
+
+
+def _align_gene_embeddings(
+    embeddings: List[GeneEmbeddings],
+    align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+) -> List[GeneEmbeddings]:
+    """Align multiple GeneEmbeddings to their common genes via a shared ontology.
+
+    Each GeneEmbeddings may use a different native vocabulary (symbols, ensembl
+    IDs, etc.) in its ``ordered_gene_ids``. This function:
+
+    1. Maps each embedding's genes to the ``align_on`` ontology via gene_annotations.
+    2. Computes the intersection of mapped IDs across all embeddings.
+    3. Filters and reorders each embedding so that its rows correspond to the
+        common genes (in a consistent order), while preserving the native
+        vocabulary in ``ordered_gene_ids``.
+
+    Parameters
+    ----------
+    embeddings : List[GeneEmbeddings]
+        Two or more GeneEmbeddings instances to align.
+    align_on : str, optional
+        Column name in gene_annotations to use as the common ontology
+        (default: 'ensembl_gene'). Must be present in every embedding's
+        gene_annotations.
+
+    Returns
+    -------
+    List[GeneEmbeddings]
+        New GeneEmbeddings instances, one per input, each filtered and reordered
+        so that ``gene_ids_in_ontology(align_on)`` returns the same list for all.
+        The native ``ordered_gene_ids`` are preserved (each embedding keeps its
+        own vocabulary).
+
+    Raises
+    ------
+    ValueError
+        If fewer than 2 embeddings are provided.
+        If ``align_on`` column is missing from any embedding's gene_annotations.
+        If the intersection of common genes is empty.
+        If any embedding has duplicate values in the ``align_on`` column
+        (would make alignment ambiguous).
+
+    Examples
+    --------
+    >>> # scGPT uses ensembl IDs natively, AIDOCell uses symbols
+    >>> aligned = align_gene_embeddings([ge_scgpt, ge_aido])
+    >>> # Both now cover the same genes in the same order
+    >>> aligned[0].gene_ids_in_ontology('ensembl_gene')
+    ['ENSG00000141510', 'ENSG00000157764', ...]
+    >>> aligned[1].gene_ids_in_ontology('ensembl_gene')
+    ['ENSG00000141510', 'ENSG00000157764', ...]
+    >>> # But native vocabularies are preserved
+    >>> aligned[0].ordered_gene_ids[:2]
+    ['ENSG00000141510', 'ENSG00000157764']
+    >>> aligned[1].ordered_gene_ids[:2]
+    ['TP53', 'BRAF']
+    """
+    if len(embeddings) < 2:
+        raise ValueError(
+            f"align_gene_embeddings requires at least 2 embeddings, got {len(embeddings)}"
+        )
+
+    # --- Validate align_on column exists in all embeddings ---
+    for emb in embeddings:
+        if align_on not in emb.gene_annotations.columns:
+            raise ValueError(
+                f"Column '{align_on}' not found in gene_annotations for "
+                f"embedding '{emb.source_label}'. "
+                f"Available columns: {list(emb.gene_annotations.columns)}"
+            )
+
+    # --- Validate no duplicates in the align_on column ---
+    for emb in embeddings:
+        ontology_ids = emb.gene_annotations[align_on]
+        duplicates = ontology_ids[ontology_ids.duplicated()].tolist()
+        if duplicates:
+            raise ValueError(
+                f"Embedding '{emb.source_label}' has duplicate values in "
+                f"'{align_on}' column: {duplicates[:5]}{'...' if len(duplicates) > 5 else ''}. "
+                f"Alignment requires unique values in the align_on column."
+            )
+
+    # --- Compute intersection across all embeddings ---
+    common_ids = None
+    for emb in embeddings:
+        ids = set(emb.gene_annotations[align_on].dropna())
+        if common_ids is None:
+            common_ids = ids
+        else:
+            common_ids = common_ids.intersection(ids)
+
+    if not common_ids:
+        raise ValueError(
+            f"No common genes found across {len(embeddings)} embeddings "
+            f"using ontology '{align_on}'"
+        )
+
+    # Use a stable sorted order for the common gene set
+    common_ids_ordered = sorted(common_ids)
+
+    logger.info(
+        f"Found {len(common_ids_ordered)} common genes across "
+        f"{len(embeddings)} embeddings (ontology: '{align_on}')"
+    )
+
+    # --- Filter and reorder each embedding ---
+    aligned = []
+    for emb in embeddings:
+        # Build mapping: align_on value -> row index in this embedding
+        ontology_values = emb.gene_annotations[align_on].tolist()
+        ontology_to_row = {val: idx for idx, val in enumerate(ontology_values)}
+
+        # Reorder indices to match common_ids_ordered
+        reorder_indices = np.array([ontology_to_row[gid] for gid in common_ids_ordered])
+
+        # Build new ordered_gene_ids in the native vocabulary, reordered
+        native_ids = [emb.ordered_gene_ids[i] for i in reorder_indices]
+
+        aligned_emb = GeneEmbeddings(
+            embedding=emb.embedding[reorder_indices],
+            ordered_gene_ids=native_ids,
+            gene_annotations=emb.gene_annotations.iloc[reorder_indices].reset_index(
+                drop=True
+            ),
+            model_name=emb.model_name,
+            model_variant=emb.model_variant,
+            dataset_name=emb.dataset_name,
+            category=emb.category,
+        )
+        aligned.append(aligned_emb)
+
+    return aligned
 
 
 def _calculate_embedding_correlations(
