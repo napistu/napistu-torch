@@ -266,7 +266,17 @@ FM_DEFS = SimpleNamespace(
     CATEGORY_DICT="category_dict",
     DATASET_NAME="dataset_name",
     DATASET_URI="dataset_uri",
+    CATEGORY="category",
     DATASET_GENE_EMBEDDINGS="dataset_gene_embeddings",  # optional DatasetGeneEmbeddings
+)
+
+CELLXGENE_DEFS = SimpleNamespace(
+    CELL_TYPE="cell_type",
+    LEIDEN_SCVI="leiden_scVI",
+)
+
+FM_DEFAULTS = SimpleNamespace(
+    MIN_CLUSTER_CELLS=10,
 )
 
 FM_EDGELIST = SimpleNamespace(
