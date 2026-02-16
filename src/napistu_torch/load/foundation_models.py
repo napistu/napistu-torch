@@ -359,13 +359,15 @@ class GeneEmbeddings(BaseModel):
 
 
 class GeneEmbeddingsSet:
-    """
-    Container for multiple GeneEmbeddings instances aligned to a common gene set.
+    """Container for one or more GeneEmbeddings instances aligned to a common list of genes.
 
     All stored embeddings have the same genes in the same row order (in terms of
     the alignment ontology), though each may retain its own native vocabulary in
     ``ordered_gene_ids``. This enables direct cross-embedding comparison without
     repeated alignment overhead.
+
+    When constructed with a single embedding, it serves as a validated wrapper
+    that still provides the same dict-like interface and summary properties.
 
     Attributes
     ----------
@@ -399,7 +401,6 @@ class GeneEmbeddingsSet:
 
     Examples
     --------
-    >>> from gene_embeddings import GeneEmbeddings, GeneEmbeddingsSet
     >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
     ...     [ge_scgpt, ge_aido, ge_scprint]
     ... )
@@ -448,10 +449,18 @@ class GeneEmbeddingsSet:
         for key, emb in data.items():
             emb_ids = emb.gene_ids_in_ontology(align_on)
             if emb_ids != common_gene_ids:
+                # Find first mismatch for a helpful error message
+                for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)):
+                    if a != b:
+                        raise ValueError(
+                            f"Embedding '{key}' gene IDs in ontology '{align_on}' "
+                            f"do not match common_gene_ids. "
+                            f"First mismatch at index {i}: '{a}' != '{b}'"
+                        )
+                # Length mismatch
                 raise ValueError(
-                    f"Embedding '{key}' gene IDs in ontology '{align_on}' do not "
-                    f"match common_gene_ids. First mismatch at index "
-                    f"{next(i for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)) if a != b)}"
+                    f"Embedding '{key}' has {len(emb_ids)} genes but "
+                    f"common_gene_ids has {len(common_gene_ids)}"
                 )
 
         self._data: Dict[str, GeneEmbeddings] = dict(data)
@@ -473,8 +482,9 @@ class GeneEmbeddingsSet:
         Parameters
         ----------
         embeddings : List[GeneEmbeddings]
-            Two or more GeneEmbeddings to align. Each must have unique
-            ``source_label`` values.
+            One or more GeneEmbeddings to align. Each must have unique
+            ``source_label`` values. When a single embedding is provided,
+            it is wrapped directly without alignment.
         align_on : str, optional
             Column in gene_annotations to align on (default: 'ensembl_gene').
 
@@ -486,22 +496,25 @@ class GeneEmbeddingsSet:
         Raises
         ------
         ValueError
-            If fewer than 2 embeddings are provided.
+            If no embeddings are provided.
             If source_label values are not unique.
-            If no common genes are found.
+            If no common genes are found (when aligning 2+ embeddings).
 
         Examples
         --------
+        >>> # Multiple embeddings — aligns to common genes
         >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
         ...     [ge_scgpt, ge_aido],
         ...     align_on='ensembl_gene',
         ... )
+        >>> # Single embedding — wraps directly
+        >>> single = GeneEmbeddingsSet.from_gene_embeddings(
+        ...     [ge_scgpt],
+        ...     align_on='ensembl_gene',
+        ... )
         """
-        if len(embeddings) < 2:
-            raise ValueError(
-                f"GeneEmbeddingsSet requires at least 2 embeddings, "
-                f"got {len(embeddings)}"
-            )
+        if len(embeddings) == 0:
+            raise ValueError("GeneEmbeddingsSet requires at least 1 embedding, got 0")
 
         # Validate unique source_labels
         labels = [emb.source_label for emb in embeddings]
@@ -516,22 +529,33 @@ class GeneEmbeddingsSet:
                 f"on each GeneEmbeddings to produce unique labels."
             )
 
-        # Align
-        aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
-
-        # Extract common gene IDs from the first aligned embedding
-        common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
-
-        # Build dict
-        data = {
-            label: aligned_emb for label, aligned_emb in zip(labels, aligned_embeddings)
-        }
+        if len(embeddings) == 1:
+            # Single embedding: validate align_on column exists, wrap directly
+            emb = embeddings[0]
+            if align_on not in emb.gene_annotations.columns:
+                raise ValueError(
+                    f"Column '{align_on}' not found in gene_annotations for "
+                    f"embedding '{emb.source_label}'. "
+                    f"Available columns: {list(emb.gene_annotations.columns)}"
+                )
+            common_gene_ids = emb.gene_ids_in_ontology(align_on)
+            data = {labels[0]: emb}
+        else:
+            # Multiple embeddings: align to common genes
+            aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
+            common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
+            data = {
+                label: aligned_emb
+                for label, aligned_emb in zip(labels, aligned_embeddings)
+            }
 
         return cls(
             data=data,
             common_gene_ids=common_gene_ids,
             align_on=align_on,
         )
+
+    # --- Properties ---
 
     @property
     def common_gene_ids(self) -> List[str]:
@@ -560,8 +584,8 @@ class GeneEmbeddingsSet:
         Returns
         -------
         pd.DataFrame
-            Columns: key, model_name, model_variant, dataset_name, category,
-            n_genes, embed_dim.
+            Columns: key, model_name, model_variant, dataset_name, dataset_uri,
+            category, n_genes, embed_dim.
         """
         rows = []
         for key, emb in self._data.items():
@@ -571,6 +595,7 @@ class GeneEmbeddingsSet:
                     "model_name": emb.model_name,
                     "model_variant": emb.model_variant,
                     "dataset_name": emb.dataset_name,
+                    "dataset_uri": emb.dataset_uri,
                     "category": emb.category,
                     "n_genes": emb.n_genes,
                     "embed_dim": emb.embed_dim,
@@ -636,6 +661,200 @@ class GeneEmbeddingsSet:
             f"n_common_genes={self.n_common_genes}, "
             f"align_on='{self._align_on}', "
             f"keys={keys}"
+            f")"
+        )
+
+
+class DatasetGeneEmbeddings:
+    """Container for expression-contextualized gene embeddings across multiple datasets.
+
+    Maps dataset names to ``GeneEmbeddingsSet`` instances. Each dataset may have
+    a different gene vocabulary (e.g., different highly-variable gene selections
+    from scGPT), but within a dataset all categories share the same genes.
+
+    This replaces the old ``DatasetExpressionEmbeddings`` class, with each
+    dataset's embeddings now stored as a ``GeneEmbeddingsSet`` (dict of 2D
+    ``GeneEmbeddings``) rather than an ``ExpressionEmbeddings`` (3D tensor +
+    category_dict).
+
+    Attributes
+    ----------
+    n_datasets : int
+        Number of datasets.
+    dataset_names : List[str]
+        Ordered list of dataset names.
+    summary : pd.DataFrame
+        One row per dataset with gene count, embedding count, and category info.
+
+    Public Methods
+    --------------
+    from_gene_embeddings_sets(sets)
+        Classmethod: construct from a list of (dataset_name, GeneEmbeddingsSet) pairs.
+    get(dataset_name)
+        Return the GeneEmbeddingsSet for a given dataset.
+    keys()
+        Return dataset names.
+    values()
+        Return GeneEmbeddingsSet instances.
+    items()
+        Return (dataset_name, GeneEmbeddingsSet) pairs.
+    all_gene_embeddings()
+        Return a flat list of all GeneEmbeddings across all datasets.
+
+    Examples
+    --------
+    >>> dge = DatasetGeneEmbeddings({
+    ...     "pbmc": pbmc_gene_emb_set,
+    ...     "tumor": tumor_gene_emb_set,
+    ... })
+    >>> dge.n_datasets
+    2
+    >>> dge["pbmc"].n_common_genes
+    1200
+    >>> dge["tumor"].n_common_genes
+    1500
+    >>> all_embs = dge.all_gene_embeddings()  # flat list for cross-dataset alignment
+    """
+
+    def __init__(self, data: Dict[str, GeneEmbeddingsSet]):
+        """Initialize DatasetGeneEmbeddings.
+
+        Parameters
+        ----------
+        data : Dict[str, GeneEmbeddingsSet]
+            Mapping from dataset name to GeneEmbeddingsSet.
+
+        Raises
+        ------
+        ValueError
+            If data is empty.
+            If any value is not a GeneEmbeddingsSet.
+        """
+        if len(data) == 0:
+            raise ValueError("DatasetGeneEmbeddings requires at least one dataset")
+
+        for name, ge_set in data.items():
+            if not isinstance(ge_set, GeneEmbeddingsSet):
+                raise ValueError(
+                    f"Dataset '{name}' value must be a GeneEmbeddingsSet, "
+                    f"got {type(ge_set)}"
+                )
+
+        self._data: Dict[str, GeneEmbeddingsSet] = dict(data)
+
+    # --- Properties ---
+
+    @property
+    def n_datasets(self) -> int:
+        """Number of datasets."""
+        return len(self._data)
+
+    @property
+    def dataset_names(self) -> List[str]:
+        """Ordered list of dataset names."""
+        return list(self._data.keys())
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """Summary DataFrame with one row per dataset.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: dataset_name, n_embeddings, n_common_genes, align_on,
+            embed_dims (set of unique embed_dims across categories).
+        """
+        rows = []
+        for name, ge_set in self._data.items():
+            embed_dims = {emb.embed_dim for emb in ge_set.values()}
+            rows.append(
+                {
+                    "dataset_name": name,
+                    "n_embeddings": ge_set.n_embeddings,
+                    "n_common_genes": ge_set.n_common_genes,
+                    "align_on": ge_set.align_on,
+                    "embed_dims": embed_dims,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    # --- Public methods ---
+
+    def all_gene_embeddings(self) -> List[GeneEmbeddings]:
+        """Return a flat list of all GeneEmbeddings across all datasets.
+
+        Useful as input to ``GeneEmbeddingsSet.from_gene_embeddings`` when
+        you want to align embeddings across datasets (which may require
+        intersecting to common genes).
+
+        Returns
+        -------
+        List[GeneEmbeddings]
+            All GeneEmbeddings from all datasets, in dataset-then-category order.
+        """
+        result = []
+        for ge_set in self._data.values():
+            result.extend(ge_set.values())
+        return result
+
+    # --- Dict-like access ---
+
+    def get(self, dataset_name: str) -> GeneEmbeddingsSet:
+        """Get GeneEmbeddingsSet by dataset name.
+
+        Parameters
+        ----------
+        dataset_name : str
+            Name of the dataset.
+
+        Returns
+        -------
+        GeneEmbeddingsSet
+            The embeddings for that dataset.
+
+        Raises
+        ------
+        KeyError
+            If dataset_name is not found.
+        """
+        if dataset_name not in self._data:
+            raise KeyError(
+                f"Dataset '{dataset_name}' not found. "
+                f"Available datasets: {list(self._data.keys())}"
+            )
+        return self._data[dataset_name]
+
+    def __getitem__(self, dataset_name: str) -> GeneEmbeddingsSet:
+        return self.get(dataset_name)
+
+    def __contains__(self, dataset_name: str) -> bool:
+        return dataset_name in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys(self):
+        """Return dataset names."""
+        return self._data.keys()
+
+    def values(self):
+        """Return GeneEmbeddingsSet instances."""
+        return self._data.values()
+
+    def items(self):
+        """Return (dataset_name, GeneEmbeddingsSet) pairs."""
+        return self._data.items()
+
+    # --- Dunder methods ---
+
+    def __repr__(self) -> str:
+        datasets = list(self._data.keys())
+        total_embeddings = sum(ge_set.n_embeddings for ge_set in self._data.values())
+        return (
+            f"DatasetGeneEmbeddings("
+            f"n_datasets={self.n_datasets}, "
+            f"total_embeddings={total_embeddings}, "
+            f"datasets={datasets}"
             f")"
         )
 
@@ -1424,8 +1643,11 @@ class FoundationModel(BaseModel):
 
     Attributes
     ----------
-    dataset_expression_embeddings : Optional[DatasetExpressionEmbeddings]
-        Contexutalized gene embeddings for 0+ datasets, keyed by dataset name
+    dataset_expression_embeddings : Optional[DatasetGeneEmbeddings]
+        Contextualized gene embeddings for 0+ datasets, keyed by dataset name.
+        Each dataset contains a GeneEmbeddingsSet (one GeneEmbeddings per
+        category/cell type), which may have different gene vocabularies across
+        datasets (e.g., different HVG selections from scGPT).
     embed_dim : int
         Embedding dimension
     gene_annotations : pd.DataFrame
@@ -1473,7 +1695,7 @@ class FoundationModel(BaseModel):
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     # Core data
-    dataset_expression_embeddings: Optional[DatasetExpressionEmbeddings] = None
+    dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None
     gene_annotations: pd.DataFrame
     weights: FoundationModelWeights
 
@@ -1492,9 +1714,7 @@ class FoundationModel(BaseModel):
         weights: FoundationModelWeights,
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
-        dataset_expression_embeddings: Optional[
-            Union[DatasetExpressionEmbeddings, List[ExpressionEmbeddings]]
-        ] = None,
+        dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None,
         **kwargs,
     ):
         """
@@ -1509,9 +1729,9 @@ class FoundationModel(BaseModel):
         model_metadata : dict or ModelMetadata
             Model metadata containing model_name, n_genes, n_vocab, ordered_vocabulary,
             embed_dim, n_layers, n_heads
-        dataset_expression_embeddings : DatasetExpressionEmbeddings or List, optional
-            Contexutalized gene embeddings for 0+ datasets. Accepts DatasetExpressionEmbeddings
-            or a list (converted to DatasetExpressionEmbeddings internally).
+        dataset_gene_embeddings : DatasetGeneEmbeddings, optional
+            Contextualized gene embeddings for 0+ datasets. Each dataset is a
+            GeneEmbeddingsSet containing one GeneEmbeddings per category.
         **kwargs
             Additional keyword arguments (ignored, for compatibility)
 
@@ -1549,26 +1769,20 @@ class FoundationModel(BaseModel):
             ModelMetadata(**model_metadata)
             metadata_dict = model_metadata
 
-        if dataset_expression_embeddings is not None:
-            if isinstance(dataset_expression_embeddings, list):
-                dataset_expression_embeddings = DatasetExpressionEmbeddings(
-                    dataset_expression_embeddings
-                )
-            elif not isinstance(
-                dataset_expression_embeddings, DatasetExpressionEmbeddings
-            ):
+        if dataset_gene_embeddings is not None:
+            if not isinstance(dataset_gene_embeddings, DatasetGeneEmbeddings):
                 raise ValueError(
-                    "dataset_expression_embeddings must be DatasetExpressionEmbeddings "
-                    f"or list, got {type(dataset_expression_embeddings)}"
+                    "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
+                    f"got {type(dataset_gene_embeddings)}"
                 )
         else:
-            dataset_expression_embeddings = None
+            dataset_gene_embeddings = None
 
         # Call parent __init__ with unpacked metadata
         super().__init__(
             weights=weights,
             gene_annotations=gene_annotations_df,
-            dataset_expression_embeddings=dataset_expression_embeddings,
+            dataset_gene_embeddings=dataset_gene_embeddings,
             **metadata_dict,
         )
 
@@ -1584,11 +1798,11 @@ class FoundationModel(BaseModel):
 
         return v
 
-    @field_validator(FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS)
-    def validate_dataset_expression_embeddings(cls, v):
-        if v is not None and not isinstance(v, DatasetExpressionEmbeddings):
+    @field_validator(FM_DEFS.DATASET_GENE_EMBEDDINGS)
+    def validate_dataset_gene_embeddings(cls, v):
+        if v is not None and not isinstance(v, DatasetGeneEmbeddings):
             raise ValueError(
-                "dataset_expression_embeddings must be DatasetExpressionEmbeddings or None, "
+                "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
                 f"got {type(v)}"
             )
         return v
@@ -2188,7 +2402,7 @@ class FoundationModel(BaseModel):
             weights_dict,
             gene_annotations,
             model_metadata,
-            expression_embeddings_metadata,
+            dataset_gene_embeddings_metadata,
         ) = _load_results(output_dir, prefix)
 
         # Infer model_variant from prefix if not in metadata
@@ -2221,41 +2435,74 @@ class FoundationModel(BaseModel):
             attention_layers=attention_layers,
         )
 
-        # Reconstruct ExpressionEmbeddings from saved data
-        expr_emb_list: List[ExpressionEmbeddings] = []
-        if expression_embeddings_metadata:
+        dataset_gene_embeddings = None
+        if dataset_gene_embeddings_metadata:
             logger.info(
-                f"Loading {len(expression_embeddings_metadata)} expression embeddings"
+                f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
             )
-            for i, expr_emb_meta in enumerate(expression_embeddings_metadata):
-                # Get embeddings tensor from weights_dict
-                embeddings_key = f"expression_embeddings_{i}"
-                if embeddings_key in weights_dict:
-                    embeddings = weights_dict[embeddings_key]
-                    # Create ExpressionEmbeddings instance
-                    expr_emb = ExpressionEmbeddings(
-                        embeddings=embeddings,
-                        ordered_genes=expr_emb_meta.get(FM_DEFS.ORDERED_GENES),
-                        category_dict=expr_emb_meta.get(FM_DEFS.CATEGORY_DICT),
-                        dataset_name=expr_emb_meta.get(FM_DEFS.DATASET_NAME),
-                        dataset_uri=expr_emb_meta.get(FM_DEFS.DATASET_URI),
-                    )
-                    expr_emb_list.append(expr_emb)
-                else:
+
+            # Group saved entries by dataset_name to reconstruct per-dataset GeneEmbeddingSets
+            # Each saved entry is one GeneEmbeddings (one category from one dataset)
+            dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
+
+            for i, ge_emb_meta in enumerate(dataset_gene_embeddings_metadata):
+                embeddings_key = f"dataset_gene_embeddings_{i}"
+                if embeddings_key not in weights_dict:
                     logger.warning(
                         f"Expression embeddings metadata found but embeddings tensor "
                         f"'{embeddings_key}' not found in weights file"
                     )
+                    continue
 
-        dataset_expression_embeddings = (
-            DatasetExpressionEmbeddings(expr_emb_list) if expr_emb_list else None
-        )
+                embedding = weights_dict[embeddings_key]
+
+                # Reconstruct gene_annotations DataFrame (required — no fallback)
+                ge_annotations = ge_emb_meta.get(FM_DEFS.GENE_ANNOTATIONS)
+                if ge_annotations is None:
+                    raise ValueError(
+                        f"Dataset gene embedding {i} is missing per-embedding "
+                        f"gene_annotations. This file was saved with an older "
+                        f"format that is no longer supported. Re-run the ETL "
+                        f"pipeline to regenerate model outputs."
+                    )
+                ge_annotations_df = pd.DataFrame(ge_annotations)
+
+                ge = GeneEmbeddings(
+                    embedding=embedding,
+                    ordered_gene_ids=ge_emb_meta.get(FM_DEFS.ORDERED_GENES, []),
+                    gene_annotations=ge_annotations_df,
+                    model_name=ge_emb_meta.get(
+                        FM_DEFS.MODEL_NAME,
+                        model_metadata.get(FM_DEFS.MODEL_NAME),
+                    ),
+                    model_variant=ge_emb_meta.get(
+                        FM_DEFS.MODEL_VARIANT,
+                        model_metadata.get(FM_DEFS.MODEL_VARIANT),
+                    ),
+                    dataset_name=ge_emb_meta.get(FM_DEFS.DATASET_NAME),
+                    dataset_uri=ge_emb_meta.get(FM_DEFS.DATASET_URI),
+                    category=ge_emb_meta.get(FM_DEFS.CATEGORY),
+                )
+
+                ds_name = ge.dataset_name or "unknown"
+                if ds_name not in dataset_gene_embeddings_lists:
+                    dataset_gene_embeddings_lists[ds_name] = []
+                dataset_gene_embeddings_lists[ds_name].append(ge)
+
+            # Build GeneEmbeddingsSet per dataset, then wrap in DatasetGeneEmbeddings
+            if dataset_gene_embeddings_lists:
+                dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+                for ds_name, ge_list in dataset_gene_embeddings_lists.items():
+                    dataset_sets[ds_name] = GeneEmbeddingsSet.from_gene_embeddings(
+                        ge_list
+                    )
+                dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
 
         return cls(
             weights=weights,
             gene_annotations=gene_annotations,
             model_metadata=model_metadata,
-            dataset_expression_embeddings=dataset_expression_embeddings,
+            dataset_gene_embeddings=dataset_gene_embeddings,
         )
 
     def save(self, output_dir: str, prefix: str) -> None:
@@ -2305,12 +2552,28 @@ class FoundationModel(BaseModel):
             FM_DEFS.ATTENTION_WEIGHTS: attention_weights_dict,
         }
 
-        # Add expression embeddings tensors to weights_dict
-        if self.dataset_expression_embeddings:
-            expr_emb_list = list(self.dataset_expression_embeddings.values())
-            logger.info(f"Saving {len(expr_emb_list)} expression embeddings")
-            for i, expr_emb in enumerate(expr_emb_list):
-                weights_dict[f"expression_embeddings_{i}"] = expr_emb.embeddings
+        # Iterate: DatasetGeneEmbeddings -> GeneEmbeddingsSet -> GeneEmbeddings
+        # Each GeneEmbeddings gets a sequential index for the weights key
+        dataset_gene_embeddings_metadata = []
+        if self.dataset_gene_embeddings:
+            all_gene_embeddings = self.dataset_gene_embeddings.all_gene_embeddings()
+            logger.info(f"Saving {len(all_gene_embeddings)} dataset gene embeddings")
+
+            for i, ge in enumerate(all_gene_embeddings):
+                # Save 2D embedding array
+                weights_dict[f"dataset_gene_embeddings_{i}"] = ge.embedding
+
+                # Save metadata per GeneEmbeddings
+                ge_emb_meta = {
+                    FM_DEFS.ORDERED_GENES: ge.ordered_gene_ids,
+                    FM_DEFS.GENE_ANNOTATIONS: ge.gene_annotations.to_dict("records"),
+                    FM_DEFS.MODEL_NAME: ge.model_name,
+                    FM_DEFS.MODEL_VARIANT: ge.model_variant,
+                    FM_DEFS.DATASET_NAME: ge.dataset_name,
+                    FM_DEFS.DATASET_URI: ge.dataset_uri,
+                    FM_DEFS.CATEGORY: ge.category,
+                }
+                dataset_gene_embeddings_metadata.append(ge_emb_meta)
 
         # Save weights to npz
         np.savez(weights_path, **weights_dict)
@@ -2327,23 +2590,11 @@ class FoundationModel(BaseModel):
             FM_DEFS.N_HEADS: self.n_heads,
         }
 
-        # Prepare expression embeddings metadata
-        expression_embeddings_metadata = []
-        if self.dataset_expression_embeddings:
-            for expr_emb in self.dataset_expression_embeddings.values():
-                expr_emb_meta = {
-                    FM_DEFS.ORDERED_GENES: expr_emb.ordered_genes,
-                    FM_DEFS.CATEGORY_DICT: expr_emb.category_dict,
-                    FM_DEFS.DATASET_NAME: expr_emb.dataset_name,
-                    FM_DEFS.DATASET_URI: expr_emb.dataset_uri,
-                }
-                expression_embeddings_metadata.append(expr_emb_meta)
-
         # Combine gene_annotations and model_metadata into single JSON
         combined_metadata = {
             FM_DEFS.MODEL_METADATA: model_metadata,
             FM_DEFS.GENE_ANNOTATIONS: self.gene_annotations.to_dict("records"),
-            FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS: expression_embeddings_metadata,
+            FM_DEFS.DATASET_GENE_EMBEDDINGS: dataset_gene_embeddings_metadata,
         }
 
         with open(metadata_path, "w") as f:
@@ -3946,8 +4197,8 @@ def _load_results(
         DataFrame with gene annotations
     model_metadata : dict
         Dictionary with model metadata
-    expression_embeddings_metadata : List[dict]
-        List of dictionaries containing expression embeddings metadata
+    dataset_gene_embeddings_metadata : List[dict]
+        List of dictionaries containing dataset gene embeddings metadata
     """
     weights_filename = FM_DEFS.WEIGHTS_TEMPLATE.format(prefix=prefix)
     metadata_filename = FM_DEFS.METADATA_TEMPLATE.format(prefix=prefix)
@@ -3977,8 +4228,8 @@ def _load_results(
     gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
 
     # Load expression embeddings metadata (if present)
-    expression_embeddings_metadata = combined_metadata.get(
-        FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS, []
+    dataset_gene_embeddings_metadata = combined_metadata.get(
+        FM_DEFS.DATASET_GENE_EMBEDDINGS, []
     )
 
     logger.info("Successfully loaded all results")
@@ -3987,5 +4238,5 @@ def _load_results(
         weights_dict,
         gene_annotations,
         model_metadata,
-        expression_embeddings_metadata,
+        dataset_gene_embeddings_metadata,
     )

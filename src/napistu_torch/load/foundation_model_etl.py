@@ -48,6 +48,7 @@ from napistu_torch.load.foundation_models import (
     FoundationModel,
     FoundationModelWeights,
     GeneEmbeddings,
+    GeneEmbeddingsSet,
 )
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.optional import (
@@ -84,25 +85,29 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def expression_tensor_to_gene_embeddings(
+def expression_tensor_to_gene_embeddings_set(
     embeddings_3d: Union[np.ndarray, torch.Tensor],
     ordered_genes: List[str],
     gene_annotations: pd.DataFrame,
     category_dict: Dict[int, str],
     gene_id_column: str = ONTOLOGIES.ENSEMBL_GENE,
+    align_on: str = ONTOLOGIES.ENSEMBL_GENE,
     model_name: Optional[str] = None,
     model_variant: Optional[str] = None,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
-) -> List[GeneEmbeddings]:
-    """Convert a 3D expression embedding tensor into a list of GeneEmbeddings.
+) -> "GeneEmbeddingsSet":
+    """Convert a 3D expression embedding tensor into a GeneEmbeddingsSet.
 
     Slices a (n_categories, n_genes, embed_dim) tensor along the category axis
     and creates one ``GeneEmbeddings`` per category, each with properly filtered
-    and aligned gene annotations.
+    and aligned gene annotations. The resulting list is wrapped in a
+    ``GeneEmbeddingsSet`` since all categories within a dataset share the same
+    gene vocabulary.
 
-    This replaces the ``ExpressionEmbeddings`` class by producing a flat list
-    of ``GeneEmbeddings`` where each entry owns its full gene metadata.
+    This replaces the ``ExpressionEmbeddings`` class. Each category becomes a
+    ``GeneEmbeddings`` that owns its full gene metadata, and the set provides
+    dict-like access by source_label.
 
     Parameters
     ----------
@@ -123,6 +128,9 @@ def expression_tensor_to_gene_embeddings(
     gene_id_column : str, optional
         Column in ``gene_annotations`` to match ``ordered_genes`` against
         (default: 'ensembl_gene').
+    align_on : str, optional
+        Column in gene_annotations used for alignment validation in the
+        resulting GeneEmbeddingsSet (default: 'ensembl_gene').
     model_name : Optional[str]
         Source model name.
     model_variant : Optional[str]
@@ -134,13 +142,10 @@ def expression_tensor_to_gene_embeddings(
 
     Returns
     -------
-    List[GeneEmbeddings]
-        One GeneEmbeddings per category, each with:
-        - ``embedding``: 2D slice of shape (n_genes, embed_dim)
-        - ``ordered_gene_ids``: from ``ordered_genes``
-        - ``gene_annotations``: filtered and reordered to match
-        - ``category``: set from ``category_dict``
-        - other metadata propagated from parameters
+    GeneEmbeddingsSet
+        Set of GeneEmbeddings, one per category, all sharing the same gene
+        vocabulary. Keyed by ``source_label`` (which encodes
+        model/variant/dataset/category).
 
     Raises
     ------
@@ -156,7 +161,7 @@ def expression_tensor_to_gene_embeddings(
     >>> cluster_embeddings, selected_genes, cell_cluster_dict = (
     ...     _aidocell_get_gene_embedding_by_cell_type(model, adata, gene_annotations)
     ... )
-    >>> gene_emb_list = expression_tensor_to_gene_embeddings(
+    >>> gene_emb_set = expression_tensor_to_gene_embeddings_set(
     ...     embeddings_3d=cluster_embeddings,
     ...     ordered_genes=selected_genes,
     ...     gene_annotations=gene_annotations,
@@ -166,9 +171,9 @@ def expression_tensor_to_gene_embeddings(
     ...     dataset_name='efthymiou',
     ...     dataset_uri='/path/to/efthymiou.h5ad',
     ... )
-    >>> len(gene_emb_list)  # one per cell type cluster
+    >>> gene_emb_set.n_embeddings  # one per cell type cluster
     12
-    >>> gene_emb_list[0].category
+    >>> gene_emb_set["AIDOCell_aido_cell_100m/efthymiou/T_cell"].category
     'T_cell'
     """
     # Convert torch to numpy
@@ -203,7 +208,7 @@ def expression_tensor_to_gene_embeddings(
 
     # Filter and reorder gene annotations to match ordered_genes
     aligned_annotations = filter_and_reorder_df(
-        df=gene_annotations,
+        gene_annotations=gene_annotations,
         target_ids=ordered_genes,
         id_column=gene_id_column,
     )
@@ -239,7 +244,7 @@ def expression_tensor_to_gene_embeddings(
         f"({n_genes} genes, {n_categories} categories)"
     )
 
-    return result
+    return GeneEmbeddingsSet.from_gene_embeddings(result, align_on=align_on)
 
 
 @require_bionty
