@@ -13,6 +13,14 @@ process_scgpt:
     Process a scGPT model and save the results.
 process_scprint:
     Process a scPRINT model and save the results.
+
+Each model has its own public process function and a similar set of private functions:
+*_extract_weights:
+    Extract the weights from the model returning a FoundationModelWeights instance.
+*_get_expression_embeddings:
+    Extract the expression embeddings from the model returning a GeneEmbeddingsSet instance.
+*_extract_attention_weights:
+    Extract the attention weights from the model returning a list of AttentionLayer instances.
 """
 
 from __future__ import annotations
@@ -160,8 +168,8 @@ def process_aidocell(
 
     # 2. Extract weights
     logger.info("2. Extracting weights...")
-    weights = _aidocell_extract_weights(model)
-    logger.info(f"   Embeddings: {weights.gene_embedding.shape}")
+    weights = _aidocell_extract_weights(model, gene_annotations)
+    logger.info(f"   Embeddings: {weights.gene_embedding.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -280,12 +288,12 @@ def process_scfoundation(
     logger.info("2. Extracting weights...")
     # Gene annotations are shared between AIDOCell and scFoundation
     gene_annotations = _aidocell_load_gene_annotations()
-    weights = _scfoundation_extract_weights(checkpoint, gene_annotations)
+    weights = _scfoundation_extract_weights(model, checkpoint, gene_annotations)
     metadata = _scfoundation_extract_metadata(checkpoint, gene_annotations)
     logger.info(
         f"   {len(gene_annotations)} genes, {metadata[FM_DEFS.N_LAYERS]} layers"
     )
-    logger.info(f"   Embeddings: {weights.gene_embedding.shape}")
+    logger.info(f"   Embeddings: {weights.gene_embedding.embed_dim}")
     logger.info(
         f"   Attention weights: {metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -380,8 +388,14 @@ def process_scgpt(
 
     # 3. Extract weights
     logger.info("3. Extracting weights...")
-    weights = _scgpt_extract_weights(model, vocab, model_metadata, checkpoint_path)
-    logger.info(f"   Embeddings: {weights.gene_embedding.shape}")
+    weights = _scgpt_extract_weights(
+        model=model,
+        vocab=vocab,
+        model_metadata=model_metadata,
+        checkpoint_path=checkpoint_path,
+        gene_annotations=gene_annotations,
+    )
+    logger.info(f"   Embeddings: {weights.gene_embedding.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -462,8 +476,8 @@ def process_scprint(
 
     # 2. Extract weights
     logger.info("2. Extracting weights...")
-    weights = _scprint_extract_weights(model)
-    logger.info(f"   Embeddings: {weights.gene_embedding.shape}")
+    weights = _scprint_extract_weights(model=model, gene_annotations=gene_annotations)
+    logger.info(f"   Embeddings: {weights.gene_embedding.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -540,7 +554,9 @@ def _aidocell_extract_attention_weights(model: Any) -> List[AttentionLayer]:
 
 
 @require_modelgenerator
-def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
+def _aidocell_extract_weights(
+    model: Any, gene_annotations: pd.DataFrame
+) -> FoundationModelWeights:
     """
     Extract model weights in the standardized format.
 
@@ -548,22 +564,28 @@ def _aidocell_extract_weights(model: Any) -> FoundationModelWeights:
     ----------
     model : Any
         The AIDOCell model
+    gene_annotations : pd.DataFrame
+        Gene annotations DataFrame
 
     Returns
     -------
     FoundationModelWeights
         FoundationModelWeights instance containing gene_embedding and attention_layers
     """
-    # Extract gene embeddings
     encoder = model.encoder
-    n_genes = len(_aidocell_load_gene_annotations())
+    n_genes = len(gene_annotations)
 
     with torch.no_grad():
         gene_positions = torch.arange(n_genes)
-        gene_embedding = encoder.position_embedding(gene_positions).cpu().numpy()
+        gene_embedding_array = encoder.position_embedding(gene_positions).cpu().numpy()
 
-    # Extract attention weights as AttentionLayer instances
     attention_layers = _aidocell_extract_attention_weights(model)
+
+    gene_embedding = GeneEmbeddings(
+        embedding=gene_embedding_array,
+        ordered_gene_ids=gene_annotations[FM_DEFS.VOCAB_NAME].tolist(),
+        gene_annotations=gene_annotations,
+    )
 
     return FoundationModelWeights(
         gene_embedding=gene_embedding, attention_layers=attention_layers
@@ -1370,6 +1392,50 @@ def _get_cell_clusters_and_category_dict(
 
 
 @require_modelgenerator
+def _scfoundation_extract_attention_weights(
+    model: "MaeAutobin",
+) -> List[AttentionLayer]:
+    """
+    Extract core attention weights (Q, K, V, O) from all scFoundation encoder layers.
+
+    Parameters
+    ----------
+    model : MaeAutobin
+        The scFoundation model (MaeAutobin from modelgenerator)
+
+    Returns
+    -------
+    List[AttentionLayer]
+        List of AttentionLayer instances
+    """
+    attention_layers = []
+    encoder = model.encoder
+    transformer_encoder = encoder.transformer_encoder
+    n_layers = len(transformer_encoder)
+
+    for layer_idx in range(n_layers):
+        layer = transformer_encoder[layer_idx]
+        self_attn = layer.self_attn
+        in_proj = self_attn.in_proj_weight.detach().cpu().numpy()
+        out_proj = self_attn.out_proj.weight.detach().cpu().numpy()
+
+        embed_dim = in_proj.shape[1]
+        w_q, w_k, w_v = _split_qkv_weights(in_proj, embed_dim)
+
+        attention_layers.append(
+            AttentionLayer(
+                layer_idx=layer_idx,
+                W_q=w_q,
+                W_k=w_k,
+                W_v=w_v,
+                W_o=out_proj,
+            )
+        )
+
+    return attention_layers
+
+
+@require_modelgenerator
 def _scfoundation_extract_metadata(
     checkpoint: dict, gene_annotations: pd.DataFrame
 ) -> Dict:
@@ -1409,15 +1475,19 @@ def _scfoundation_extract_metadata(
 
 @require_modelgenerator
 def _scfoundation_extract_weights(
-    checkpoint: dict, gene_annotations: pd.DataFrame
+    model: "MaeAutobin",
+    checkpoint: dict,
+    gene_annotations: pd.DataFrame,
 ) -> FoundationModelWeights:
     """
-    Extract gene embeddings and attention weights from scFoundation checkpoint.
+    Extract gene embeddings and attention weights from scFoundation model and checkpoint.
 
     Parameters
     ----------
+    model : MaeAutobin
+        Loaded scFoundation model (used for attention weights)
     checkpoint : dict
-        Loaded checkpoint for specific variant
+        Loaded checkpoint for gene embeddings and validation
     gene_annotations : pd.DataFrame
         Gene annotations table (used to determine N_GENES)
 
@@ -1453,7 +1523,7 @@ def _scfoundation_extract_weights(
             f"expected {SCFOUNDATION_DEFS.N_HEADS}"
         )
 
-    # Gene embeddings (exclude special tokens)
+    # Gene embeddings from checkpoint (pos_emb)
     gene_emb_full = state_dict["model.pos_emb.weight"].cpu().numpy()
     n_genes = len(gene_annotations)
 
@@ -1464,33 +1534,18 @@ def _scfoundation_extract_weights(
             f"expected {SCFOUNDATION_DEFS.N_GENES}"
         )
 
-    # Use actual values from checkpoint/annotations
-    gene_embedding = gene_emb_full[:n_genes, :]
+    gene_emb_array = gene_emb_full[:n_genes, :]
+    logger.info(f"  ✓ Extracted gene embeddings: {gene_emb_array.shape}")
 
-    logger.info(f"  ✓ Extracted gene embeddings: {gene_embedding.shape}")
-
-    # Attention layers
-    attention_layers = []
-    for layer_idx in range(n_encoder_layers):
-        # Combined QKV projection
-        in_proj_key = (
-            f"model.encoder.transformer_encoder.{layer_idx}.self_attn.in_proj_weight"
-        )
-        out_proj_key = (
-            f"model.encoder.transformer_encoder.{layer_idx}.self_attn.out_proj.weight"
-        )
-
-        in_proj = state_dict[in_proj_key].cpu().numpy()
-        out_proj = state_dict[out_proj_key].cpu().numpy()
-
-        # Split combined QKV (shape: [3*embed_dim, embed_dim])
-        w_q, w_k, w_v = _split_qkv_weights(in_proj, embed_dim)
-
-        attention_layers.append(
-            AttentionLayer(layer_idx=layer_idx, W_q=w_q, W_k=w_k, W_v=w_v, W_o=out_proj)
-        )
-
+    # Attention layers from model
+    attention_layers = _scfoundation_extract_attention_weights(model)
     logger.info(f"  ✓ Extracted {len(attention_layers)} attention layers")
+
+    gene_embedding = GeneEmbeddings(
+        embedding=gene_emb_array,
+        ordered_gene_ids=gene_annotations[FM_DEFS.VOCAB_NAME].tolist(),
+        gene_annotations=gene_annotations,
+    )
 
     return FoundationModelWeights(
         gene_embedding=gene_embedding, attention_layers=attention_layers
@@ -1681,12 +1736,75 @@ def _scfoundation_preprocess_dataset(
 
 
 @require_scgpt
+def _scgpt_extract_attention_weights(
+    state_dict: dict, n_layers: int, embed_dim: int
+) -> List[AttentionLayer]:
+    """
+    Extract core attention weights (Q, K, V, O) from scGPT checkpoint state_dict.
+
+    Note: scGPT model.state_dict() returns incorrect/shared weights, so we extract
+    from the checkpoint file's state_dict directly.
+
+    Parameters
+    ----------
+    state_dict : dict
+        Model state dict loaded from checkpoint file
+    n_layers : int
+        Number of transformer layers
+    embed_dim : int
+        Embedding dimension (d_model)
+
+    Returns
+    -------
+    List[AttentionLayer]
+        List of AttentionLayer instances
+    """
+    attention_layers = []
+    for layer_idx in range(n_layers):
+        wqkv_key = f"transformer_encoder.layers.{layer_idx}.self_attn.Wqkv.weight"
+        out_proj_key = (
+            f"transformer_encoder.layers.{layer_idx}.self_attn.out_proj.weight"
+        )
+
+        if wqkv_key not in state_dict:
+            raise KeyError(f"Could not find {wqkv_key} in state_dict")
+        if out_proj_key not in state_dict:
+            raise KeyError(f"Could not find {out_proj_key} in state_dict")
+
+        in_proj = state_dict[wqkv_key].clone()
+        out_proj = state_dict[out_proj_key].clone()
+
+        if in_proj.shape[0] != 3 * embed_dim:
+            raise ValueError(
+                f"Expected in_proj.shape[0] to be 3*d ({3*embed_dim}), "
+                f"but got {in_proj.shape[0]}"
+            )
+
+        in_proj_np = in_proj.cpu().detach().numpy()
+        w_q, w_k, w_v = _split_qkv_weights(in_proj_np, embed_dim)
+        w_o = out_proj.cpu().detach().numpy()
+
+        attention_layers.append(
+            AttentionLayer(
+                layer_idx=layer_idx,
+                W_q=w_q,
+                W_k=w_k,
+                W_v=w_v,
+                W_o=w_o,
+            )
+        )
+
+    return attention_layers
+
+
+@require_scgpt
 @require_torchtext
 def _scgpt_extract_weights(
-    model: TransformerModel,
+    model: "TransformerModel",
     vocab: GeneVocab,
     model_metadata: dict,
     checkpoint_path: str,
+    gene_annotations: pd.DataFrame,
     device: Optional[Union[str, torch.device]] = None,
 ) -> FoundationModelWeights:
     """
@@ -1705,6 +1823,9 @@ def _scgpt_extract_weights(
         Model metadata dictionary
     checkpoint_path : str
         Path to checkpoint file
+    gene_annotations : pd.DataFrame
+        Gene annotations DataFrame. Used to identify gene-only vocabulary
+        entries and strip special tokens.
     device : Optional[Union[str, torch.device]], optional
         Device to use for computation
 
@@ -1713,53 +1834,36 @@ def _scgpt_extract_weights(
     FoundationModelWeights
         Extracted model weights
     """
-    # Forward pass on selected device (MPS/CUDA/CPU); move model and inputs explicitly
     device = ensure_device(device, allow_autoselect=True)
     model = model.to(device)
+
+    # Get full vocabulary embeddings (includes special tokens)
     gene_ids = torch.arange(len(vocab), device=device)
-    embeddings = model.encoder(gene_ids).detach().cpu().numpy()
+    full_embeddings = model.encoder(gene_ids).detach().cpu().numpy()
+
+    # Strip special tokens: keep only genes present in gene_annotations
+    gene_vocab_names = gene_annotations[FM_DEFS.VOCAB_NAME].tolist()
+    gene_indices = [vocab[name] for name in gene_vocab_names]
+    gene_embedding_array = full_embeddings[gene_indices, :]
 
     # Load weights directly from checkpoint file (model.state_dict() is unreliable)
     state_dict = torch.load(checkpoint_path, map_location=DEVICE.CPU)
 
-    # Extract attention weights for all layers as AttentionLayer instances
-    attention_layers = []
+    # Extract attention weights via dedicated function (like AIDOCell, scPRINT)
     n_layers = model_metadata[FM_DEFS.N_LAYERS]
     d = model_metadata[FM_DEFS.EMBED_DIM]
+    attention_layers = _scgpt_extract_attention_weights(
+        state_dict=state_dict, n_layers=n_layers, embed_dim=d
+    )
 
-    for layer_idx in range(n_layers):
-        # scGPT uses Wqkv.weight for the combined QKV projection
-        wqkv_key = f"transformer_encoder.layers.{layer_idx}.self_attn.Wqkv.weight"
-        out_proj_key = (
-            f"transformer_encoder.layers.{layer_idx}.self_attn.out_proj.weight"
-        )
-
-        if wqkv_key not in state_dict:
-            raise KeyError(f"Could not find {wqkv_key} in state_dict")
-        if out_proj_key not in state_dict:
-            raise KeyError(f"Could not find {out_proj_key} in state_dict")
-
-        # Clone immediately to ensure independent copies
-        in_proj = state_dict[wqkv_key].clone()
-        out_proj = state_dict[out_proj_key].clone()
-
-        # Validate shape
-        if in_proj.shape[0] != 3 * d:
-            raise ValueError(
-                f"Expected in_proj.shape[0] to be 3*d ({3*d}), but got {in_proj.shape[0]}"
-            )
-
-        # Split QKV into separate matrices and convert to numpy
-        in_proj_np = in_proj.clone().cpu().detach().numpy()
-        w_q, w_k, w_v = _split_qkv_weights(in_proj_np, d)
-        w_o = out_proj.clone().cpu().detach().numpy()
-
-        attention_layers.append(
-            AttentionLayer(layer_idx=layer_idx, W_q=w_q, W_k=w_k, W_v=w_v, W_o=w_o)
-        )
+    gene_embedding = GeneEmbeddings(
+        embedding=gene_embedding_array,
+        ordered_gene_ids=gene_annotations[FM_DEFS.VOCAB_NAME].tolist(),
+        gene_annotations=gene_annotations,
+    )
 
     return FoundationModelWeights(
-        gene_embedding=embeddings, attention_layers=attention_layers
+        gene_embedding=gene_embedding, attention_layers=attention_layers
     )
 
 
@@ -2268,7 +2372,9 @@ def _scprint_extract_attention_weights(model: scPrint) -> List[AttentionLayer]:
 
 
 @require_scprint
-def _scprint_extract_weights(model: scPrint) -> FoundationModelWeights:
+def _scprint_extract_weights(
+    model: scPrint, gene_annotations: pd.DataFrame
+) -> FoundationModelWeights:
     """
     Extract model weights in the standardized format.
 
@@ -2276,16 +2382,21 @@ def _scprint_extract_weights(model: scPrint) -> FoundationModelWeights:
     ----------
     model : scPrint
         The scPRINT model
+    gene_annotations : pd.DataFrame
+        Gene annotations DataFrame
 
     Returns
     -------
     FoundationModelWeights
         FoundationModelWeights instance containing gene_embedding and attention_layers
     """
-    # Extract gene embeddings
-    gene_embedding = model.gene_encoder.embeddings.weight.detach().cpu().numpy()
+    gene_embedding_array = model.gene_encoder.embeddings.weight.detach().cpu().numpy()
+    gene_embedding = GeneEmbeddings(
+        embedding=gene_embedding_array,
+        ordered_gene_ids=gene_annotations[FM_DEFS.VOCAB_NAME].tolist(),
+        gene_annotations=gene_annotations,
+    )
 
-    # Extract attention weights as AttentionLayer instances
     attention_layers = _scprint_extract_attention_weights(model)
 
     return FoundationModelWeights(

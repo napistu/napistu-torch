@@ -994,8 +994,8 @@ class FoundationModelWeights(BaseModel):
 
     Attributes
     ----------
-    gene_embedding : np.ndarray
-        Gene embedding matrix of shape (n_vocab, embed_dim)
+    gene_embedding : GeneEmbeddings
+        Static gene embeddings for the model vocabulary
     attention_layers : List[AttentionLayer]
         List of attention layers, one per transformer layer
 
@@ -1009,15 +1009,13 @@ class FoundationModelWeights(BaseModel):
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
-    gene_embedding: np.ndarray
+    gene_embedding: GeneEmbeddings
     attention_layers: List[AttentionLayer]
 
     @field_validator(FM_DEFS.GENE_EMBEDDING)
     def validate_gene_embedding(cls, v):
-        if not isinstance(v, np.ndarray):
-            raise ValueError("gene_embedding must be a numpy array")
-        if v.ndim != 2:
-            raise ValueError("gene_embedding must be 2-dimensional")
+        if not isinstance(v, GeneEmbeddings):
+            raise ValueError("gene_embedding must be a GeneEmbeddings instance")
         return v
 
     @field_validator(FM_DEFS.ATTENTION_LAYERS)
@@ -1035,7 +1033,7 @@ class FoundationModelWeights(BaseModel):
     @model_validator(mode="after")
     def validate_embedding_attention_consistency(self):
         """Validate that embedding dimensions are consistent with attention weights."""
-        embed_dim = self.gene_embedding.shape[1]
+        embed_dim = self.gene_embedding.embedding.shape[1]
 
         # Check that all attention weight matrices have consistent dimensions
         for layer in self.attention_layers:
@@ -1053,7 +1051,7 @@ class FoundationModelWeights(BaseModel):
         self,
         layer_idx: int,
         n_heads: int,
-        vocab_mask: Optional[np.ndarray] = None,
+        gene_mask: Optional[np.ndarray] = None,
         apply_softmax: bool = True,
         return_tensor: bool = False,
         device: Optional[Union[str, torch.device]] = None,
@@ -1067,10 +1065,10 @@ class FoundationModelWeights(BaseModel):
             Index of the layer to compute attention for
         n_heads : int
             Number of attention heads in the model
-        vocab_mask : np.ndarray, optional
-            Boolean mask of shape (n_vocab,) indicating which vocabulary items to include.
+        gene_mask : np.ndarray, optional
+            Boolean mask of shape (n_genes,) indicating which genes to include.
             If provided, only embeddings corresponding to True values will be used.
-            Default: None.
+            Default: None (use all genes).
         apply_softmax : bool, optional
             If True, apply softmax to get attention probabilities (default: True).
             If False, return raw attention scores (Q @ K.T / sqrt(d_k))
@@ -1083,20 +1081,13 @@ class FoundationModelWeights(BaseModel):
         Returns
         -------
         torch.Tensor or np.ndarray
-            Attention scores matrix. If vocab_mask is provided, shape is (n_selected, n_selected),
-            otherwise shape is (n_vocab, n_vocab). Softmax is applied.
+            Attention scores matrix of shape (n_selected, n_selected) if gene_mask
+            is provided, otherwise (n_genes, n_genes).
 
         Raises
         ------
         ValueError
-            If layer_idx is out of range or vocab_mask has incorrect shape
-
-        Examples
-        --------
-        >>> attention = model.weights.compute_attention_from_weights(
-        ...     layer_idx=0,
-        ...     n_heads=model.n_heads
-        ... )
+            If layer_idx is out of range or gene_mask has incorrect shape
         """
         if layer_idx >= len(self.attention_layers):
             raise ValueError(
@@ -1104,16 +1095,16 @@ class FoundationModelWeights(BaseModel):
                 f"(model has {len(self.attention_layers)} layers)"
             )
 
-        # Apply vocab_mask to filter embeddings if provided
-        embeddings = self.gene_embedding
-        if vocab_mask is not None:
-            vocab_mask = np.asarray(vocab_mask, dtype=bool)
-            n_vocab = self.gene_embedding.shape[0]
-            if vocab_mask.shape != (n_vocab,):
+        embeddings = self.gene_embedding.embedding
+        n_genes = self.gene_embedding.n_genes
+
+        if gene_mask is not None:
+            gene_mask = np.asarray(gene_mask, dtype=bool)
+            if gene_mask.shape != (n_genes,):
                 raise ValueError(
-                    f"vocab_mask must have shape ({n_vocab},), got {vocab_mask.shape}"
+                    f"gene_mask must have shape ({n_genes},), got {gene_mask.shape}"
                 )
-            embeddings = embeddings[vocab_mask]
+            embeddings = embeddings[gene_mask]
 
         layer = self.attention_layers[layer_idx]
 
@@ -2047,6 +2038,7 @@ class FoundationModel(BaseModel):
             weights_dict,
             gene_annotations,
             model_metadata,
+            static_gene_embedding_metadata,
             dataset_gene_embeddings_metadata,
         ) = _load_results(output_dir, prefix)
 
@@ -2075,19 +2067,32 @@ class FoundationModel(BaseModel):
             )
         ]
 
+        # Reconstruct static gene embedding as GeneEmbeddings
+        if static_gene_embedding_metadata is None:
+            raise ValueError(
+                "Static gene embedding metadata not found in saved files. "
+                "This file was saved with an older format that is no longer "
+                "supported. Re-run the ETL pipeline to regenerate model outputs."
+            )
+
+        gene_embedding = _gene_embeddings_from_save_dict(
+            embedding=weights_dict[FM_DEFS.GENE_EMBEDDING],
+            metadata=static_gene_embedding_metadata,
+            fallback_metadata=model_metadata,
+        )
+
         weights = FoundationModelWeights(
-            gene_embedding=weights_dict[FM_DEFS.GENE_EMBEDDING],
+            gene_embedding=gene_embedding,
             attention_layers=attention_layers,
         )
 
+        # Reconstruct dataset gene embeddings
         dataset_gene_embeddings = None
         if dataset_gene_embeddings_metadata:
             logger.info(
                 f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
             )
 
-            # Group saved entries by dataset_name to reconstruct per-dataset GeneEmbeddingSets
-            # Each saved entry is one GeneEmbeddings (one category from one dataset)
             dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
 
             for i, ge_emb_meta in enumerate(dataset_gene_embeddings_metadata):
@@ -2099,34 +2104,10 @@ class FoundationModel(BaseModel):
                     )
                     continue
 
-                embedding = weights_dict[embeddings_key]
-
-                # Reconstruct gene_annotations DataFrame (required — no fallback)
-                ge_annotations = ge_emb_meta.get(FM_DEFS.GENE_ANNOTATIONS)
-                if ge_annotations is None:
-                    raise ValueError(
-                        f"Dataset gene embedding {i} is missing per-embedding "
-                        f"gene_annotations. This file was saved with an older "
-                        f"format that is no longer supported. Re-run the ETL "
-                        f"pipeline to regenerate model outputs."
-                    )
-                ge_annotations_df = pd.DataFrame(ge_annotations)
-
-                ge = GeneEmbeddings(
-                    embedding=embedding,
-                    ordered_gene_ids=ge_emb_meta.get(FM_DEFS.ORDERED_GENES, []),
-                    gene_annotations=ge_annotations_df,
-                    model_name=ge_emb_meta.get(
-                        FM_DEFS.MODEL_NAME,
-                        model_metadata.get(FM_DEFS.MODEL_NAME),
-                    ),
-                    model_variant=ge_emb_meta.get(
-                        FM_DEFS.MODEL_VARIANT,
-                        model_metadata.get(FM_DEFS.MODEL_VARIANT),
-                    ),
-                    dataset_name=ge_emb_meta.get(FM_DEFS.DATASET_NAME),
-                    dataset_uri=ge_emb_meta.get(FM_DEFS.DATASET_URI),
-                    category=ge_emb_meta.get(FM_DEFS.CATEGORY),
+                ge = _gene_embeddings_from_save_dict(
+                    embedding=weights_dict[embeddings_key],
+                    metadata=ge_emb_meta,
+                    fallback_metadata=model_metadata,
                 )
 
                 ds_name = ge.dataset_name or "unknown"
@@ -2192,33 +2173,25 @@ class FoundationModel(BaseModel):
             for layer in self.weights.attention_layers
         }
 
+        # Serialize static gene embedding
+        static_ge_meta = _gene_embeddings_to_save_dict(self.weights.gene_embedding)
+
         weights_dict = {
-            FM_DEFS.GENE_EMBEDDING: self.weights.gene_embedding,
+            FM_DEFS.GENE_EMBEDDING: self.weights.gene_embedding.embedding,
             FM_DEFS.ATTENTION_WEIGHTS: attention_weights_dict,
         }
 
         # Iterate: DatasetGeneEmbeddings -> GeneEmbeddingsSet -> GeneEmbeddings
-        # Each GeneEmbeddings gets a sequential index for the weights key
         dataset_gene_embeddings_metadata = []
         if self.dataset_gene_embeddings:
             all_gene_embeddings = self.dataset_gene_embeddings.all_gene_embeddings()
             logger.info(f"Saving {len(all_gene_embeddings)} dataset gene embeddings")
 
             for i, ge in enumerate(all_gene_embeddings):
-                # Save 2D embedding array
                 weights_dict[f"dataset_gene_embeddings_{i}"] = ge.embedding
-
-                # Save metadata per GeneEmbeddings
-                ge_emb_meta = {
-                    FM_DEFS.ORDERED_GENES: ge.ordered_gene_ids,
-                    FM_DEFS.GENE_ANNOTATIONS: ge.gene_annotations.to_dict("records"),
-                    FM_DEFS.MODEL_NAME: ge.model_name,
-                    FM_DEFS.MODEL_VARIANT: ge.model_variant,
-                    FM_DEFS.DATASET_NAME: ge.dataset_name,
-                    FM_DEFS.DATASET_URI: ge.dataset_uri,
-                    FM_DEFS.CATEGORY: ge.category,
-                }
-                dataset_gene_embeddings_metadata.append(ge_emb_meta)
+                dataset_gene_embeddings_metadata.append(
+                    _gene_embeddings_to_save_dict(ge)
+                )
 
         # Save weights to npz
         np.savez(weights_path, **weights_dict)
@@ -2235,10 +2208,10 @@ class FoundationModel(BaseModel):
             FM_DEFS.N_HEADS: self.n_heads,
         }
 
-        # Combine gene_annotations and model_metadata into single JSON
         combined_metadata = {
             FM_DEFS.MODEL_METADATA: model_metadata,
             FM_DEFS.GENE_ANNOTATIONS: self.gene_annotations.to_dict("records"),
+            FM_DEFS.STATIC_GENE_EMBEDDING: static_ge_meta,
             FM_DEFS.DATASET_GENE_EMBEDDINGS: dataset_gene_embeddings_metadata,
         }
 
@@ -3819,6 +3792,86 @@ def _find_top_k_edges_in_attention_layer(
     col_order.append(FM_EDGELIST.ATTENTION)
 
     return df[col_order]
+
+
+def _gene_embeddings_from_save_dict(
+    embedding: np.ndarray,
+    metadata: dict,
+    fallback_metadata: Optional[dict] = None,
+) -> GeneEmbeddings:
+    """Reconstruct a GeneEmbeddings from a saved embedding array and metadata dict.
+
+    Parameters
+    ----------
+    embedding : np.ndarray
+        The 2D embedding array
+    metadata : dict
+        Per-embedding metadata dict (from _gene_embeddings_to_save_dict)
+    fallback_metadata : dict, optional
+        Model-level metadata to use as fallback for model_name/model_variant
+        if not present in per-embedding metadata
+
+    Returns
+    -------
+    GeneEmbeddings
+        Reconstructed instance
+
+    Raises
+    ------
+    ValueError
+        If gene_annotations is missing from metadata
+    """
+    fallback_metadata = fallback_metadata or {}
+
+    ge_annotations = metadata.get(FM_DEFS.GENE_ANNOTATIONS)
+    if ge_annotations is None:
+        raise ValueError(
+            "GeneEmbeddings metadata is missing gene_annotations. "
+            "This file was saved with an older format that is no longer supported. "
+            "Re-run the ETL pipeline to regenerate model outputs."
+        )
+
+    return GeneEmbeddings(
+        embedding=embedding,
+        ordered_gene_ids=metadata.get(FM_DEFS.ORDERED_GENES, []),
+        gene_annotations=pd.DataFrame(ge_annotations),
+        model_name=metadata.get(
+            FM_DEFS.MODEL_NAME, fallback_metadata.get(FM_DEFS.MODEL_NAME)
+        ),
+        model_variant=metadata.get(
+            FM_DEFS.MODEL_VARIANT, fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
+        ),
+        dataset_name=metadata.get(FM_DEFS.DATASET_NAME),
+        dataset_uri=metadata.get(FM_DEFS.DATASET_URI),
+        category=metadata.get(FM_DEFS.CATEGORY),
+    )
+
+
+def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
+    """Serialize a GeneEmbeddings instance to a metadata dict.
+
+    The embedding array itself is saved separately in the weights npz;
+    this returns only the JSON-serializable metadata.
+
+    Parameters
+    ----------
+    ge : GeneEmbeddings
+        The gene embeddings to serialize
+
+    Returns
+    -------
+    dict
+        JSON-serializable metadata dictionary
+    """
+    return {
+        FM_DEFS.ORDERED_GENES: ge.ordered_gene_ids,
+        FM_DEFS.GENE_ANNOTATIONS: ge.gene_annotations.to_dict("records"),
+        FM_DEFS.MODEL_NAME: ge.model_name,
+        FM_DEFS.MODEL_VARIANT: ge.model_variant,
+        FM_DEFS.DATASET_NAME: ge.dataset_name,
+        FM_DEFS.DATASET_URI: ge.dataset_uri,
+        FM_DEFS.CATEGORY: ge.category,
+    }
 
 
 def _load_results(
