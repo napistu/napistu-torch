@@ -994,7 +994,7 @@ class FoundationModelWeights(BaseModel):
 
     Attributes
     ----------
-    gene_embedding : GeneEmbeddings
+    static_gene_embedding : GeneEmbeddings
         Static gene embeddings for the model vocabulary
     attention_layers : List[AttentionLayer]
         List of attention layers, one per transformer layer
@@ -1009,13 +1009,13 @@ class FoundationModelWeights(BaseModel):
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
-    gene_embedding: GeneEmbeddings
+    static_gene_embedding: GeneEmbeddings
     attention_layers: List[AttentionLayer]
 
-    @field_validator(FM_DEFS.GENE_EMBEDDING)
-    def validate_gene_embedding(cls, v):
+    @field_validator(FM_DEFS.STATIC_GENE_EMBEDDING)
+    def validate_static_gene_embedding(cls, v):
         if not isinstance(v, GeneEmbeddings):
-            raise ValueError("gene_embedding must be a GeneEmbeddings instance")
+            raise ValueError("static_gene_embedding must be a GeneEmbeddings instance")
         return v
 
     @field_validator(FM_DEFS.ATTENTION_LAYERS)
@@ -1033,7 +1033,7 @@ class FoundationModelWeights(BaseModel):
     @model_validator(mode="after")
     def validate_embedding_attention_consistency(self):
         """Validate that embedding dimensions are consistent with attention weights."""
-        embed_dim = self.gene_embedding.embedding.shape[1]
+        embed_dim = self.static_gene_embedding.embedding.shape[1]
 
         # Check that all attention weight matrices have consistent dimensions
         for layer in self.attention_layers:
@@ -1095,8 +1095,8 @@ class FoundationModelWeights(BaseModel):
                 f"(model has {len(self.attention_layers)} layers)"
             )
 
-        embeddings = self.gene_embedding.embedding
-        n_genes = self.gene_embedding.n_genes
+        embeddings = self.static_gene_embedding.embedding
+        n_genes = self.static_gene_embedding.n_genes
 
         if gene_mask is not None:
             gene_mask = np.asarray(gene_mask, dtype=bool)
@@ -2075,14 +2075,18 @@ class FoundationModel(BaseModel):
                 "supported. Re-run the ETL pipeline to regenerate model outputs."
             )
 
-        gene_embedding = _gene_embeddings_from_save_dict(
-            embedding=weights_dict[FM_DEFS.GENE_EMBEDDING],
+        # Support both new and legacy keys for backward compatibility
+        static_emb_array = weights_dict.get(FM_DEFS.STATIC_GENE_EMBEDDING) or (
+            weights_dict.get("gene_embedding")
+        )
+        static_gene_embedding = _gene_embeddings_from_save_dict(
+            embedding=static_emb_array,
             metadata=static_gene_embedding_metadata,
             fallback_metadata=model_metadata,
         )
 
         weights = FoundationModelWeights(
-            gene_embedding=gene_embedding,
+            static_gene_embedding=static_gene_embedding,
             attention_layers=attention_layers,
         )
 
@@ -2174,10 +2178,12 @@ class FoundationModel(BaseModel):
         }
 
         # Serialize static gene embedding
-        static_ge_meta = _gene_embeddings_to_save_dict(self.weights.gene_embedding)
+        static_ge_meta = _gene_embeddings_to_save_dict(
+            self.weights.static_gene_embedding
+        )
 
         weights_dict = {
-            FM_DEFS.GENE_EMBEDDING: self.weights.gene_embedding.embedding,
+            FM_DEFS.STATIC_GENE_EMBEDDING: self.weights.static_gene_embedding.embedding,
             FM_DEFS.ATTENTION_WEIGHTS: attention_weights_dict,
         }
 
@@ -3106,8 +3112,8 @@ class FoundationModels(BaseModel):
                     f"for the {model.model_name} model"
                 )
 
-            # Get gene embedding and annotations
-            gene_embedding = model.weights.gene_embedding
+            # Get static gene embedding and annotations
+            static_gene_embedding = model.weights.static_gene_embedding
             gene_annotations = model.gene_annotations
             ordered_vocab = model.ordered_vocabulary
 
@@ -3126,7 +3132,7 @@ class FoundationModels(BaseModel):
             )
 
             # Extract the embeddings for the common identifiers in the order of common_identifiers
-            aligned_embedding = gene_embedding[
+            aligned_embedding = static_gene_embedding.embedding[
                 embedding_alignment_lookup_table["index_position"].values
             ]
 
@@ -3848,7 +3854,8 @@ def _gene_embeddings_from_save_dict(
 
 
 def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
-    """Serialize a GeneEmbeddings instance to a metadata dict.
+    """
+    Serialize a GeneEmbeddings instance to a metadata dict.
 
     The embedding array itself is saved separately in the weights npz;
     this returns only the JSON-serializable metadata.
@@ -3876,7 +3883,7 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
 
 def _load_results(
     output_dir: str, prefix: str
-) -> Tuple[dict, pd.DataFrame, dict, List[dict]]:
+) -> Tuple[dict, pd.DataFrame, dict, Optional[dict], List[dict]]:
     """
     Load foundation model results from files.
 
@@ -3890,11 +3897,13 @@ def _load_results(
     Returns
     -------
     weights_dict : dict
-        Dictionary containing gene_embedding and attention_weights numpy arrays
+        Dictionary containing static_gene_embedding and attention_weights numpy arrays
     gene_annotations : pandas.DataFrame
         DataFrame with gene annotations
     model_metadata : dict
         Dictionary with model metadata
+    static_gene_embedding_metadata : dict or None
+        Metadata for static gene embedding (None if legacy format)
     dataset_gene_embeddings_metadata : List[dict]
         List of dictionaries containing dataset gene embeddings metadata
     """
@@ -3925,6 +3934,11 @@ def _load_results(
     model_metadata = combined_metadata[FM_DEFS.MODEL_METADATA]
     gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
 
+    # Load static gene embedding metadata (support legacy "gene_embedding" key)
+    static_gene_embedding_metadata = combined_metadata.get(
+        FM_DEFS.STATIC_GENE_EMBEDDING
+    )
+
     # Load expression embeddings metadata (if present)
     dataset_gene_embeddings_metadata = combined_metadata.get(
         FM_DEFS.DATASET_GENE_EMBEDDINGS, []
@@ -3936,5 +3950,6 @@ def _load_results(
         weights_dict,
         gene_annotations,
         model_metadata,
+        static_gene_embedding_metadata,
         dataset_gene_embeddings_metadata,
     )
