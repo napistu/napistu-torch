@@ -28,7 +28,7 @@ import pandas as pd
 import torch
 from napistu.genomics.scverse_loading import DatasetsConfig
 from napistu.ontologies.constants import ONTOLOGIES
-from napistu.utils import download_wget
+from napistu.utils.io_utils import download_wget
 from scipy.sparse import issparse
 
 from napistu_torch.load.constants import (
@@ -47,6 +47,7 @@ from napistu_torch.load.foundation_models import (
     ExpressionEmbeddings,
     FoundationModel,
     FoundationModelWeights,
+    GeneEmbeddings,
 )
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.optional import (
@@ -57,6 +58,7 @@ from napistu_torch.utils.optional import (
     require_scprint,
     require_torchtext,
 )
+from napistu_torch.utils.pd_utils import filter_and_reorder_df
 from napistu_torch.utils.torch_utils import (
     empty_cache,
     ensure_device,
@@ -80,6 +82,164 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+
+def expression_tensor_to_gene_embeddings(
+    embeddings_3d: Union[np.ndarray, torch.Tensor],
+    ordered_genes: List[str],
+    gene_annotations: pd.DataFrame,
+    category_dict: Dict[int, str],
+    gene_id_column: str = ONTOLOGIES.ENSEMBL_GENE,
+    model_name: Optional[str] = None,
+    model_variant: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+    dataset_uri: Optional[str] = None,
+) -> List[GeneEmbeddings]:
+    """Convert a 3D expression embedding tensor into a list of GeneEmbeddings.
+
+    Slices a (n_categories, n_genes, embed_dim) tensor along the category axis
+    and creates one ``GeneEmbeddings`` per category, each with properly filtered
+    and aligned gene annotations.
+
+    This replaces the ``ExpressionEmbeddings`` class by producing a flat list
+    of ``GeneEmbeddings`` where each entry owns its full gene metadata.
+
+    Parameters
+    ----------
+    embeddings_3d : np.ndarray or torch.Tensor
+        Expression-contextualized gene embeddings of shape
+        (n_categories, n_genes, embed_dim).
+    ordered_genes : List[str]
+        Gene identifiers matching dimension 1 of ``embeddings_3d``.
+        These are looked up in ``gene_annotations[gene_id_column]``
+        to filter and reorder the annotations.
+    gene_annotations : pd.DataFrame
+        Full gene annotations table (may contain more genes than
+        ``ordered_genes``). Must contain ``vocab_name`` and ``ensembl_gene``
+        columns at minimum.
+    category_dict : Dict[int, str]
+        Maps category index (0-based) to category name (e.g., cell type).
+        Keys must be ``{0, 1, ..., n_categories - 1}``.
+    gene_id_column : str, optional
+        Column in ``gene_annotations`` to match ``ordered_genes`` against
+        (default: 'ensembl_gene').
+    model_name : Optional[str]
+        Source model name.
+    model_variant : Optional[str]
+        Source model variant.
+    dataset_name : Optional[str]
+        Source dataset name.
+    dataset_uri : Optional[str]
+        Source dataset URI.
+
+    Returns
+    -------
+    List[GeneEmbeddings]
+        One GeneEmbeddings per category, each with:
+        - ``embedding``: 2D slice of shape (n_genes, embed_dim)
+        - ``ordered_gene_ids``: from ``ordered_genes``
+        - ``gene_annotations``: filtered and reordered to match
+        - ``category``: set from ``category_dict``
+        - other metadata propagated from parameters
+
+    Raises
+    ------
+    ValueError
+        If ``embeddings_3d`` is not 3-dimensional.
+        If ``ordered_genes`` length doesn't match dimension 1.
+        If ``category_dict`` keys don't match ``{0, ..., n_categories - 1}``.
+        If gene annotations cannot be aligned to ``ordered_genes``.
+
+    Examples
+    --------
+    >>> # In an ETL function (replaces ExpressionEmbeddings construction):
+    >>> cluster_embeddings, selected_genes, cell_cluster_dict = (
+    ...     _aidocell_get_gene_embedding_by_cell_type(model, adata, gene_annotations)
+    ... )
+    >>> gene_emb_list = expression_tensor_to_gene_embeddings(
+    ...     embeddings_3d=cluster_embeddings,
+    ...     ordered_genes=selected_genes,
+    ...     gene_annotations=gene_annotations,
+    ...     category_dict=cell_cluster_dict,
+    ...     model_name='AIDOCell',
+    ...     model_variant='aido_cell_100m',
+    ...     dataset_name='efthymiou',
+    ...     dataset_uri='/path/to/efthymiou.h5ad',
+    ... )
+    >>> len(gene_emb_list)  # one per cell type cluster
+    12
+    >>> gene_emb_list[0].category
+    'T_cell'
+    """
+    # Convert torch to numpy
+    if isinstance(embeddings_3d, torch.Tensor):
+        embeddings_3d = embeddings_3d.numpy()
+
+    if not isinstance(embeddings_3d, np.ndarray):
+        raise ValueError("embeddings_3d must be a numpy array or torch.Tensor")
+
+    if embeddings_3d.ndim != 3:
+        raise ValueError(
+            f"embeddings_3d must be 3-dimensional (n_categories, n_genes, embed_dim), "
+            f"got shape {embeddings_3d.shape}"
+        )
+
+    n_categories, n_genes, _ = embeddings_3d.shape
+
+    # Validate ordered_genes length
+    if len(ordered_genes) != n_genes:
+        raise ValueError(
+            f"ordered_genes has {len(ordered_genes)} entries but "
+            f"embeddings_3d has {n_genes} genes (dim 1)"
+        )
+
+    # Validate category_dict keys
+    expected_keys = set(range(n_categories))
+    if set(category_dict.keys()) != expected_keys:
+        raise ValueError(
+            f"category_dict must have keys {{0, ..., {n_categories - 1}}}, "
+            f"got {sorted(category_dict.keys())}"
+        )
+
+    # Filter and reorder gene annotations to match ordered_genes
+    aligned_annotations = filter_and_reorder_df(
+        df=gene_annotations,
+        target_ids=ordered_genes,
+        id_column=gene_id_column,
+    )
+
+    # Validate that alignment succeeded for all genes
+    if len(aligned_annotations) != n_genes:
+        n_found = len(aligned_annotations)
+        raise ValueError(
+            f"Only {n_found} of {n_genes} ordered_genes found in "
+            f"gene_annotations['{gene_id_column}']. "
+            f"All genes must be present."
+        )
+
+    # Slice along category axis and create GeneEmbeddings per category
+    result = []
+    for cat_idx in range(n_categories):
+        category_name = category_dict[cat_idx]
+
+        ge = GeneEmbeddings(
+            embedding=embeddings_3d[cat_idx],
+            ordered_gene_ids=list(ordered_genes),
+            gene_annotations=aligned_annotations.copy(),
+            model_name=model_name,
+            model_variant=model_variant,
+            dataset_name=dataset_name,
+            dataset_uri=dataset_uri,
+            category=str(category_name),
+        )
+        result.append(ge)
+
+    logger.info(
+        f"Created {len(result)} GeneEmbeddings from expression tensor "
+        f"({n_genes} genes, {n_categories} categories)"
+    )
+
+    return result
 
 
 @require_bionty

@@ -92,6 +92,9 @@ class GeneEmbeddings(BaseModel):
     dataset_name : Optional[str]
         Name of the expression dataset used to contextualize embeddings.
         None for static (non-expression-aware) gene embeddings.
+    dataset_uri : Optional[str]
+        Path or URI to the source dataset (e.g., '/path/to/data.h5ad').
+        None for static gene embeddings.
     category : Optional[str]
         Category within the dataset (e.g., cell type, cluster).
         None for static gene embeddings or dataset-level aggregations.
@@ -156,6 +159,7 @@ class GeneEmbeddings(BaseModel):
     model_name: Optional[str] = None
     model_variant: Optional[str] = None
     dataset_name: Optional[str] = None
+    dataset_uri: Optional[str] = None
     category: Optional[str] = None
 
     @field_validator("embedding")
