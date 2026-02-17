@@ -169,7 +169,7 @@ def process_aidocell(
     # 2. Extract weights
     logger.info("2. Extracting weights...")
     weights = _aidocell_extract_weights(model, gene_annotations)
-    logger.info(f"   Embeddings: {weights.static_gene_embedding.embed_dim}")
+    logger.info(f"   Embeddings: {weights.static_gene_embeddings.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -292,7 +292,7 @@ def process_scfoundation(
     logger.info(
         f"   {len(gene_annotations)} genes, {metadata[FM_DEFS.N_LAYERS]} layers"
     )
-    logger.info(f"   Embeddings: {weights.static_gene_embedding.embed_dim}")
+    logger.info(f"   Embeddings: {weights.static_gene_embeddings.embed_dim}")
     logger.info(
         f"   Attention weights: {metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -393,7 +393,7 @@ def process_scgpt(
         checkpoint_path=checkpoint_path,
         gene_annotations=gene_annotations,
     )
-    logger.info(f"   Embeddings: {weights.static_gene_embedding.embed_dim}")
+    logger.info(f"   Embeddings: {weights.static_gene_embeddings.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -475,7 +475,7 @@ def process_scprint(
     # 2. Extract weights
     logger.info("2. Extracting weights...")
     weights = _scprint_extract_weights(model=model, gene_annotations=gene_annotations)
-    logger.info(f"   Embeddings: {weights.static_gene_embedding.embed_dim}")
+    logger.info(f"   Embeddings: {weights.static_gene_embeddings.embed_dim}")
     logger.info(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
@@ -561,7 +561,7 @@ def _aidocell_extract_weights(
     Returns
     -------
     FoundationModelWeights
-        FoundationModelWeights instance containing static_gene_embedding and attention_layers
+        FoundationModelWeights instance containing static_gene_embeddings and attention_layers
     """
     encoder = model.encoder
     n_genes = len(gene_annotations)
@@ -579,7 +579,7 @@ def _aidocell_extract_weights(
     )
 
     return FoundationModelWeights(
-        static_gene_embedding=gene_embedding, attention_layers=attention_layers
+        static_gene_embeddings=gene_embedding, attention_layers=attention_layers
     )
 
 
@@ -1524,7 +1524,7 @@ def _scfoundation_extract_weights(
     )
 
     return FoundationModelWeights(
-        static_gene_embedding=gene_embedding, attention_layers=attention_layers
+        static_gene_embeddings=gene_embedding, attention_layers=attention_layers
     )
 
 
@@ -1834,7 +1834,7 @@ def _scgpt_extract_weights(
     )
 
     return FoundationModelWeights(
-        static_gene_embedding=gene_embedding, attention_layers=attention_layers
+        static_gene_embeddings=gene_embedding, attention_layers=attention_layers
     )
 
 
@@ -2354,7 +2354,7 @@ def _scprint_extract_weights(
     Returns
     -------
     FoundationModelWeights
-        FoundationModelWeights instance containing static_gene_embedding and attention_layers
+        FoundationModelWeights instance containing static_gene_embeddings and attention_layers
     """
     gene_embedding_array = model.gene_encoder.embeddings.weight.detach().cpu().numpy()
     gene_embedding = GeneEmbeddings(
@@ -2366,7 +2366,7 @@ def _scprint_extract_weights(
     attention_layers = _scprint_extract_attention_weights(model)
 
     return FoundationModelWeights(
-        static_gene_embedding=gene_embedding, attention_layers=attention_layers
+        static_gene_embeddings=gene_embedding, attention_layers=attention_layers
     )
 
 
@@ -2449,6 +2449,7 @@ def _scprint_get_expression_embeddings(
     gene_annotations: pd.DataFrame,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
+    min_cluster_cells: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Dict[str, str], List[str]]:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -2458,10 +2459,15 @@ def _scprint_get_expression_embeddings(
         The scPRINT model
     adata : anndata.AnnData
         The AnnData object containing the cells to embed
+    gene_annotations : pd.DataFrame
+        Gene annotations DataFrame
     dataset_name : Optional[str] = None
         The name of the dataset
     dataset_uri : Optional[str] = None
         The URI of the dataset
+    min_cluster_cells: Optional[int] = None
+        Minimum number of cells per cluster to include. Clusters smaller than this
+        are excluded. If None, then all clusters are included.
 
     Returns
     -------
@@ -2473,7 +2479,7 @@ def _scprint_get_expression_embeddings(
     common_genes = [g for g in model_genes if g in adata.var_names]
 
     cluster_embeddings, cell_cluster_dict = _scprint_get_gene_embedding_by_cell_type(
-        model, adata, common_genes
+        model, adata, common_genes, min_cluster_cells=min_cluster_cells
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(

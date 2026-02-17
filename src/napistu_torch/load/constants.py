@@ -237,7 +237,7 @@ FM_DEFS = SimpleNamespace(
     ATTENTION_LAYERS="attention_layers",
     # model summaries
     WEIGHTS_DICT="weights_dict",
-    STATIC_GENE_EMBEDDING="static_gene_embedding",
+    STATIC_GENE_EMBEDDINGS="static_gene_embeddings",
     ATTENTION_WEIGHTS="attention_weights",
     LAYER_NAME_TEMPLATE="layer_{layer_idx}",
     W_Q="W_q",
