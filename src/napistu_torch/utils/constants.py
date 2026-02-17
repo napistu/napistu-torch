@@ -2,6 +2,9 @@
 
 from types import SimpleNamespace
 
+from napistu.constants import SBML_DFS
+from napistu.network.constants import NAPISTU_GRAPH_VERTICES
+
 KEY_PACKAGES = SimpleNamespace(
     NAPISTU="napistu",
     NAPISTU_TORCH="napistu-torch",
@@ -59,3 +62,6 @@ RANK_SHIFT_SUMMARIES = SimpleNamespace(
     STATISTIC="statistic",
     P_VALUE="p_value",
 )
+
+# napistu utils
+EXPECTED_NAME_TO_SID_MAP_COLUMNS = {SBML_DFS.S_ID, NAPISTU_GRAPH_VERTICES.NAME}
