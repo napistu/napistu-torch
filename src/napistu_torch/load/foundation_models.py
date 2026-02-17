@@ -6,12 +6,14 @@ embeddings, and metadata in a standardized format.
 
 Classes
 -------
+GeneEmbeddings
+    Data and metadata for a gene x latent space embedding.
+GeneEmbeddingsSet
+    Container for multiple GeneEmbeddings with aligned gene ids.
+DatasetGeneEmbeddings
+    Container for multiple GeneEmbeddingsSets keyed by dataset name.
 AttentionLayer
     Attention weights for a single transformer layer.
-DatasetExpressionEmbeddings
-    Container for multiple ExpressionEmbeddings keyed by dataset name.
-ExpressionEmbeddings
-    Expression-aware gene embeddings for multiple cell categories in a dataset.
 FoundationModelWeights
     Weight matrices from a foundation model.
 GeneAnnotations
@@ -27,8 +29,10 @@ FoundationModels
 import json
 import logging
 import os
+from collections import Counter
+from functools import cached_property
 from itertools import combinations
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -62,6 +66,797 @@ from napistu_torch.utils.torch_utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class GeneEmbeddings(BaseModel):
+    """
+    Immutable container co-locating a 2D embedding matrix with gene identifiers.
+
+    Ensures that the embedding matrix rows always correspond 1:1 with
+    ordered_gene_ids and gene_annotations rows. All reordering and filtering
+    operations return new instances rather than mutating state.
+
+    Attributes
+    ----------
+    embedding : np.ndarray
+        Gene embedding matrix of shape (n_genes, embed_dim).
+    ordered_gene_ids : List[str]
+        Gene identifiers in the same order as embedding rows.
+        Typically Ensembl gene IDs (e.g., 'ENSG00000141510').
+    gene_annotations : pd.DataFrame
+        Gene annotations with rows aligned to embedding rows.
+        Must contain at minimum a column matching the identifiers in
+        ordered_gene_ids (default: ONTOLOGIES.ENSEMBL_GENE).
+    model_name : Optional[str]
+        Name of the source foundation model (e.g., 'scGPT', 'AIDOCell').
+    model_variant : Optional[str]
+        Variant of the source model (e.g., 'aido_cell_100m').
+    dataset_name : Optional[str]
+        Name of the expression dataset used to contextualize embeddings.
+        None for static (non-expression-aware) gene embeddings.
+    dataset_uri : Optional[str]
+        Path or URI to the source dataset (e.g., '/path/to/data.h5ad').
+        None for static gene embeddings.
+    category : Optional[str]
+        Category within the dataset (e.g., cell type, cluster).
+        None for static gene embeddings or dataset-level aggregations.
+
+    Properties
+    ----------
+    n_genes : int
+        Number of genes.
+    embed_dim : int
+        Embedding dimensionality.
+    gene_ids_set : FrozenSet[str]
+        Frozen set of gene IDs for O(1) membership checks.
+    source_label : str
+        Human-readable source descriptor combining model and dataset info.
+
+    Public Methods
+    --------------
+    align_to(target_ids)
+        Return a new GeneEmbeddings filtered and reordered to match target_ids.
+    compute_pairwise_distances(device=None)
+        Compute gene-gene cosine distance matrix.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import pandas as pd
+    >>> gene_ids = ['ENSG00000141510', 'ENSG00000157764', 'ENSG00000171862']
+    >>> embedding = np.random.randn(3, 512)
+    >>> annotations = pd.DataFrame({
+    ...     'ensembl_gene': gene_ids,
+    ...     'symbol': ['TP53', 'BRAF', 'PTEN'],
+    ... })
+    >>> ge = GeneEmbeddings(
+    ...     embedding=embedding,
+    ...     ordered_gene_ids=gene_ids,
+    ...     gene_annotations=annotations,
+    ...     model_name='scGPT',
+    ... )
+    >>> ge.n_genes
+    3
+    >>> ge.embed_dim
+    512
+    """
+
+    model_config = {"frozen": True, "arbitrary_types_allowed": True}
+
+    # Core data
+    embedding: np.ndarray = Field(
+        ...,
+        description="Gene embedding matrix of shape (n_genes, embed_dim)",
+    )
+    ordered_gene_ids: List[str] = Field(
+        ...,
+        description="Gene identifiers aligned with embedding rows",
+    )
+    gene_annotations: pd.DataFrame = Field(
+        ...,
+        description="Gene annotations with rows aligned to embedding rows",
+    )
+
+    # Source metadata
+    model_name: Optional[str] = None
+    model_variant: Optional[str] = None
+    dataset_name: Optional[str] = None
+    dataset_uri: Optional[str] = None
+    category: Optional[str] = None
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding(cls, v: np.ndarray) -> np.ndarray:
+        if not isinstance(v, np.ndarray):
+            raise ValueError("embedding must be a numpy array")
+        if v.ndim != 2:
+            raise ValueError(
+                f"embedding must be 2-dimensional (n_genes, embed_dim), "
+                f"got shape {v.shape}"
+            )
+        if v.shape[0] == 0:
+            raise ValueError("embedding must have at least one gene (row)")
+        return v
+
+    @field_validator("ordered_gene_ids")
+    @classmethod
+    def validate_ordered_gene_ids(cls, v: List[str]) -> List[str]:
+        if not isinstance(v, list):
+            raise ValueError("ordered_gene_ids must be a list")
+        if len(v) == 0:
+            raise ValueError("ordered_gene_ids must not be empty")
+        if not all(isinstance(gid, str) for gid in v):
+            raise ValueError("ordered_gene_ids must contain only strings")
+        if len(v) != len(set(v)):
+            raise ValueError("ordered_gene_ids must contain unique values")
+        return v
+
+    @field_validator("gene_annotations")
+    @classmethod
+    def validate_gene_annotations(cls, v: pd.DataFrame) -> pd.DataFrame:
+        GeneAnnotations(annotations=v)
+        return v
+
+    @model_validator(mode="after")
+    def validate_row_correspondence(self) -> "GeneEmbeddings":
+        """Validate that embedding rows, ordered_gene_ids, and gene_annotations are aligned."""
+        n_embedding_rows = self.embedding.shape[0]
+        n_gene_ids = len(self.ordered_gene_ids)
+        n_annotation_rows = len(self.gene_annotations)
+
+        if n_embedding_rows != n_gene_ids:
+            raise ValueError(
+                f"embedding has {n_embedding_rows} rows but "
+                f"ordered_gene_ids has {n_gene_ids} entries"
+            )
+
+        if n_embedding_rows != n_annotation_rows:
+            raise ValueError(
+                f"embedding has {n_embedding_rows} rows but "
+                f"gene_annotations has {n_annotation_rows} rows"
+            )
+
+        return self
+
+    @property
+    def n_genes(self) -> int:
+        """Number of genes."""
+        return self.embedding.shape[0]
+
+    @property
+    def embed_dim(self) -> int:
+        """Embedding dimensionality."""
+        return self.embedding.shape[1]
+
+    @cached_property
+    def gene_ids_set(self) -> FrozenSet[str]:
+        """Frozen set of gene IDs for O(1) membership checks."""
+        return frozenset(self.ordered_gene_ids)
+
+    @property
+    def source_label(self) -> str:
+        """Human-readable source descriptor."""
+        parts = []
+        if self.model_name:
+            label = self.model_name
+            if self.model_variant:
+                label = f"{label}_{self.model_variant}"
+            parts.append(label)
+        if self.dataset_name:
+            parts.append(self.dataset_name)
+        if self.category:
+            parts.append(self.category)
+        return "/".join(parts) if parts else "static"
+
+    def align_to(self, target_ids: List[str]) -> "GeneEmbeddings":
+        """Return a new GeneEmbeddings filtered and reordered to match target_ids.
+
+        Only genes present in both self and target_ids are retained.
+        The output order matches target_ids.
+
+        Parameters
+        ----------
+        target_ids : List[str]
+            Ordered list of gene identifiers to align to.
+            Genes in target_ids that are not in self are silently skipped.
+
+        Returns
+        -------
+        GeneEmbeddings
+            New instance with rows filtered and reordered to match the
+            intersection of target_ids and self.ordered_gene_ids,
+            preserving the order from target_ids.
+
+        Raises
+        ------
+        ValueError
+            If no genes in target_ids are found in this embedding.
+
+        Examples
+        --------
+        >>> common = ge1.common_genes(ge2)
+        >>> ge1_aligned = ge1.align_to(common)
+        >>> ge2_aligned = ge2.align_to(common)
+        """
+        # Filter target_ids to those present in self
+        my_ids = self.gene_ids_set
+        filtered_targets = [gid for gid in target_ids if gid in my_ids]
+
+        if len(filtered_targets) == 0:
+            raise ValueError(
+                "No genes in target_ids are present in this GeneEmbeddings instance"
+            )
+
+        if len(filtered_targets) < len(target_ids):
+            n_missing = len(target_ids) - len(filtered_targets)
+            logger.warning(
+                f"{n_missing} of {len(target_ids)} target_ids not found in "
+                f"this GeneEmbeddings (source: {self.source_label}); "
+                f"returning {len(filtered_targets)} genes"
+            )
+
+        # Build index mapping: gene_id -> current row position
+        id_to_idx = {gid: idx for idx, gid in enumerate(self.ordered_gene_ids)}
+        reorder_indices = np.array([id_to_idx[gid] for gid in filtered_targets])
+
+        return GeneEmbeddings(
+            embedding=self.embedding[reorder_indices],
+            ordered_gene_ids=filtered_targets,
+            gene_annotations=self.gene_annotations.iloc[reorder_indices].reset_index(
+                drop=True
+            ),
+            model_name=self.model_name,
+            model_variant=self.model_variant,
+            dataset_name=self.dataset_name,
+            category=self.category,
+        )
+
+    def compute_pairwise_distances(
+        self,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> np.ndarray:
+        """Compute gene-gene cosine distance matrix.
+
+        Parameters
+        ----------
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+
+        Returns
+        -------
+        np.ndarray
+            Symmetric distance matrix of shape (n_genes, n_genes).
+            Entry [i, j] is the cosine distance between gene i and gene j.
+            Values range from 0 (identical) to 2 (opposite).
+        """
+        return compute_cosine_distances_torch(self.embedding, device=device)
+
+    def gene_ids_in_ontology(self, ontology: str) -> List[str]:
+        """Return gene identifiers in the given ontology column, in row order."""
+        if ontology not in self.gene_annotations.columns:
+            raise ValueError(
+                f"Ontology '{ontology}' not in gene_annotations columns: "
+                f"{list(self.gene_annotations.columns)}"
+            )
+        return self.gene_annotations[ontology].tolist()
+
+    def __repr__(self) -> str:
+        return (
+            f"GeneEmbeddings("
+            f"source={self.source_label}, "
+            f"n_genes={self.n_genes}, "
+            f"embed_dim={self.embed_dim}"
+            f")"
+        )
+
+    def __len__(self) -> int:
+        return self.n_genes
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, GeneEmbeddings):
+            return NotImplemented
+        return self.ordered_gene_ids == other.ordered_gene_ids and np.array_equal(
+            self.embedding, other.embedding
+        )
+
+
+class GeneEmbeddingsSet:
+    """Container for one or more GeneEmbeddings instances aligned to a common list of genes.
+
+    All stored embeddings have the same genes in the same row order (in terms of
+    the alignment ontology), though each may retain its own native vocabulary in
+    ``ordered_gene_ids``. This enables direct cross-embedding comparison without
+    repeated alignment overhead.
+
+    When constructed with a single embedding, it serves as a validated wrapper
+    that still provides the same dict-like interface and summary properties.
+
+    Attributes
+    ----------
+    common_gene_ids : List[str]
+        Gene identifiers (in the alignment ontology) shared across all embeddings,
+        in the order used for alignment.
+    align_on : str
+        The ontology column used for alignment.
+
+    Properties
+    ----------
+    n_embeddings : int
+        Number of stored embeddings.
+    n_common_genes : int
+        Number of common genes.
+    summary : pd.DataFrame
+        One row per embedding with source metadata and dimensionality info.
+
+    Public Methods
+    --------------
+    from_gene_embeddings(embeddings, align_on='ensembl_gene')
+        Classmethod: align embeddings and construct container.
+    get(key)
+        Return the aligned GeneEmbeddings for a given key.
+    keys()
+        Return embedding labels.
+    values()
+        Return GeneEmbeddings instances.
+    items()
+        Return (label, GeneEmbeddings) pairs.
+
+    Examples
+    --------
+    >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
+    ...     [ge_scgpt, ge_aido, ge_scprint]
+    ... )
+    >>> aligned.n_common_genes
+    15234
+    >>> aligned.summary
+          key     model_name model_variant  ... n_genes embed_dim
+    0  scGPT          scGPT          None  ...   15234       512
+    1  AIDOCell_100m  AIDOCell  aido_cell_100m  ...   15234       768
+    >>> scgpt_emb = aligned["scGPT"]
+    """
+
+    def __init__(
+        self,
+        data: Dict[str, GeneEmbeddings],
+        common_gene_ids: List[str],
+        align_on: str,
+    ):
+        """Initialize GeneEmbeddingsSet.
+
+        Prefer using the ``from_gene_embeddings`` classmethod which handles
+        alignment automatically. This constructor assumes embeddings are
+        already aligned.
+
+        Parameters
+        ----------
+        data : Dict[str, GeneEmbeddings]
+            Mapping from label to aligned GeneEmbeddings.
+        common_gene_ids : List[str]
+            The common gene IDs (in the alignment ontology) shared by all
+            embeddings, in the order used for alignment.
+        align_on : str
+            The ontology column that was used for alignment.
+
+        Raises
+        ------
+        ValueError
+            If data is empty.
+            If any embedding's genes in the alignment ontology don't match
+            common_gene_ids.
+        """
+        if len(data) == 0:
+            raise ValueError("GeneEmbeddingsSet requires at least one embedding")
+
+        # Validate alignment
+        for key, emb in data.items():
+            emb_ids = emb.gene_ids_in_ontology(align_on)
+            if emb_ids != common_gene_ids:
+                # Find first mismatch for a helpful error message
+                for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)):
+                    if a != b:
+                        raise ValueError(
+                            f"Embedding '{key}' gene IDs in ontology '{align_on}' "
+                            f"do not match common_gene_ids. "
+                            f"First mismatch at index {i}: '{a}' != '{b}'"
+                        )
+                # Length mismatch
+                raise ValueError(
+                    f"Embedding '{key}' has {len(emb_ids)} genes but "
+                    f"common_gene_ids has {len(common_gene_ids)}"
+                )
+
+        self._data: Dict[str, GeneEmbeddings] = dict(data)
+        self._common_gene_ids: List[str] = list(common_gene_ids)
+        self._align_on: str = align_on
+
+    @classmethod
+    def from_gene_embeddings(
+        cls,
+        embeddings: List[GeneEmbeddings],
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    ) -> "GeneEmbeddingsSet":
+        """Align embeddings to common genes and construct container.
+
+        Uses ``align_gene_embeddings`` to find common genes across all
+        embeddings and reorder each to a consistent row ordering. Keys
+        are derived from each embedding's ``source_label``.
+
+        Parameters
+        ----------
+        embeddings : List[GeneEmbeddings]
+            One or more GeneEmbeddings to align. Each must have unique
+            ``source_label`` values. When a single embedding is provided,
+            it is wrapped directly without alignment.
+        align_on : str, optional
+            Column in gene_annotations to align on (default: 'ensembl_gene').
+
+        Returns
+        -------
+        GeneEmbeddingsSet
+            Container with aligned embeddings.
+
+        Raises
+        ------
+        ValueError
+            If no embeddings are provided.
+            If source_label values are not unique.
+            If no common genes are found (when aligning 2+ embeddings).
+
+        Examples
+        --------
+        >>> # Multiple embeddings — aligns to common genes
+        >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
+        ...     [ge_scgpt, ge_aido],
+        ...     align_on='ensembl_gene',
+        ... )
+        >>> # Single embedding — wraps directly
+        >>> single = GeneEmbeddingsSet.from_gene_embeddings(
+        ...     [ge_scgpt],
+        ...     align_on='ensembl_gene',
+        ... )
+        """
+        if len(embeddings) == 0:
+            raise ValueError("GeneEmbeddingsSet requires at least 1 embedding, got 0")
+
+        # Validate unique source_labels
+        labels = [emb.source_label for emb in embeddings]
+        label_counts = Counter(labels)
+        duplicates = {
+            label: count for label, count in label_counts.items() if count > 1
+        }
+        if duplicates:
+            raise ValueError(
+                f"Duplicate source_label values: {duplicates}. "
+                f"Set distinct model_name, model_variant, dataset_name, or category "
+                f"on each GeneEmbeddings to produce unique labels."
+            )
+
+        if len(embeddings) == 1:
+            # Single embedding: validate align_on column exists, wrap directly
+            emb = embeddings[0]
+            if align_on not in emb.gene_annotations.columns:
+                raise ValueError(
+                    f"Column '{align_on}' not found in gene_annotations for "
+                    f"embedding '{emb.source_label}'. "
+                    f"Available columns: {list(emb.gene_annotations.columns)}"
+                )
+            common_gene_ids = emb.gene_ids_in_ontology(align_on)
+            data = {labels[0]: emb}
+        else:
+            # Multiple embeddings: align to common genes
+            aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
+            common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
+            data = {
+                label: aligned_emb
+                for label, aligned_emb in zip(labels, aligned_embeddings)
+            }
+
+        return cls(
+            data=data,
+            common_gene_ids=common_gene_ids,
+            align_on=align_on,
+        )
+
+    # --- Properties ---
+
+    @property
+    def common_gene_ids(self) -> List[str]:
+        """Gene identifiers shared across all embeddings (in the alignment ontology)."""
+        return list(self._common_gene_ids)
+
+    @property
+    def align_on(self) -> str:
+        """The ontology column used for alignment."""
+        return self._align_on
+
+    @property
+    def n_embeddings(self) -> int:
+        """Number of stored embeddings."""
+        return len(self._data)
+
+    @property
+    def n_common_genes(self) -> int:
+        """Number of common genes."""
+        return len(self._common_gene_ids)
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """Summary DataFrame with one row per embedding.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: key, model_name, model_variant, dataset_name, dataset_uri,
+            category, n_genes, embed_dim.
+        """
+        rows = []
+        for key, emb in self._data.items():
+            rows.append(
+                {
+                    "key": key,
+                    "model_name": emb.model_name,
+                    "model_variant": emb.model_variant,
+                    "dataset_name": emb.dataset_name,
+                    "dataset_uri": emb.dataset_uri,
+                    "category": emb.category,
+                    "n_genes": emb.n_genes,
+                    "embed_dim": emb.embed_dim,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    # --- Dict-like access ---
+
+    def get(self, key: str) -> GeneEmbeddings:
+        """Get aligned GeneEmbeddings by label.
+
+        Parameters
+        ----------
+        key : str
+            Label (source_label) of the embedding to retrieve.
+
+        Returns
+        -------
+        GeneEmbeddings
+            The aligned embedding.
+
+        Raises
+        ------
+        KeyError
+            If key is not found.
+        """
+        if key not in self._data:
+            raise KeyError(
+                f"Embedding '{key}' not found. "
+                f"Available keys: {list(self._data.keys())}"
+            )
+        return self._data[key]
+
+    def __getitem__(self, key: str) -> GeneEmbeddings:
+        return self.get(key)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys(self):
+        """Return embedding labels."""
+        return self._data.keys()
+
+    def values(self):
+        """Return GeneEmbeddings instances."""
+        return self._data.values()
+
+    def items(self):
+        """Return (label, GeneEmbeddings) pairs."""
+        return self._data.items()
+
+    # --- Dunder methods ---
+
+    def __repr__(self) -> str:
+        keys = list(self._data.keys())
+        return (
+            f"GeneEmbeddingsSet("
+            f"n_embeddings={self.n_embeddings}, "
+            f"n_common_genes={self.n_common_genes}, "
+            f"align_on='{self._align_on}', "
+            f"keys={keys}"
+            f")"
+        )
+
+
+class DatasetGeneEmbeddings:
+    """Container for expression-contextualized gene embeddings across multiple datasets.
+
+    Maps dataset names to ``GeneEmbeddingsSet`` instances. Each dataset may have
+    a different gene vocabulary (e.g., different highly-variable gene selections
+    from scGPT), but within a dataset all categories share the same genes.
+
+    Each dataset's embeddings are now stored as a ``GeneEmbeddingsSet`` (dict of 2D
+    ``GeneEmbeddings``).
+
+    Attributes
+    ----------
+    n_datasets : int
+        Number of datasets.
+    dataset_names : List[str]
+        Ordered list of dataset names.
+    summary : pd.DataFrame
+        One row per dataset with gene count, embedding count, and category info.
+
+    Public Methods
+    --------------
+    from_gene_embeddings_sets(sets)
+        Classmethod: construct from a list of (dataset_name, GeneEmbeddingsSet) pairs.
+    get(dataset_name)
+        Return the GeneEmbeddingsSet for a given dataset.
+    keys()
+        Return dataset names.
+    values()
+        Return GeneEmbeddingsSet instances.
+    items()
+        Return (dataset_name, GeneEmbeddingsSet) pairs.
+    all_gene_embeddings()
+        Return a flat list of all GeneEmbeddings across all datasets.
+
+    Examples
+    --------
+    >>> dge = DatasetGeneEmbeddings({
+    ...     "pbmc": pbmc_gene_emb_set,
+    ...     "tumor": tumor_gene_emb_set,
+    ... })
+    >>> dge.n_datasets
+    2
+    >>> dge["pbmc"].n_common_genes
+    1200
+    >>> dge["tumor"].n_common_genes
+    1500
+    >>> all_embs = dge.all_gene_embeddings()  # flat list for cross-dataset alignment
+    """
+
+    def __init__(self, data: Dict[str, GeneEmbeddingsSet]):
+        """Initialize DatasetGeneEmbeddings.
+
+        Parameters
+        ----------
+        data : Dict[str, GeneEmbeddingsSet]
+            Mapping from dataset name to GeneEmbeddingsSet.
+
+        Raises
+        ------
+        ValueError
+            If data is empty.
+            If any value is not a GeneEmbeddingsSet.
+        """
+        if len(data) == 0:
+            raise ValueError("DatasetGeneEmbeddings requires at least one dataset")
+
+        for name, ge_set in data.items():
+            if not isinstance(ge_set, GeneEmbeddingsSet):
+                raise ValueError(
+                    f"Dataset '{name}' value must be a GeneEmbeddingsSet, "
+                    f"got {type(ge_set)}"
+                )
+
+        self._data: Dict[str, GeneEmbeddingsSet] = dict(data)
+
+    # --- Properties ---
+
+    @property
+    def n_datasets(self) -> int:
+        """Number of datasets."""
+        return len(self._data)
+
+    @property
+    def dataset_names(self) -> List[str]:
+        """Ordered list of dataset names."""
+        return list(self._data.keys())
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """Summary DataFrame with one row per dataset.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: dataset_name, n_embeddings, n_common_genes, align_on,
+            embed_dims (set of unique embed_dims across categories).
+        """
+        rows = []
+        for name, ge_set in self._data.items():
+            embed_dims = {emb.embed_dim for emb in ge_set.values()}
+            rows.append(
+                {
+                    "dataset_name": name,
+                    "n_embeddings": ge_set.n_embeddings,
+                    "n_common_genes": ge_set.n_common_genes,
+                    "align_on": ge_set.align_on,
+                    "embed_dims": embed_dims,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    # --- Public methods ---
+
+    def all_gene_embeddings(self) -> List[GeneEmbeddings]:
+        """Return a flat list of all GeneEmbeddings across all datasets.
+
+        Useful as input to ``GeneEmbeddingsSet.from_gene_embeddings`` when
+        you want to align embeddings across datasets (which may require
+        intersecting to common genes).
+
+        Returns
+        -------
+        List[GeneEmbeddings]
+            All GeneEmbeddings from all datasets, in dataset-then-category order.
+        """
+        result = []
+        for ge_set in self._data.values():
+            result.extend(ge_set.values())
+        return result
+
+    # --- Dict-like access ---
+
+    def get(self, dataset_name: str) -> GeneEmbeddingsSet:
+        """Get GeneEmbeddingsSet by dataset name.
+
+        Parameters
+        ----------
+        dataset_name : str
+            Name of the dataset.
+
+        Returns
+        -------
+        GeneEmbeddingsSet
+            The embeddings for that dataset.
+
+        Raises
+        ------
+        KeyError
+            If dataset_name is not found.
+        """
+        if dataset_name not in self._data:
+            raise KeyError(
+                f"Dataset '{dataset_name}' not found. "
+                f"Available datasets: {list(self._data.keys())}"
+            )
+        return self._data[dataset_name]
+
+    def __getitem__(self, dataset_name: str) -> GeneEmbeddingsSet:
+        return self.get(dataset_name)
+
+    def __contains__(self, dataset_name: str) -> bool:
+        return dataset_name in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+    def keys(self):
+        """Return dataset names."""
+        return self._data.keys()
+
+    def values(self):
+        """Return GeneEmbeddingsSet instances."""
+        return self._data.values()
+
+    def items(self):
+        """Return (dataset_name, GeneEmbeddingsSet) pairs."""
+        return self._data.items()
+
+    # --- Dunder methods ---
+
+    def __repr__(self) -> str:
+        datasets = list(self._data.keys())
+        total_embeddings = sum(ge_set.n_embeddings for ge_set in self._data.values())
+        return (
+            f"DatasetGeneEmbeddings("
+            f"n_datasets={self.n_datasets}, "
+            f"total_embeddings={total_embeddings}, "
+            f"datasets={datasets}"
+            f")"
+        )
 
 
 class AttentionLayer(BaseModel):
@@ -193,370 +988,14 @@ class AttentionLayer(BaseModel):
             return out_attention
 
 
-class ExpressionEmbeddings(BaseModel):
-    """
-    Expression-aware gene embeddings for multiple cell categories in a dataset.
-
-    The embeddings tensor has shape (n_categories, n_genes, embed_dim) where each
-    category represents a different cell type, cluster, or condition. This allows
-    efficient storage and computation across all categories in a dataset.
-
-    Attributes
-    ----------
-    embeddings : np.ndarray
-        Expression-contextualized gene embeddings
-        Shape: (n_categories, n_genes, embed_dim)
-        embeddings[i] is the mean embedding for category i
-    ordered_genes : List[str]
-        Ordered list of gene identifiers matching embedding dimension 1
-        Length must equal embeddings.shape[1]
-    dataset_name : str
-        Name/identifier for this dataset (e.g., "efthymiou", "tabula_sapiens")
-    dataset_uri : Optional[str]
-        Path or URI to source data (e.g., "/path/to/efthymiou.h5ad")
-    category_dict : Dict[int, str]
-        Maps category index to category name (e.g., cell type)
-
-    Properties
-    ----------
-    n_categories : int
-        Number of categories in the embeddings
-    n_genes : int
-        Number of genes in the embeddings
-    embed_dim : int
-        Embedding dimension
-
-    Public Methods
-    --------------
-    get_category_embedding(category_key)
-        Get embeddings for a specific category (returns shape: n_genes, embed_dim)
-    list_categories()
-        Return list of available category names
-    """
-
-    model_config = {"frozen": True, "arbitrary_types_allowed": True}
-
-    # Define fields as Pydantic fields so validators can run
-    embeddings: Union[np.ndarray, torch.Tensor] = Field(...)
-    ordered_genes: Optional[List[str]] = None
-    category_dict: Optional[Dict[int, str]] = None
-    dataset_name: Optional[str] = None
-    dataset_uri: Optional[str] = None
-
-    def __init__(
-        self,
-        embeddings: Union[np.ndarray, torch.Tensor],
-        ordered_genes: List[str] = None,
-        category_dict: Optional[Dict[int, Dict[str, Any]]] = None,
-        dataset_name: Optional[str] = None,
-        dataset_uri: Optional[str] = None,
-    ):
-        """
-        Initialize ExpressionEmbeddings.
-
-        Parameters
-        ----------
-        embeddings : Union[np.ndarray, torch.Tensor]
-            Pre-computed embeddings (n_categories, n_genes, embed_dim)
-        ordered_genes : List[str], optional
-            Gene IDs for pre-computed embeddings
-        dataset_name : str, optional
-            Name for this dataset
-        dataset_uri : str, optional
-            Path/URI to source h5ad file
-        category_dict : Dict[int, Dict], optional
-            Category metadata for pre-computed embeddings
-        """
-
-        # Convert numpy to torch if needed (before validation)
-        if isinstance(embeddings, torch.Tensor):
-            embeddings = embeddings.numpy()
-
-        # Quick validation: embeddings must be 3D (full validation happens in field_validator)
-        # This allows us to set default category_dict based on shape
-        if isinstance(embeddings, torch.Tensor):
-            v_np = embeddings.numpy()
-        else:
-            v_np = embeddings
-        if v_np.ndim != 3:
-            raise ValueError(
-                f"{FM_DEFS.EMBEDDINGS} must be 3-dimensional (n_categories, n_genes, embed_dim), "
-                f"got shape {v_np.shape}"
-            )
-
-        # Set default category_dict based on embeddings shape (before validation)
-        if category_dict is None:
-            logger.warning(
-                f"No {FM_DEFS.CATEGORY_DICT} provided. Using default category names."
-            )
-            category_dict = {i: f"category_{i}" for i in range(v_np.shape[0])}
-
-        # Set defaults
-        if dataset_name is None:
-            logger.warning("No dataset name provided. Using 'unknown'.")
-            dataset_name = "unknown"
-
-        if dataset_uri is None:
-            logger.warning("No dataset URI provided. Using 'unknown'.")
-            dataset_uri = "unknown"
-
-        # Call super().__init__() to trigger Pydantic validation
-        # This will run @field_validator("embeddings") which ensures shape is 3D
-        super().__init__(
-            embeddings=embeddings,
-            ordered_genes=ordered_genes,
-            category_dict=category_dict,
-            dataset_name=dataset_name,
-            dataset_uri=dataset_uri,
-        )
-
-    @property
-    def n_categories(self) -> int:
-        """Number of categories in the embeddings."""
-        return self.embeddings.shape[0]
-
-    @property
-    def n_genes(self) -> int:
-        """Number of genes in the embeddings."""
-        return self.embeddings.shape[1]
-
-    @property
-    def embed_dim(self) -> int:
-        """Embedding dimension."""
-        return self.embeddings.shape[2]
-
-    @field_validator(FM_DEFS.EMBEDDINGS)
-    def validate_embeddings_shape(cls, v):
-        # Convert torch.Tensor to numpy for validation if needed
-        if isinstance(v, torch.Tensor):
-            v_np = v.numpy()
-        else:
-            v_np = v
-
-        if not isinstance(v_np, np.ndarray):
-            raise ValueError("embeddings must be a numpy array or torch.Tensor")
-        if v_np.ndim != 3:
-            raise ValueError(
-                f"{FM_DEFS.EMBEDDINGS} must be 3-dimensional (n_categories, n_genes, embed_dim), "
-                f"got shape {v_np.shape}"
-            )
-        return v
-
-    @model_validator(mode="after")
-    def validate_consistency(self):
-        """Cross-validate shapes and lengths."""
-        n_categories, n_genes, _ = self.embeddings.shape
-
-        # Check ordered_genes length (if provided)
-        if self.ordered_genes is not None:
-            if len(self.ordered_genes) != n_genes:
-                raise ValueError(
-                    f"{FM_DEFS.ORDERED_GENES} has {len(self.ordered_genes)} entries but "
-                    f"{FM_DEFS.EMBEDDINGS} has {n_genes} genes"
-                )
-
-        # Check category_dict keys
-        if set(self.category_dict.keys()) != set(range(n_categories)):
-            raise ValueError(
-                f"{FM_DEFS.CATEGORY_DICT} must have keys 0 to {n_categories-1}, "
-                f"got {sorted(self.category_dict.keys())}"
-            )
-
-        return self
-
-    def get_category_embedding(self, category_key: Union[int, str]) -> np.ndarray:
-        """
-        Get embeddings for a specific category.
-
-        Parameters
-        ----------
-        category_key : int or str
-            Either category index (int) or category name (str)
-
-        Returns
-        -------
-        np.ndarray
-            Embeddings of shape (n_genes, embed_dim)
-
-        Examples
-        --------
-        >>> # By index
-        >>> cluster_0_emb = expr_emb.get_category_embedding(0)
-        >>> # By name
-        >>> tcell_emb = expr_emb.get_category_embedding("T_cell")
-        """
-        if isinstance(category_key, str):
-            # Find index by name
-            idx = self._get_category_index(category_key)
-        else:
-            idx = category_key
-
-        if idx not in self.category_dict:
-            raise ValueError(
-                f"Category index {idx} not found. "
-                f"Available: {list(self.category_dict.keys())}"
-            )
-
-        return self.embeddings[idx]
-
-    def list_categories(self) -> List[Dict[str, Any]]:
-        """
-        List all available categories with metadata.
-
-        Returns
-        -------
-        List[Dict]
-            List of dicts, each containing category metadata
-
-        Examples
-        --------
-        >>> categories = expr_emb.list_categories()
-        >>> for cat in categories:
-        ...     print(f"{cat['index']}: {cat['name']} ({cat['n_cells']} cells)")
-        """
-        return [
-            {"index": idx, **metadata}
-            for idx, metadata in sorted(self.category_dict.items())
-        ]
-
-    def _get_category_index(self, category_name: str) -> int:
-        """Find category index by name."""
-        for idx, metadata in self.category_dict.items():
-            if metadata.get("name") == category_name:
-                return idx
-        raise ValueError(
-            f"Category '{category_name}' not found. "
-            f"Available: {[m.get('name') for m in self.category_dict.values()]}"
-        )
-
-    def __repr__(self) -> str:
-        return (
-            f"ExpressionEmbeddings("
-            f"dataset={self.dataset_name}, "
-            f"n_categories={self.n_categories}, "
-            f"n_genes={self.n_genes}, "
-            f"embed_dim={self.embed_dim}"
-            f")"
-        )
-
-
-class DatasetExpressionEmbeddings:
-    """
-    Container for multiple ExpressionEmbeddings instances keyed by dataset name.
-
-    Parallel to the Napistu-py DatasetsConfig / DatasetConfig abstraction, this class
-    holds multiple ExpressionEmbeddings instances and provides dictionary-style access
-    by dataset name.
-
-    Attributes
-    ----------
-    data : Dict[str, ExpressionEmbeddings]
-        Dictionary mapping dataset names to ExpressionEmbeddings objects.
-
-    Public Methods
-    --------------
-    get:
-        Get ExpressionEmbeddings by dataset name, raising KeyError if not found.
-    keys:
-        Return dataset names.
-    values:
-        Return ExpressionEmbeddings instances.
-    items:
-        Return (name, ExpressionEmbeddings) pairs.
-    Examples
-    --------
-    >>> data = {
-    ...     "efthymiou": expr_emb_1,
-    ...     "tabula_sapiens": expr_emb_2,
-    ... }
-    >>> container = DatasetExpressionEmbeddings(data)
-    >>> emb = container.get("efthymiou")
-    >>> "tabula_sapiens" in container
-    True
-    >>> for name, emb in container.items():
-    ...     print(f"{name}: {emb.n_genes} genes")
-    """
-
-    def __init__(
-        self,
-        data: Union[
-            Dict[str, ExpressionEmbeddings],
-            List[ExpressionEmbeddings],
-        ],
-    ):
-        """
-        Initialize DatasetExpressionEmbeddings from a dict or list.
-
-        Parameters
-        ----------
-        data : Dict[str, ExpressionEmbeddings] or List[ExpressionEmbeddings]
-            Either a dict mapping dataset names to ExpressionEmbeddings, or a list
-            of ExpressionEmbeddings (keys derived from dataset_name attribute).
-        """
-        self.data: Dict[str, ExpressionEmbeddings] = {}
-
-        if isinstance(data, dict):
-            for name, emb in data.items():
-                if not isinstance(emb, ExpressionEmbeddings):
-                    raise ValueError(
-                        f"Values must be ExpressionEmbeddings instances, got {type(emb)}"
-                    )
-                self.data[name] = emb
-        else:
-            for emb in data:
-                if not isinstance(emb, ExpressionEmbeddings):
-                    raise ValueError(
-                        f"List must contain ExpressionEmbeddings instances, got {type(emb)}"
-                    )
-                name = emb.dataset_name if emb.dataset_name else "unknown"
-                if name in self.data:
-                    raise ValueError(
-                        f"Duplicate dataset name '{name}'. Use unique dataset_name per item."
-                    )
-                self.data[name] = emb
-
-    def get(self, key: str) -> ExpressionEmbeddings:
-        """Get ExpressionEmbeddings by dataset name, raising KeyError if not found."""
-        if key not in self.data:
-            available_keys = list(self.data.keys())
-            raise KeyError(
-                f"Dataset '{key}' not found. Available datasets: {available_keys}"
-            )
-        return self.data[key]
-
-    def __getitem__(self, key: str) -> ExpressionEmbeddings:
-        """Support dictionary-style access."""
-        return self.get(key)
-
-    def __contains__(self, key: str) -> bool:
-        """Support 'in' operator."""
-        return key in self.data
-
-    def keys(self):
-        """Return dataset names."""
-        return self.data.keys()
-
-    def values(self):
-        """Return ExpressionEmbeddings instances."""
-        return self.data.values()
-
-    def items(self):
-        """Return (name, ExpressionEmbeddings) pairs."""
-        return self.data.items()
-
-    def __repr__(self) -> str:
-        names = list(self.data.keys())
-        return f"DatasetExpressionEmbeddings(datasets={names})"
-
-
 class FoundationModelWeights(BaseModel):
     """
     Weight matrices from a foundation model.
 
     Attributes
     ----------
-    gene_embedding : np.ndarray
-        Gene embedding matrix of shape (n_vocab, embed_dim)
+    static_gene_embeddings : GeneEmbeddings
+        Static gene embeddings for the model vocabulary
     attention_layers : List[AttentionLayer]
         List of attention layers, one per transformer layer
 
@@ -570,15 +1009,13 @@ class FoundationModelWeights(BaseModel):
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
-    gene_embedding: np.ndarray
+    static_gene_embeddings: GeneEmbeddings
     attention_layers: List[AttentionLayer]
 
-    @field_validator(FM_DEFS.GENE_EMBEDDING)
-    def validate_gene_embedding(cls, v):
-        if not isinstance(v, np.ndarray):
-            raise ValueError("gene_embedding must be a numpy array")
-        if v.ndim != 2:
-            raise ValueError("gene_embedding must be 2-dimensional")
+    @field_validator(FM_DEFS.STATIC_GENE_EMBEDDINGS)
+    def validate_static_gene_embeddings(cls, v):
+        if not isinstance(v, GeneEmbeddings):
+            raise ValueError("static_gene_embeddings must be a GeneEmbeddings instance")
         return v
 
     @field_validator(FM_DEFS.ATTENTION_LAYERS)
@@ -596,7 +1033,7 @@ class FoundationModelWeights(BaseModel):
     @model_validator(mode="after")
     def validate_embedding_attention_consistency(self):
         """Validate that embedding dimensions are consistent with attention weights."""
-        embed_dim = self.gene_embedding.shape[1]
+        embed_dim = self.static_gene_embeddings.embedding.shape[1]
 
         # Check that all attention weight matrices have consistent dimensions
         for layer in self.attention_layers:
@@ -614,7 +1051,7 @@ class FoundationModelWeights(BaseModel):
         self,
         layer_idx: int,
         n_heads: int,
-        vocab_mask: Optional[np.ndarray] = None,
+        gene_mask: Optional[np.ndarray] = None,
         apply_softmax: bool = True,
         return_tensor: bool = False,
         device: Optional[Union[str, torch.device]] = None,
@@ -628,10 +1065,10 @@ class FoundationModelWeights(BaseModel):
             Index of the layer to compute attention for
         n_heads : int
             Number of attention heads in the model
-        vocab_mask : np.ndarray, optional
-            Boolean mask of shape (n_vocab,) indicating which vocabulary items to include.
+        gene_mask : np.ndarray, optional
+            Boolean mask of shape (n_genes,) indicating which genes to include.
             If provided, only embeddings corresponding to True values will be used.
-            Default: None.
+            Default: None (use all genes).
         apply_softmax : bool, optional
             If True, apply softmax to get attention probabilities (default: True).
             If False, return raw attention scores (Q @ K.T / sqrt(d_k))
@@ -644,20 +1081,13 @@ class FoundationModelWeights(BaseModel):
         Returns
         -------
         torch.Tensor or np.ndarray
-            Attention scores matrix. If vocab_mask is provided, shape is (n_selected, n_selected),
-            otherwise shape is (n_vocab, n_vocab). Softmax is applied.
+            Attention scores matrix of shape (n_selected, n_selected) if gene_mask
+            is provided, otherwise (n_genes, n_genes).
 
         Raises
         ------
         ValueError
-            If layer_idx is out of range or vocab_mask has incorrect shape
-
-        Examples
-        --------
-        >>> attention = model.weights.compute_attention_from_weights(
-        ...     layer_idx=0,
-        ...     n_heads=model.n_heads
-        ... )
+            If layer_idx is out of range or gene_mask has incorrect shape
         """
         if layer_idx >= len(self.attention_layers):
             raise ValueError(
@@ -665,16 +1095,16 @@ class FoundationModelWeights(BaseModel):
                 f"(model has {len(self.attention_layers)} layers)"
             )
 
-        # Apply vocab_mask to filter embeddings if provided
-        embeddings = self.gene_embedding
-        if vocab_mask is not None:
-            vocab_mask = np.asarray(vocab_mask, dtype=bool)
-            n_vocab = self.gene_embedding.shape[0]
-            if vocab_mask.shape != (n_vocab,):
+        embeddings = self.static_gene_embeddings.embedding
+        n_genes = self.static_gene_embeddings.n_genes
+
+        if gene_mask is not None:
+            gene_mask = np.asarray(gene_mask, dtype=bool)
+            if gene_mask.shape != (n_genes,):
                 raise ValueError(
-                    f"vocab_mask must have shape ({n_vocab},), got {vocab_mask.shape}"
+                    f"gene_mask must have shape ({n_genes},), got {gene_mask.shape}"
                 )
-            embeddings = embeddings[vocab_mask]
+            embeddings = embeddings[gene_mask]
 
         layer = self.attention_layers[layer_idx]
 
@@ -844,12 +1274,16 @@ class ModelMetadata(BaseModel):
 
 
 class FoundationModel(BaseModel):
-    """Complete foundation model including weights, annotations, and metadata.
+    """
+    Complete foundation model including weights, annotations, and metadata.
 
     Attributes
     ----------
-    dataset_expression_embeddings : Optional[DatasetExpressionEmbeddings]
-        Contexutalized gene embeddings for 0+ datasets, keyed by dataset name
+    dataset_expression_embeddings : Optional[DatasetGeneEmbeddings]
+        Contextualized gene embeddings for 0+ datasets, keyed by dataset name.
+        Each dataset contains a GeneEmbeddingsSet (one GeneEmbeddings per
+        category/cell type), which may have different gene vocabularies across
+        datasets (e.g., different HVG selections from scGPT).
     embed_dim : int
         Embedding dimension
     gene_annotations : pd.DataFrame
@@ -897,7 +1331,7 @@ class FoundationModel(BaseModel):
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     # Core data
-    dataset_expression_embeddings: Optional[DatasetExpressionEmbeddings] = None
+    dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None
     gene_annotations: pd.DataFrame
     weights: FoundationModelWeights
 
@@ -916,9 +1350,7 @@ class FoundationModel(BaseModel):
         weights: FoundationModelWeights,
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
-        dataset_expression_embeddings: Optional[
-            Union[DatasetExpressionEmbeddings, List[ExpressionEmbeddings]]
-        ] = None,
+        dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None,
         **kwargs,
     ):
         """
@@ -933,9 +1365,9 @@ class FoundationModel(BaseModel):
         model_metadata : dict or ModelMetadata
             Model metadata containing model_name, n_genes, n_vocab, ordered_vocabulary,
             embed_dim, n_layers, n_heads
-        dataset_expression_embeddings : DatasetExpressionEmbeddings or List, optional
-            Contexutalized gene embeddings for 0+ datasets. Accepts DatasetExpressionEmbeddings
-            or a list (converted to DatasetExpressionEmbeddings internally).
+        dataset_gene_embeddings : DatasetGeneEmbeddings, optional
+            Contextualized gene embeddings for 0+ datasets. Each dataset is a
+            GeneEmbeddingsSet containing one GeneEmbeddings per category.
         **kwargs
             Additional keyword arguments (ignored, for compatibility)
 
@@ -973,26 +1405,20 @@ class FoundationModel(BaseModel):
             ModelMetadata(**model_metadata)
             metadata_dict = model_metadata
 
-        if dataset_expression_embeddings is not None:
-            if isinstance(dataset_expression_embeddings, list):
-                dataset_expression_embeddings = DatasetExpressionEmbeddings(
-                    dataset_expression_embeddings
-                )
-            elif not isinstance(
-                dataset_expression_embeddings, DatasetExpressionEmbeddings
-            ):
+        if dataset_gene_embeddings is not None:
+            if not isinstance(dataset_gene_embeddings, DatasetGeneEmbeddings):
                 raise ValueError(
-                    "dataset_expression_embeddings must be DatasetExpressionEmbeddings "
-                    f"or list, got {type(dataset_expression_embeddings)}"
+                    "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
+                    f"got {type(dataset_gene_embeddings)}"
                 )
         else:
-            dataset_expression_embeddings = None
+            dataset_gene_embeddings = None
 
         # Call parent __init__ with unpacked metadata
         super().__init__(
             weights=weights,
             gene_annotations=gene_annotations_df,
-            dataset_expression_embeddings=dataset_expression_embeddings,
+            dataset_gene_embeddings=dataset_gene_embeddings,
             **metadata_dict,
         )
 
@@ -1008,11 +1434,11 @@ class FoundationModel(BaseModel):
 
         return v
 
-    @field_validator(FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS)
-    def validate_dataset_expression_embeddings(cls, v):
-        if v is not None and not isinstance(v, DatasetExpressionEmbeddings):
+    @field_validator(FM_DEFS.DATASET_GENE_EMBEDDINGS)
+    def validate_dataset_gene_embeddings(cls, v):
+        if v is not None and not isinstance(v, DatasetGeneEmbeddings):
             raise ValueError(
-                "dataset_expression_embeddings must be DatasetExpressionEmbeddings or None, "
+                "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
                 f"got {type(v)}"
             )
         return v
@@ -1062,9 +1488,9 @@ class FoundationModel(BaseModel):
             Method for aggregating attention across layers to compute consensus.
             Currently supported:
             - "absolute-argmax" (default): Find layer with maximum absolute attention
-              and return that value with sign preserved
+                and return that value with sign preserved
             - "max": Find layer with maximum attention value (without taking absolute value)
-              and return that value
+                and return that value
             - "sum": Sum attention values across all layers
         gene_annotation_target_var : str, optional
             Column name in gene_annotations to match against target_ids
@@ -1612,7 +2038,8 @@ class FoundationModel(BaseModel):
             weights_dict,
             gene_annotations,
             model_metadata,
-            expression_embeddings_metadata,
+            static_gene_embedding_metadata,
+            dataset_gene_embeddings_metadata,
         ) = _load_results(output_dir, prefix)
 
         # Infer model_variant from prefix if not in metadata
@@ -1640,46 +2067,70 @@ class FoundationModel(BaseModel):
             )
         ]
 
+        # Reconstruct static gene embedding as GeneEmbeddings
+        if static_gene_embedding_metadata is None:
+            raise ValueError(
+                "Static gene embedding metadata not found in saved files. "
+                "This file was saved with an older format that is no longer "
+                "supported. Re-run the ETL pipeline to regenerate model outputs."
+            )
+
+        # Support both new and legacy keys for backward compatibility
+        static_emb_array = weights_dict.get(FM_DEFS.STATIC_GENE_EMBEDDINGS)
+        static_gene_embedding = _gene_embeddings_from_save_dict(
+            embedding=static_emb_array,
+            metadata=static_gene_embedding_metadata,
+            fallback_metadata=model_metadata,
+        )
+
         weights = FoundationModelWeights(
-            gene_embedding=weights_dict[FM_DEFS.GENE_EMBEDDING],
+            static_gene_embeddings=static_gene_embedding,
             attention_layers=attention_layers,
         )
 
-        # Reconstruct ExpressionEmbeddings from saved data
-        expr_emb_list: List[ExpressionEmbeddings] = []
-        if expression_embeddings_metadata:
+        # Reconstruct dataset gene embeddings
+        dataset_gene_embeddings = None
+        if dataset_gene_embeddings_metadata:
             logger.info(
-                f"Loading {len(expression_embeddings_metadata)} expression embeddings"
+                f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
             )
-            for i, expr_emb_meta in enumerate(expression_embeddings_metadata):
-                # Get embeddings tensor from weights_dict
-                embeddings_key = f"expression_embeddings_{i}"
-                if embeddings_key in weights_dict:
-                    embeddings = weights_dict[embeddings_key]
-                    # Create ExpressionEmbeddings instance
-                    expr_emb = ExpressionEmbeddings(
-                        embeddings=embeddings,
-                        ordered_genes=expr_emb_meta.get(FM_DEFS.ORDERED_GENES),
-                        category_dict=expr_emb_meta.get(FM_DEFS.CATEGORY_DICT),
-                        dataset_name=expr_emb_meta.get(FM_DEFS.DATASET_NAME),
-                        dataset_uri=expr_emb_meta.get(FM_DEFS.DATASET_URI),
-                    )
-                    expr_emb_list.append(expr_emb)
-                else:
+
+            dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
+
+            for i, ge_emb_meta in enumerate(dataset_gene_embeddings_metadata):
+                embeddings_key = f"dataset_gene_embeddings_{i}"
+                if embeddings_key not in weights_dict:
                     logger.warning(
                         f"Expression embeddings metadata found but embeddings tensor "
                         f"'{embeddings_key}' not found in weights file"
                     )
+                    continue
 
-        dataset_expression_embeddings = (
-            DatasetExpressionEmbeddings(expr_emb_list) if expr_emb_list else None
-        )
+                ge = _gene_embeddings_from_save_dict(
+                    embedding=weights_dict[embeddings_key],
+                    metadata=ge_emb_meta,
+                    fallback_metadata=model_metadata,
+                )
+
+                ds_name = ge.dataset_name or "unknown"
+                if ds_name not in dataset_gene_embeddings_lists:
+                    dataset_gene_embeddings_lists[ds_name] = []
+                dataset_gene_embeddings_lists[ds_name].append(ge)
+
+            # Build GeneEmbeddingsSet per dataset, then wrap in DatasetGeneEmbeddings
+            if dataset_gene_embeddings_lists:
+                dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+                for ds_name, ge_list in dataset_gene_embeddings_lists.items():
+                    dataset_sets[ds_name] = GeneEmbeddingsSet.from_gene_embeddings(
+                        ge_list
+                    )
+                dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
 
         return cls(
             weights=weights,
             gene_annotations=gene_annotations,
             model_metadata=model_metadata,
-            dataset_expression_embeddings=dataset_expression_embeddings,
+            dataset_gene_embeddings=dataset_gene_embeddings,
         )
 
     def save(self, output_dir: str, prefix: str) -> None:
@@ -1724,17 +2175,27 @@ class FoundationModel(BaseModel):
             for layer in self.weights.attention_layers
         }
 
+        # Serialize static gene embedding
+        static_ge_meta = _gene_embeddings_to_save_dict(
+            self.weights.static_gene_embeddings
+        )
+
         weights_dict = {
-            FM_DEFS.GENE_EMBEDDING: self.weights.gene_embedding,
+            FM_DEFS.STATIC_GENE_EMBEDDINGS: self.weights.static_gene_embeddings.embedding,
             FM_DEFS.ATTENTION_WEIGHTS: attention_weights_dict,
         }
 
-        # Add expression embeddings tensors to weights_dict
-        if self.dataset_expression_embeddings:
-            expr_emb_list = list(self.dataset_expression_embeddings.values())
-            logger.info(f"Saving {len(expr_emb_list)} expression embeddings")
-            for i, expr_emb in enumerate(expr_emb_list):
-                weights_dict[f"expression_embeddings_{i}"] = expr_emb.embeddings
+        # Iterate: DatasetGeneEmbeddings -> GeneEmbeddingsSet -> GeneEmbeddings
+        dataset_gene_embeddings_metadata = []
+        if self.dataset_gene_embeddings:
+            all_gene_embeddings = self.dataset_gene_embeddings.all_gene_embeddings()
+            logger.info(f"Saving {len(all_gene_embeddings)} dataset gene embeddings")
+
+            for i, ge in enumerate(all_gene_embeddings):
+                weights_dict[f"dataset_gene_embeddings_{i}"] = ge.embedding
+                dataset_gene_embeddings_metadata.append(
+                    _gene_embeddings_to_save_dict(ge)
+                )
 
         # Save weights to npz
         np.savez(weights_path, **weights_dict)
@@ -1751,23 +2212,11 @@ class FoundationModel(BaseModel):
             FM_DEFS.N_HEADS: self.n_heads,
         }
 
-        # Prepare expression embeddings metadata
-        expression_embeddings_metadata = []
-        if self.dataset_expression_embeddings:
-            for expr_emb in self.dataset_expression_embeddings.values():
-                expr_emb_meta = {
-                    FM_DEFS.ORDERED_GENES: expr_emb.ordered_genes,
-                    FM_DEFS.CATEGORY_DICT: expr_emb.category_dict,
-                    FM_DEFS.DATASET_NAME: expr_emb.dataset_name,
-                    FM_DEFS.DATASET_URI: expr_emb.dataset_uri,
-                }
-                expression_embeddings_metadata.append(expr_emb_meta)
-
-        # Combine gene_annotations and model_metadata into single JSON
         combined_metadata = {
             FM_DEFS.MODEL_METADATA: model_metadata,
             FM_DEFS.GENE_ANNOTATIONS: self.gene_annotations.to_dict("records"),
-            FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS: expression_embeddings_metadata,
+            FM_DEFS.STATIC_GENE_EMBEDDINGS: static_ge_meta,
+            FM_DEFS.DATASET_GENE_EMBEDDINGS: dataset_gene_embeddings_metadata,
         }
 
         with open(metadata_path, "w") as f:
@@ -2021,12 +2470,12 @@ class FoundationModels(BaseModel):
         consensus_method : str, optional
             Method for aggregating attention across layers to compute consensus.
             Currently supported:
-            - "absolute-argmax" (default): Find layer with maximum absolute attention
-              and return that value with sign preserved
-            - "max": Find layer with maximum attention value (without taking absolute value)
-              and return that value
-            - "sum": Sum attention values across all layers
-            Options: 'absolute-argmax', 'max', 'sum'
+                - "absolute-argmax" (default): Find layer with maximum absolute attention
+                and return that value with sign preserved
+                - "max": Find layer with maximum attention value (without taking absolute value)
+                and return that value
+                - "sum": Sum attention values across all layers
+                Options: 'absolute-argmax', 'max', 'sum'
         by_absolute_value : bool, optional
             If True, rank edges by absolute attention value (default: True).
             If False, rank edges by raw attention value.
@@ -2661,8 +3110,8 @@ class FoundationModels(BaseModel):
                     f"for the {model.model_name} model"
                 )
 
-            # Get gene embedding and annotations
-            gene_embedding = model.weights.gene_embedding
+            # Get static gene embedding and annotations
+            static_gene_embeddings = model.weights.static_gene_embeddings
             gene_annotations = model.gene_annotations
             ordered_vocab = model.ordered_vocabulary
 
@@ -2681,7 +3130,7 @@ class FoundationModels(BaseModel):
             )
 
             # Extract the embeddings for the common identifiers in the order of common_identifiers
-            aligned_embedding = gene_embedding[
+            aligned_embedding = static_gene_embeddings.embedding[
                 embedding_alignment_lookup_table["index_position"].values
             ]
 
@@ -2744,6 +3193,139 @@ class FoundationModels(BaseModel):
 
 
 # Private utility functions
+
+
+def _align_gene_embeddings(
+    embeddings: List[GeneEmbeddings],
+    align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+) -> List[GeneEmbeddings]:
+    """Align multiple GeneEmbeddings to their common genes via a shared ontology.
+
+    Each GeneEmbeddings may use a different native vocabulary (symbols, ensembl
+    IDs, etc.) in its ``ordered_gene_ids``. This function:
+
+    1. Maps each embedding's genes to the ``align_on`` ontology via gene_annotations.
+    2. Computes the intersection of mapped IDs across all embeddings.
+    3. Filters and reorders each embedding so that its rows correspond to the
+        common genes (in a consistent order), while preserving the native
+        vocabulary in ``ordered_gene_ids``.
+
+    Parameters
+    ----------
+    embeddings : List[GeneEmbeddings]
+        Two or more GeneEmbeddings instances to align.
+    align_on : str, optional
+        Column name in gene_annotations to use as the common ontology
+        (default: 'ensembl_gene'). Must be present in every embedding's
+        gene_annotations.
+
+    Returns
+    -------
+    List[GeneEmbeddings]
+        New GeneEmbeddings instances, one per input, each filtered and reordered
+        so that ``gene_ids_in_ontology(align_on)`` returns the same list for all.
+        The native ``ordered_gene_ids`` are preserved (each embedding keeps its
+        own vocabulary).
+
+    Raises
+    ------
+    ValueError
+        If fewer than 2 embeddings are provided.
+        If ``align_on`` column is missing from any embedding's gene_annotations.
+        If the intersection of common genes is empty.
+        If any embedding has duplicate values in the ``align_on`` column
+        (would make alignment ambiguous).
+
+    Examples
+    --------
+    >>> # scGPT uses ensembl IDs natively, AIDOCell uses symbols
+    >>> aligned = align_gene_embeddings([ge_scgpt, ge_aido])
+    >>> # Both now cover the same genes in the same order
+    >>> aligned[0].gene_ids_in_ontology('ensembl_gene')
+    ['ENSG00000141510', 'ENSG00000157764', ...]
+    >>> aligned[1].gene_ids_in_ontology('ensembl_gene')
+    ['ENSG00000141510', 'ENSG00000157764', ...]
+    >>> # But native vocabularies are preserved
+    >>> aligned[0].ordered_gene_ids[:2]
+    ['ENSG00000141510', 'ENSG00000157764']
+    >>> aligned[1].ordered_gene_ids[:2]
+    ['TP53', 'BRAF']
+    """
+    if len(embeddings) < 2:
+        raise ValueError(
+            f"align_gene_embeddings requires at least 2 embeddings, got {len(embeddings)}"
+        )
+
+    # --- Validate align_on column exists in all embeddings ---
+    for emb in embeddings:
+        if align_on not in emb.gene_annotations.columns:
+            raise ValueError(
+                f"Column '{align_on}' not found in gene_annotations for "
+                f"embedding '{emb.source_label}'. "
+                f"Available columns: {list(emb.gene_annotations.columns)}"
+            )
+
+    # --- Validate no duplicates in the align_on column ---
+    for emb in embeddings:
+        ontology_ids = emb.gene_annotations[align_on]
+        duplicates = ontology_ids[ontology_ids.duplicated()].tolist()
+        if duplicates:
+            raise ValueError(
+                f"Embedding '{emb.source_label}' has duplicate values in "
+                f"'{align_on}' column: {duplicates[:5]}{'...' if len(duplicates) > 5 else ''}. "
+                f"Alignment requires unique values in the align_on column."
+            )
+
+    # --- Compute intersection across all embeddings ---
+    common_ids = None
+    for emb in embeddings:
+        ids = set(emb.gene_annotations[align_on].dropna())
+        if common_ids is None:
+            common_ids = ids
+        else:
+            common_ids = common_ids.intersection(ids)
+
+    if not common_ids:
+        raise ValueError(
+            f"No common genes found across {len(embeddings)} embeddings "
+            f"using ontology '{align_on}'"
+        )
+
+    # Use a stable sorted order for the common gene set
+    common_ids_ordered = sorted(common_ids)
+
+    logger.info(
+        f"Found {len(common_ids_ordered)} common genes across "
+        f"{len(embeddings)} embeddings (ontology: '{align_on}')"
+    )
+
+    # --- Filter and reorder each embedding ---
+    aligned = []
+    for emb in embeddings:
+        # Build mapping: align_on value -> row index in this embedding
+        ontology_values = emb.gene_annotations[align_on].tolist()
+        ontology_to_row = {val: idx for idx, val in enumerate(ontology_values)}
+
+        # Reorder indices to match common_ids_ordered
+        reorder_indices = np.array([ontology_to_row[gid] for gid in common_ids_ordered])
+
+        # Build new ordered_gene_ids in the native vocabulary, reordered
+        native_ids = [emb.ordered_gene_ids[i] for i in reorder_indices]
+
+        aligned_emb = GeneEmbeddings(
+            embedding=emb.embedding[reorder_indices],
+            ordered_gene_ids=native_ids,
+            gene_annotations=emb.gene_annotations.iloc[reorder_indices].reset_index(
+                drop=True
+            ),
+            model_name=emb.model_name,
+            model_variant=emb.model_variant,
+            dataset_name=emb.dataset_name,
+            category=emb.category,
+        )
+        aligned.append(aligned_emb)
+
+    return aligned
 
 
 def _calculate_embedding_correlations(
@@ -3216,9 +3798,90 @@ def _find_top_k_edges_in_attention_layer(
     return df[col_order]
 
 
+def _gene_embeddings_from_save_dict(
+    embedding: np.ndarray,
+    metadata: dict,
+    fallback_metadata: Optional[dict] = None,
+) -> GeneEmbeddings:
+    """Reconstruct a GeneEmbeddings from a saved embedding array and metadata dict.
+
+    Parameters
+    ----------
+    embedding : np.ndarray
+        The 2D embedding array
+    metadata : dict
+        Per-embedding metadata dict (from _gene_embeddings_to_save_dict)
+    fallback_metadata : dict, optional
+        Model-level metadata to use as fallback for model_name/model_variant
+        if not present in per-embedding metadata
+
+    Returns
+    -------
+    GeneEmbeddings
+        Reconstructed instance
+
+    Raises
+    ------
+    ValueError
+        If gene_annotations is missing from metadata
+    """
+    fallback_metadata = fallback_metadata or {}
+
+    ge_annotations = metadata.get(FM_DEFS.GENE_ANNOTATIONS)
+    if ge_annotations is None:
+        raise ValueError(
+            "GeneEmbeddings metadata is missing gene_annotations. "
+            "This file was saved with an older format that is no longer supported. "
+            "Re-run the ETL pipeline to regenerate model outputs."
+        )
+
+    return GeneEmbeddings(
+        embedding=embedding,
+        ordered_gene_ids=metadata.get(FM_DEFS.ORDERED_GENES, []),
+        gene_annotations=pd.DataFrame(ge_annotations),
+        model_name=metadata.get(
+            FM_DEFS.MODEL_NAME, fallback_metadata.get(FM_DEFS.MODEL_NAME)
+        ),
+        model_variant=metadata.get(
+            FM_DEFS.MODEL_VARIANT, fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
+        ),
+        dataset_name=metadata.get(FM_DEFS.DATASET_NAME),
+        dataset_uri=metadata.get(FM_DEFS.DATASET_URI),
+        category=metadata.get(FM_DEFS.CATEGORY),
+    )
+
+
+def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
+    """
+    Serialize a GeneEmbeddings instance to a metadata dict.
+
+    The embedding array itself is saved separately in the weights npz;
+    this returns only the JSON-serializable metadata.
+
+    Parameters
+    ----------
+    ge : GeneEmbeddings
+        The gene embeddings to serialize
+
+    Returns
+    -------
+    dict
+        JSON-serializable metadata dictionary
+    """
+    return {
+        FM_DEFS.ORDERED_GENES: ge.ordered_gene_ids,
+        FM_DEFS.GENE_ANNOTATIONS: ge.gene_annotations.to_dict("records"),
+        FM_DEFS.MODEL_NAME: ge.model_name,
+        FM_DEFS.MODEL_VARIANT: ge.model_variant,
+        FM_DEFS.DATASET_NAME: ge.dataset_name,
+        FM_DEFS.DATASET_URI: ge.dataset_uri,
+        FM_DEFS.CATEGORY: ge.category,
+    }
+
+
 def _load_results(
     output_dir: str, prefix: str
-) -> Tuple[dict, pd.DataFrame, dict, List[dict]]:
+) -> Tuple[dict, pd.DataFrame, dict, Optional[dict], List[dict]]:
     """
     Load foundation model results from files.
 
@@ -3232,13 +3895,15 @@ def _load_results(
     Returns
     -------
     weights_dict : dict
-        Dictionary containing gene_embedding and attention_weights numpy arrays
+        Dictionary containing static_gene_embeddings and attention_weights numpy arrays
     gene_annotations : pandas.DataFrame
         DataFrame with gene annotations
     model_metadata : dict
         Dictionary with model metadata
-    expression_embeddings_metadata : List[dict]
-        List of dictionaries containing expression embeddings metadata
+    static_gene_embeddings_metadata : dict
+        Metadata for static gene embeddings
+    dataset_gene_embeddings_metadata : List[dict]
+        List of dictionaries containing dataset gene embeddings metadata
     """
     weights_filename = FM_DEFS.WEIGHTS_TEMPLATE.format(prefix=prefix)
     metadata_filename = FM_DEFS.METADATA_TEMPLATE.format(prefix=prefix)
@@ -3267,9 +3932,14 @@ def _load_results(
     model_metadata = combined_metadata[FM_DEFS.MODEL_METADATA]
     gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
 
+    # Load static gene embeddings metadata
+    static_gene_embedding_metadata = combined_metadata.get(
+        FM_DEFS.STATIC_GENE_EMBEDDINGS
+    )
+
     # Load expression embeddings metadata (if present)
-    expression_embeddings_metadata = combined_metadata.get(
-        FM_DEFS.DATASET_EXPRESSION_EMBEDDINGS, []
+    dataset_gene_embeddings_metadata = combined_metadata.get(
+        FM_DEFS.DATASET_GENE_EMBEDDINGS, []
     )
 
     logger.info("Successfully loaded all results")
@@ -3278,5 +3948,6 @@ def _load_results(
         weights_dict,
         gene_annotations,
         model_metadata,
-        expression_embeddings_metadata,
+        static_gene_embedding_metadata,
+        dataset_gene_embeddings_metadata,
     )

@@ -226,7 +226,9 @@ FM_CLASSES = SimpleNamespace(
     FOUNDATION_MODEL="FoundationModel",
     FOUNDATION_MODEL_WEIGHTS="FoundationModelWeights",
     ATTENTION_LAYER="AttentionLayer",
-    EXPRESSION_EMBEDDINGS="ExpressionEmbeddings",
+    GENE_EMBEDDINGS="GeneEmbeddings",
+    GENE_EMBEDDINGS_SET="GeneEmbeddingsSet",
+    DATASET_GENE_EMBEDDINGS="DatasetGeneEmbeddings",
 )
 
 FM_DEFS = SimpleNamespace(
@@ -235,7 +237,7 @@ FM_DEFS = SimpleNamespace(
     ATTENTION_LAYERS="attention_layers",
     # model summaries
     WEIGHTS_DICT="weights_dict",
-    GENE_EMBEDDING="gene_embedding",
+    STATIC_GENE_EMBEDDINGS="static_gene_embeddings",
     ATTENTION_WEIGHTS="attention_weights",
     LAYER_NAME_TEMPLATE="layer_{layer_idx}",
     W_Q="W_q",
@@ -258,13 +260,23 @@ FM_DEFS = SimpleNamespace(
     # filename/variable name templates
     WEIGHTS_TEMPLATE="{prefix}_weights.npz",
     METADATA_TEMPLATE="{prefix}_metadata.json",
-    # expression embeddings
+    # gene embeddings
     EMBEDDINGS="embeddings",
     ORDERED_GENES="ordered_genes",
     CATEGORY_DICT="category_dict",
     DATASET_NAME="dataset_name",
     DATASET_URI="dataset_uri",
-    DATASET_EXPRESSION_EMBEDDINGS="dataset_expression_embeddings",  # optional DatasetExpressionEmbeddings
+    CATEGORY="category",
+    DATASET_GENE_EMBEDDINGS="dataset_gene_embeddings",  # optional DatasetGeneEmbeddings
+)
+
+CELLXGENE_DEFS = SimpleNamespace(
+    CELL_TYPE="cell_type",
+    LEIDEN_SCVI="leiden_scVI",
+)
+
+FM_DEFAULTS = SimpleNamespace(
+    MIN_CLUSTER_CELLS=10,
 )
 
 FM_EDGELIST = SimpleNamespace(

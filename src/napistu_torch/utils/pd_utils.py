@@ -86,6 +86,90 @@ def calculate_ranks(
     return ranks
 
 
+def filter_and_reorder_df(
+    df: pd.DataFrame,
+    target_ids: List[str],
+    id_column: str,
+) -> pd.DataFrame:
+    """
+    Filter and reorder a DataFrame to match a target ID list.
+
+    Selects rows from ``df`` where ``id_column`` matches an entry
+    in ``target_ids``, then reorders to match the order of ``target_ids``.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        DataFrame to filter and reorder. Must contain ``id_column``.
+    target_ids : List[str]
+        Ordered list of identifiers to filter and reorder by.
+    id_column : str, optional
+        Column in ``df`` to match against ``target_ids``
+        (default: 'ensembl_gene').
+
+    Returns
+    -------
+    pd.DataFrame
+        Filtered and reordered DataFrame with reset index.
+        Has exactly ``len(filtered_target_ids)`` rows, where
+        ``filtered_target_ids`` is the subset of ``target_ids`` found
+        in the DataFrame.
+
+    Raises
+    ------
+    ValueError
+        If ``id_column`` is not in ``df``.
+        If no ``target_ids`` are found in the DataFrame.
+        If ``id_column`` contains duplicates among the matched rows
+        (would make reordering ambiguous).
+
+    Examples
+    --------
+    >>> full_df = pd.DataFrame({
+    ...     'ensembl_gene': ['ENSG1', 'ENSG2', 'ENSG3'],
+    ...     'symbol': ['TP53', 'BRAF', 'PTEN'],
+    ...     'vocab_name': ['TP53', 'BRAF', 'PTEN'],
+    ... })
+    >>> filtered = filter_and_reorder_df(
+    ...     full_df,
+    ...     target_ids=['ENSG3', 'ENSG1'],
+    ...     id_column='ensembl_gene',
+    ... )
+    >>> filtered['symbol'].tolist()
+    ['PTEN', 'TP53']
+    """
+    if id_column not in df.columns:
+        raise ValueError(
+            f"Column '{id_column}' not found in DataFrame. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    # Filter to target IDs
+    target_set = set(target_ids)
+    mask = df[id_column].isin(target_set)
+    filtered = df[mask]
+
+    if len(filtered) == 0:
+        raise ValueError(f"No target_ids found in DataFrame column '{id_column}'")
+
+    # Check for duplicates in id_column among matched rows
+    duplicates = filtered[id_column][filtered[id_column].duplicated()].tolist()
+    if duplicates:
+        raise ValueError(
+            f"Column '{id_column}' has duplicate values among matched rows: "
+            f"{duplicates[:5]}{'...' if len(duplicates) > 5 else ''}. "
+            f"Reordering requires unique values."
+        )
+
+    # Build lookup: id_value -> row position in filtered
+    id_to_row = {val: idx for idx, val in enumerate(filtered[id_column].values)}
+
+    # Reorder to match target_ids (skip any target_ids not found)
+    reorder_indices = [id_to_row[tid] for tid in target_ids if tid in id_to_row]
+
+    return filtered.iloc[reorder_indices].reset_index(drop=True)
+
+
 def reorder_multindex_by_categorical_and_numeric(
     multindex: pd.MultiIndex,
     categorical_order: List,
