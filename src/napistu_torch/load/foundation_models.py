@@ -42,9 +42,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
 from napistu_torch.load.constants import (
+    EMBEDDING_METADATA_FIELDS,
     FM_DEFS,
     FM_EDGELIST,
     FM_LAYER_CONSENSUS_METHODS,
+    MODEL_NICE_NAMES,
+    SCOPING_FIELDS,
     VALID_FM_LAYER_CONSENSUS_METHODS,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
@@ -368,16 +371,26 @@ class GeneEmbeddingsSet:
     ``ordered_gene_ids``. This enables direct cross-embedding comparison without
     repeated alignment overhead.
 
-    When constructed with a single embedding, it serves as a validated wrapper
-    that still provides the same dict-like interface and summary properties.
+    Keys are automatically scoped to the minimal distinguishing metadata. For example,
+    if all embeddings share the same model and dataset, keys are just the category
+    (e.g., "adipocyte (0)"). The constant parts are available as ``constant_label``
+    for use in plot titles.
 
     Attributes
     ----------
+    data : Dict[str, GeneEmbeddings]
+        Mapping from scoped key to aligned GeneEmbeddings.
     common_gene_ids : List[str]
         Gene identifiers (in the alignment ontology) shared across all embeddings,
         in the order used for alignment.
-    align_on : str
+    aligned_on : str
         The ontology column used for alignment.
+    embedding_metadata : pd.DataFrame
+        One row per embedding with source metadata, model_label, and scoped_key.
+    constant_label : str
+        Human-readable label for metadata that is constant across all embeddings.
+        Useful for plot titles. e.g., "scGPT / efthymiou2025". Empty string if
+        nothing is constant.
 
     Properties
     ----------
@@ -395,24 +408,31 @@ class GeneEmbeddingsSet:
     get(key)
         Return the aligned GeneEmbeddings for a given key.
     keys()
-        Return embedding labels.
+        Return embedding labels (scoped keys).
     values()
         Return GeneEmbeddings instances.
     items()
-        Return (label, GeneEmbeddings) pairs.
+        Return (scoped_key, GeneEmbeddings) pairs.
 
     Examples
     --------
+    >>> # Cross-model alignment — keys are model names
     >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
     ...     [ge_scgpt, ge_aido, ge_scprint]
     ... )
-    >>> aligned.n_common_genes
-    15234
-    >>> aligned.summary
-          key     model_name model_variant  ... n_genes embed_dim
-    0  scGPT          scGPT          None  ...   15234       512
-    1  AIDOCell_100m  AIDOCell  aido_cell_100m  ...   15234       768
-    >>> scgpt_emb = aligned["scGPT"]
+    >>> aligned.keys()
+    ['scGPT', 'AIDOCell_aido_cell_100m', 'scPRINT']
+    >>> aligned.constant_label
+    ''
+    >>>
+    >>> # Within-model, within-dataset — keys are just categories
+    >>> categories = GeneEmbeddingsSet.from_gene_embeddings(
+    ...     [ge_adipocyte, ge_tcell, ge_bcell]
+    ... )
+    >>> categories.keys()
+    ['adipocyte (0)', 'T_cell', 'B_cell']
+    >>> categories.constant_label
+    'scGPT / efthymiou2025'
     """
 
     def __init__(
@@ -430,11 +450,12 @@ class GeneEmbeddingsSet:
         Parameters
         ----------
         data : Dict[str, GeneEmbeddings]
-            Mapping from label to aligned GeneEmbeddings.
+            Mapping from source_label to aligned GeneEmbeddings. Will be
+            re-keyed to scoped keys automatically.
         common_gene_ids : List[str]
             The common gene IDs (in the alignment ontology) shared by all
             embeddings, in the order used for alignment.
-        align_on : str
+        aligned_on : str
             The ontology column that was used for alignment.
 
         Raises
@@ -451,7 +472,6 @@ class GeneEmbeddingsSet:
         for key, emb in data.items():
             emb_ids = emb.gene_ids_in_ontology(align_on)
             if emb_ids != common_gene_ids:
-                # Find first mismatch for a helpful error message
                 for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)):
                     if a != b:
                         raise ValueError(
@@ -459,15 +479,28 @@ class GeneEmbeddingsSet:
                             f"do not match common_gene_ids. "
                             f"First mismatch at index {i}: '{a}' != '{b}'"
                         )
-                # Length mismatch
                 raise ValueError(
                     f"Embedding '{key}' has {len(emb_ids)} genes but "
                     f"common_gene_ids has {len(common_gene_ids)}"
                 )
 
-        self._data: Dict[str, GeneEmbeddings] = dict(data)
-        self._common_gene_ids: List[str] = list(common_gene_ids)
-        self._align_on: str = align_on
+        # Build metadata and compute scoped keys
+        embedding_metadata = _build_embedding_metadata(data)
+        source_to_scoped, constant_label = _compute_scoped_keys(embedding_metadata)
+
+        # Add scoped keys to metadata
+        embedding_metadata[EMBEDDING_METADATA_FIELDS.SCOPED_KEY] = embedding_metadata[
+            EMBEDDING_METADATA_FIELDS.SOURCE_LABEL
+        ].map(source_to_scoped)
+
+        # Re-key data dict using scoped keys
+        self.data: Dict[str, GeneEmbeddings] = {
+            source_to_scoped[source_label]: emb for source_label, emb in data.items()
+        }
+        self.common_gene_ids: List[str] = list(common_gene_ids)
+        self.aligned_on: str = align_on
+        self.embedding_metadata: pd.DataFrame = embedding_metadata
+        self.constant_label: str = constant_label
 
     @classmethod
     def from_gene_embeddings(
@@ -477,9 +510,10 @@ class GeneEmbeddingsSet:
     ) -> "GeneEmbeddingsSet":
         """Align embeddings to common genes and construct container.
 
-        Uses ``align_gene_embeddings`` to find common genes across all
+        Uses ``_align_gene_embeddings`` to find common genes across all
         embeddings and reorder each to a consistent row ordering. Keys
-        are derived from each embedding's ``source_label``.
+        are derived from each embedding's ``source_label`` and then
+        automatically scoped to minimal distinguishing labels.
 
         Parameters
         ----------
@@ -493,7 +527,7 @@ class GeneEmbeddingsSet:
         Returns
         -------
         GeneEmbeddingsSet
-            Container with aligned embeddings.
+            Container with aligned embeddings and scoped keys.
 
         Raises
         ------
@@ -504,14 +538,8 @@ class GeneEmbeddingsSet:
 
         Examples
         --------
-        >>> # Multiple embeddings — aligns to common genes
         >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
         ...     [ge_scgpt, ge_aido],
-        ...     align_on='ensembl_gene',
-        ... )
-        >>> # Single embedding — wraps directly
-        >>> single = GeneEmbeddingsSet.from_gene_embeddings(
-        ...     [ge_scgpt],
         ...     align_on='ensembl_gene',
         ... )
         """
@@ -532,7 +560,6 @@ class GeneEmbeddingsSet:
             )
 
         if len(embeddings) == 1:
-            # Single embedding: validate align_on column exists, wrap directly
             emb = embeddings[0]
             if align_on not in emb.gene_annotations.columns:
                 raise ValueError(
@@ -543,7 +570,6 @@ class GeneEmbeddingsSet:
             common_gene_ids = emb.gene_ids_in_ontology(align_on)
             data = {labels[0]: emb}
         else:
-            # Multiple embeddings: align to common genes
             aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
             common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
             data = {
@@ -560,24 +586,14 @@ class GeneEmbeddingsSet:
     # --- Properties ---
 
     @property
-    def common_gene_ids(self) -> List[str]:
-        """Gene identifiers shared across all embeddings (in the alignment ontology)."""
-        return list(self._common_gene_ids)
-
-    @property
-    def align_on(self) -> str:
-        """The ontology column used for alignment."""
-        return self._align_on
-
-    @property
     def n_embeddings(self) -> int:
         """Number of stored embeddings."""
-        return len(self._data)
+        return len(self.data)
 
     @property
     def n_common_genes(self) -> int:
         """Number of common genes."""
-        return len(self._common_gene_ids)
+        return len(self.common_gene_ids)
 
     @property
     def summary(self) -> pd.DataFrame:
@@ -590,7 +606,7 @@ class GeneEmbeddingsSet:
             category, n_genes, embed_dim.
         """
         rows = []
-        for key, emb in self._data.items():
+        for key, emb in self.data.items():
             rows.append(
                 {
                     "key": key,
@@ -608,12 +624,12 @@ class GeneEmbeddingsSet:
     # --- Dict-like access ---
 
     def get(self, key: str) -> GeneEmbeddings:
-        """Get aligned GeneEmbeddings by label.
+        """Get aligned GeneEmbeddings by scoped key.
 
         Parameters
         ----------
         key : str
-            Label (source_label) of the embedding to retrieve.
+            Scoped key of the embedding to retrieve.
 
         Returns
         -------
@@ -625,46 +641,47 @@ class GeneEmbeddingsSet:
         KeyError
             If key is not found.
         """
-        if key not in self._data:
+        if key not in self.data:
             raise KeyError(
                 f"Embedding '{key}' not found. "
-                f"Available keys: {list(self._data.keys())}"
+                f"Available keys: {list(self.data.keys())}"
             )
-        return self._data[key]
+        return self.data[key]
 
     def __getitem__(self, key: str) -> GeneEmbeddings:
         return self.get(key)
 
     def __contains__(self, key: str) -> bool:
-        return key in self._data
+        return key in self.data
 
     def __len__(self) -> int:
-        return len(self._data)
+        return len(self.data)
 
     def keys(self):
-        """Return embedding labels."""
-        return self._data.keys()
+        """Return embedding labels (scoped keys)."""
+        return self.data.keys()
 
     def values(self):
         """Return GeneEmbeddings instances."""
-        return self._data.values()
+        return self.data.values()
 
     def items(self):
-        """Return (label, GeneEmbeddings) pairs."""
-        return self._data.items()
+        """Return (scoped_key, GeneEmbeddings) pairs."""
+        return self.data.items()
 
     # --- Dunder methods ---
 
     def __repr__(self) -> str:
-        keys = list(self._data.keys())
-        return (
-            f"GeneEmbeddingsSet("
-            f"n_embeddings={self.n_embeddings}, "
-            f"n_common_genes={self.n_common_genes}, "
-            f"align_on='{self._align_on}', "
-            f"keys={keys}"
-            f")"
-        )
+        keys = list(self.data.keys())
+        parts = [
+            f"n_embeddings={self.n_embeddings}",
+            f"n_common_genes={self.n_common_genes}",
+            f"aligned_on='{self.aligned_on}'",
+            f"keys={keys}",
+        ]
+        if self.constant_label:
+            parts.insert(0, f"constant_label='{self.constant_label}'")
+        return f"GeneEmbeddingsSet({', '.join(parts)})"
 
 
 class DatasetGeneEmbeddings:
@@ -772,7 +789,7 @@ class DatasetGeneEmbeddings:
                     "dataset_name": name,
                     "n_embeddings": ge_set.n_embeddings,
                     "n_common_genes": ge_set.n_common_genes,
-                    "align_on": ge_set.align_on,
+                    "aligned_on": ge_set.aligned_on,
                     "embed_dims": embed_dims,
                 }
             )
@@ -1305,14 +1322,19 @@ class FoundationModel(BaseModel):
     weights : FoundationModelWeights
         Model weight matrices (embeddings and attention layers)
 
+    Properties
+    ----------
+    disk_name : str
+        Version of the model label which can be used for a filename.
+    full_name : str
+        Full unique identifier (model_name with model_variant if present).
+
     Public Methods
     --------------
     compute_consensus_attention(target_ids, consensus_method='absolute-argmax', gene_annotation_target_var='ensembl_gene', apply_softmax=False)
         Compute consensus attention across all layers for target genes.
     compute_reordered_attention(layer_idx, target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=True, return_tensor=False, device=None)
         Compute attention scores for a specific layer and reorder to match a target gene ordering.
-    full_name
-        Property returning full unique identifier (model_name with model_variant if present).
     get_specific_attentions(edge_list, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
         Extract specific attention values across specified layers for given edges.
     get_top_attentions(k, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
@@ -1462,6 +1484,20 @@ class FoundationModel(BaseModel):
         if not all(isinstance(item, str) for item in v):
             raise ValueError("ordered_vocabulary must contain only strings")
         return v
+
+    # properties
+
+    @property
+    def disk_name(self) -> str:
+        """Get a version of the model label which can be used for a filename."""
+        return _get_disk_name(self.model_name, self.model_variant)
+
+    @property
+    def full_name(self) -> str:
+        """Get full unique identifier."""
+        return _get_model_label(self.model_name, self.model_variant)
+
+    # methods
 
     def compute_consensus_attention(
         self,
@@ -2006,13 +2042,6 @@ class FoundationModel(BaseModel):
 
         return all_edges
 
-    @property
-    def full_name(self) -> str:
-        """Get full unique identifier."""
-        if self.model_variant:
-            return f"{self.model_name}_{self.model_variant}"
-        return self.model_name
-
     @classmethod
     def load(cls, output_dir: str, prefix: str) -> "FoundationModel":
         """
@@ -2034,6 +2063,7 @@ class FoundationModel(BaseModel):
         --------
         >>> model = FoundationModel.load('/path/to/output', 'scGPT')
         """
+
         (
             weights_dict,
             gene_annotations,
@@ -2325,8 +2355,6 @@ class FoundationModels(BaseModel):
         Load multiple foundation models from saved files (classmethod).
     model_names
         Property returning list of model names.
-    __repr__()
-        String representation of the FoundationModels instance.
 
     Private Methods
     --------------
@@ -2724,10 +2752,8 @@ class FoundationModels(BaseModel):
 
         # Iterate over models - delegate to FoundationModel method
         for model in self.models:
-            model_name = model.full_name
-
             if verbose:
-                logger.info(f"Extracting attentions from {model_name}...")
+                logger.info(f"Extracting attentions from {model.full_name}...")
 
             # Delegate to FoundationModel.get_specific_attentions()
             model_attentions = model.get_specific_attentions(
@@ -2741,7 +2767,7 @@ class FoundationModels(BaseModel):
             )
 
             # Add model name column
-            model_attentions[FM_EDGELIST.MODEL] = model_name
+            model_attentions[FM_EDGELIST.MODEL] = model.full_name
 
             results.append(model_attentions)
 
@@ -2873,9 +2899,7 @@ class FoundationModels(BaseModel):
         top_attention_edges = list()
         for i in range(n_models):
             model = self.models[i]
-            model_name = model.full_name
-
-            logger.info(f"Computing top-k attention for {model_name}...")
+            logger.info(f"Computing top-k attention for {model.full_name}...")
 
             model_top_k_attention = model.get_top_attentions(
                 k=k,
@@ -2885,7 +2909,7 @@ class FoundationModels(BaseModel):
                 compute_ranks=compute_ranks,
                 ignore_self_attention=ignore_self_attention,
                 verbose=verbose,
-            ).assign(model=model_name)
+            ).assign(model=model.full_name)
 
             top_attention_edges.append(model_top_k_attention)
 
@@ -3192,6 +3216,372 @@ class FoundationModels(BaseModel):
         return f"FoundationModels(models=[{model_full_names_str}])"
 
 
+class AttendedEmbeddings:
+    """Aligned gene embeddings paired with attention machinery for cross-embedding analysis.
+
+    Bundles a GeneEmbeddingsSet (aligned embeddings from one or more models/datasets)
+    with references to the FoundationModel instances that produced them. This enables
+    computing attention patterns from any embedding using its model's attention weights,
+    and comparing those patterns across embeddings.
+
+    The key insight is that attention computation requires:
+    1. An embedding matrix (from GeneEmbeddings — could be static or expression-contextualized)
+    2. Attention weight matrices (W_q, W_k, W_v, W_o from AttentionLayer)
+    3. n_heads (from the model metadata)
+
+    Items 2 and 3 are always model-level properties, while item 1 varies per embedding.
+    This class manages the mapping from each embedding to its corresponding model.
+
+    Parameters
+    ----------
+    embeddings_set : GeneEmbeddingsSet
+        Aligned gene embeddings. All embeddings must share the same common genes
+        in the same row order.
+    foundation_models : FoundationModels
+        Container of FoundationModel instances. Each embedding in embeddings_set
+        must map to exactly one model (via model_name + model_variant -> full_name).
+
+    Attributes
+    ----------
+    embeddings_set : GeneEmbeddingsSet
+        The aligned embeddings.
+    foundation_models : FoundationModels
+        The source foundation models (held by reference).
+    common_gene_ids : List[str]
+        Gene IDs shared across all embeddings (delegates to embeddings_set).
+    embedding_to_model_map : Dict[str, str]
+        Mapping from embedding key (source_label) to model full_name.
+
+    Properties
+    ----------
+    n_embeddings : int
+        Number of embeddings in the set.
+    n_common_genes : int
+        Number of common genes.
+    embedding_keys : List[str]
+        Labels for each embedding.
+    model_names : List[str]
+        Unique model names referenced by embeddings.
+
+    Examples
+    --------
+    >>> # From static embeddings (most common entry point)
+    >>> attended = AttendedEmbeddings.from_static(foundation_models)
+    >>> attended.n_common_genes
+    15234
+
+    >>> # From expression-contextualized embeddings
+    >>> attended = AttendedEmbeddings.from_expression(
+    ...     foundation_models, dataset_name="efthymiou2025", category="adipocyte (0)"
+    ... )
+
+    >>> # From a pre-built GeneEmbeddingsSet
+    >>> attended = AttendedEmbeddings(embeddings_set, foundation_models)
+    """
+
+    def __init__(
+        self,
+        embeddings_set: GeneEmbeddingsSet,
+        foundation_models: FoundationModels,
+    ):
+        # Validate types
+        if not isinstance(embeddings_set, GeneEmbeddingsSet):
+            raise TypeError(
+                f"embeddings_set must be a GeneEmbeddingsSet, "
+                f"got {type(embeddings_set)}"
+            )
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        # Build mapping: embedding key -> model full_name
+        # Each GeneEmbeddings carries model_name and model_variant;
+        # combine them the same way FoundationModel.full_name does.
+        embedding_to_model: Dict[str, str] = {}
+        available_model_names = set(foundation_models.model_names)
+
+        for key, emb in embeddings_set.items():
+            if emb.model_name is None:
+                raise ValueError(
+                    f"Embedding '{key}' has no model_name set. "
+                    f"Cannot map to a FoundationModel."
+                )
+
+            full_name = _get_model_label(emb.model_name, emb.model_variant)
+
+            if full_name not in available_model_names:
+                raise ValueError(
+                    f"Embedding '{key}' maps to model '{full_name}', "
+                    f"but no matching FoundationModel was found. "
+                    f"Available models: {sorted(available_model_names)}"
+                )
+
+            embedding_to_model[key] = full_name
+
+        # Validate that every referenced model has attention layers
+        referenced_models = set(embedding_to_model.values())
+        for model_name in referenced_models:
+            model = foundation_models.get_model(model_name)
+            if len(model.weights.attention_layers) == 0:
+                raise ValueError(
+                    f"Model '{model_name}' has no attention layers. "
+                    f"AttendedEmbeddings requires models with attention weights."
+                )
+
+        self._embeddings_set = embeddings_set
+        self._foundation_models = foundation_models
+        self._embedding_to_model = embedding_to_model
+
+    # --- Factory classmethods ---
+
+    @classmethod
+    def from_static(
+        cls,
+        foundation_models: FoundationModels,
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    ) -> "AttendedEmbeddings":
+        """Create AttendedEmbeddings from the static gene embeddings of all models.
+
+        Extracts each model's static gene embedding, aligns them to common genes,
+        and wires up the attention references. This replicates the current
+        FoundationModels cross-model analysis workflow.
+
+        Parameters
+        ----------
+        foundation_models : FoundationModels
+            Container with 2+ loaded foundation models.
+        align_on : str, optional
+            Ontology column for gene alignment (default: 'ensembl_gene').
+
+        Returns
+        -------
+        AttendedEmbeddings
+            Ready for analysis with aligned static embeddings.
+
+        Examples
+        --------
+        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
+        >>> attended = AttendedEmbeddings.from_static(models)
+        >>> attended.n_common_genes
+        15234
+        >>> attended.embedding_keys
+        ['scGPT', 'scPRINT']
+        """
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        static_embeddings = [
+            model.weights.static_gene_embeddings for model in foundation_models.models
+        ]
+
+        embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+            static_embeddings, align_on=align_on
+        )
+
+        return cls(
+            embeddings_set=embeddings_set,
+            foundation_models=foundation_models,
+        )
+
+    @classmethod
+    def from_expression(
+        cls,
+        foundation_models: FoundationModels,
+        dataset_name: str,
+        category: str,
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    ) -> "AttendedEmbeddings":
+        """Create AttendedEmbeddings from expression-contextualized embeddings.
+
+        For each model, retrieves the GeneEmbeddings for the specified
+        dataset and category, aligns them to common genes, and wires up
+        the attention references.
+
+        Parameters
+        ----------
+        foundation_models : FoundationModels
+            Container with 2+ loaded foundation models. Each model must have
+            dataset_gene_embeddings containing the specified dataset and category.
+        dataset_name : str
+            Name of the expression dataset (e.g., 'efthymiou2025').
+        category : str
+            Category within the dataset (e.g., 'adipocyte (0)', 'T_cell').
+        align_on : str, optional
+            Ontology column for gene alignment (default: 'ensembl_gene').
+
+        Returns
+        -------
+        AttendedEmbeddings
+            Ready for analysis with aligned expression embeddings.
+
+        Raises
+        ------
+        ValueError
+            If any model lacks dataset_gene_embeddings.
+            If the specified dataset is not found in any model.
+            If the specified category is not found in any model's dataset.
+
+        Examples
+        --------
+        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
+        >>> attended = AttendedEmbeddings.from_expression(
+        ...     models, dataset_name="efthymiou2025", category="adipocyte (0)"
+        ... )
+        >>> attended.n_embeddings
+        2
+        """
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        expression_embeddings: List[GeneEmbeddings] = []
+
+        for model in foundation_models.models:
+            # Validate model has expression embeddings
+            if model.dataset_gene_embeddings is None:
+                raise ValueError(
+                    f"Model '{model.full_name}' has no dataset_gene_embeddings. "
+                    f"Cannot extract expression embeddings."
+                )
+
+            # Validate dataset exists
+            if dataset_name not in model.dataset_gene_embeddings:
+                raise ValueError(
+                    f"Dataset '{dataset_name}' not found in model "
+                    f"'{model.full_name}'. Available datasets: "
+                    f"{model.dataset_gene_embeddings.dataset_names}"
+                )
+
+            # Find the GeneEmbeddings with matching category
+            # TODO: Once GeneEmbeddingsSet keys are scoped (i.e., simplified
+            # to just category when dataset and model are fixed within a set),
+            # this lookup can become a direct dict access:
+            #     ge_set[category]
+            # instead of iterating over values.
+            ge_set = model.dataset_gene_embeddings[dataset_name]
+            matched_emb = None
+            for emb in ge_set.values():
+                if emb.category == category:
+                    matched_emb = emb
+                    break
+
+            if matched_emb is None:
+                available_categories = [
+                    emb.category for emb in ge_set.values() if emb.category is not None
+                ]
+                raise ValueError(
+                    f"Category '{category}' not found in dataset '{dataset_name}' "
+                    f"for model '{model.full_name}'. "
+                    f"Available categories: {available_categories}"
+                )
+
+            expression_embeddings.append(matched_emb)
+
+        embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+            expression_embeddings, align_on=align_on
+        )
+
+        return cls(
+            embeddings_set=embeddings_set,
+            foundation_models=foundation_models,
+        )
+
+    # --- Properties ---
+
+    @property
+    def embeddings_set(self) -> GeneEmbeddingsSet:
+        """The aligned gene embeddings."""
+        return self._embeddings_set
+
+    @property
+    def foundation_models(self) -> FoundationModels:
+        """The source foundation models (by reference)."""
+        return self._foundation_models
+
+    @property
+    def common_gene_ids(self) -> List[str]:
+        """Gene IDs shared across all embeddings."""
+        return self._embeddings_set.common_gene_ids
+
+    @property
+    def n_embeddings(self) -> int:
+        """Number of embeddings."""
+        return self._embeddings_set.n_embeddings
+
+    @property
+    def n_common_genes(self) -> int:
+        """Number of common genes."""
+        return self._embeddings_set.n_common_genes
+
+    @property
+    def embedding_keys(self) -> List[str]:
+        """Labels for each embedding."""
+        return list(self._embeddings_set.keys())
+
+    @property
+    def model_names(self) -> List[str]:
+        """Unique model names referenced by embeddings (preserves order)."""
+        seen = set()
+        result = []
+        for model_name in self._embedding_to_model.values():
+            if model_name not in seen:
+                seen.add(model_name)
+                result.append(model_name)
+        return result
+
+    @property
+    def embedding_to_model_map(self) -> Dict[str, str]:
+        """Mapping from embedding key to model full_name."""
+        return dict(self._embedding_to_model)
+
+    # --- Model lookup ---
+
+    def get_model_for_embedding(self, embedding_key: str) -> FoundationModel:
+        """Get the FoundationModel associated with an embedding.
+
+        Parameters
+        ----------
+        embedding_key : str
+            Key (source_label) of the embedding.
+
+        Returns
+        -------
+        FoundationModel
+            The model whose attention layers should be used with this embedding.
+
+        Raises
+        ------
+        KeyError
+            If embedding_key is not found.
+        """
+        if embedding_key not in self._embedding_to_model:
+            raise KeyError(
+                f"Embedding '{embedding_key}' not found. "
+                f"Available keys: {self.embedding_keys}"
+            )
+        model_name = self._embedding_to_model[embedding_key]
+        return self._foundation_models.get_model(model_name)
+
+    # --- Dunder ---
+
+    def __repr__(self) -> str:
+        return (
+            f"AttendedEmbeddings("
+            f"n_embeddings={self.n_embeddings}, "
+            f"n_common_genes={self.n_common_genes}, "
+            f"models={self.model_names}, "
+            f"keys={self.embedding_keys}"
+            f")"
+        )
+
+
 # Private utility functions
 
 
@@ -3328,6 +3718,41 @@ def _align_gene_embeddings(
     return aligned
 
 
+def _build_embedding_metadata(
+    embeddings: Dict[str, GeneEmbeddings],
+) -> pd.DataFrame:
+    """Build a metadata DataFrame from a dict of GeneEmbeddings.
+
+    Parameters
+    ----------
+    embeddings : Dict[str, GeneEmbeddings]
+        Mapping from source_label to GeneEmbeddings.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per embedding with columns: source_label, model_name,
+        model_variant, model_label, dataset_name, category.
+        model_label combines model_name and model_variant with "_"
+        (e.g., "scGPT", "AIDOCell_aido_cell_100m"). None variant is omitted.
+    """
+    rows = []
+    for source_label, emb in embeddings.items():
+        model_label = _get_model_label(emb.model_name, emb.model_variant)
+
+        rows.append(
+            {
+                EMBEDDING_METADATA_FIELDS.SOURCE_LABEL: source_label,
+                EMBEDDING_METADATA_FIELDS.MODEL_NAME: emb.model_name,
+                EMBEDDING_METADATA_FIELDS.MODEL_VARIANT: emb.model_variant,
+                EMBEDDING_METADATA_FIELDS.MODEL_LABEL: model_label,
+                EMBEDDING_METADATA_FIELDS.DATASET_NAME: emb.dataset_name,
+                EMBEDDING_METADATA_FIELDS.CATEGORY: emb.category,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _calculate_embedding_correlations(
     aligned_embeddings: Dict[str, np.ndarray],
     common_identifiers: List[str],
@@ -3391,6 +3816,100 @@ def _calculate_embedding_correlations(
                 logger.info(f"  {model1} vs {model2}: Spearman rho = {rho:.4f}")
 
     return comparisons
+
+
+def _compute_scoped_keys(
+    embedding_metadata: pd.DataFrame,
+) -> Tuple[Dict[str, str], str]:
+    """Compute minimal scoped keys and a constant label from embedding metadata.
+
+    For each scoping field (model_label, dataset_name, category):
+    - If the field is constant and non-None across all embeddings, it goes into
+      the constant_label and is excluded from keys.
+    - If the field varies (or is a mix of None and values), it stays in the keys.
+
+    None values are excluded from both keys and labels.
+
+    Parameters
+    ----------
+    embedding_metadata : pd.DataFrame
+        Output of _build_embedding_metadata. Must contain columns:
+        source_label, model_label, dataset_name, category.
+
+    Returns
+    -------
+    source_to_scoped : Dict[str, str]
+        Mapping from source_label to scoped key.
+    constant_label : str
+        "/"-joined label of constant non-None fields
+        (e.g., "scGPT / efthymiou2025"). Empty string if nothing is constant.
+
+    Raises
+    ------
+    ValueError
+        If scoped keys are not unique.
+
+    Examples
+    --------
+    >>> # Same model + dataset, different categories
+    >>> # constant_label = "scGPT / efthymiou2025"
+    >>> # keys: "adipocyte (0)", "T_cell"
+
+    >>> # Different models, no dataset/category
+    >>> # constant_label = ""
+    >>> # keys: "scGPT", "scPRINT", "AIDOCell_aido_cell_100m"
+
+    >>> # Different models, same dataset + category
+    >>> # constant_label = "efthymiou2025 / adipocyte (0)"
+    >>> # keys: "scGPT", "scPRINT"
+    """
+    constant_parts = []
+    varying_fields = []
+
+    for field in SCOPING_FIELDS:
+        non_null_values = embedding_metadata[field].dropna().unique()
+
+        if len(non_null_values) == 0:
+            # All None — skip
+            continue
+        elif len(non_null_values) == 1 and embedding_metadata[field].notna().all():
+            # Constant non-None across all embeddings
+            constant_parts.append(str(non_null_values[0]))
+        else:
+            # Varies across embeddings
+            varying_fields.append(field)
+
+    # Build scoped keys from varying fields
+    source_to_scoped = {}
+    for _, row in embedding_metadata.iterrows():
+        key_parts = []
+        for field in varying_fields:
+            val = row[field]
+            if pd.notna(val) and val is not None:
+                key_parts.append(str(val))
+
+        # Fallback to source_label if no varying fields produce a key
+        # (e.g., single embedding where everything is constant)
+        scoped_key = (
+            "/".join(key_parts)
+            if key_parts
+            else row[EMBEDDING_METADATA_FIELDS.SOURCE_LABEL]
+        )
+        source_to_scoped[row[EMBEDDING_METADATA_FIELDS.SOURCE_LABEL]] = scoped_key
+
+    # Validate uniqueness
+    scoped_values = list(source_to_scoped.values())
+    if len(scoped_values) != len(set(scoped_values)):
+        counts = Counter(scoped_values)
+        duplicates = {k: v for k, v in counts.items() if v > 1}
+        raise ValueError(
+            f"Scoped keys are not unique: {duplicates}. "
+            f"This indicates a bug in the scoping logic or duplicate embeddings."
+        )
+
+    constant_label = " / ".join(constant_parts)
+
+    return source_to_scoped, constant_label
 
 
 def _edgelist_to_indices(
@@ -3835,16 +4354,17 @@ def _gene_embeddings_from_save_dict(
             "Re-run the ETL pipeline to regenerate model outputs."
         )
 
+    # Always use model-level metadata for model_name/model_variant; per-embedding
+    # metadata may have been None (ETL never set it)
+    model_name = fallback_metadata.get(FM_DEFS.MODEL_NAME)
+    model_variant = fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
+
     return GeneEmbeddings(
         embedding=embedding,
         ordered_gene_ids=metadata.get(FM_DEFS.ORDERED_GENES, []),
         gene_annotations=pd.DataFrame(ge_annotations),
-        model_name=metadata.get(
-            FM_DEFS.MODEL_NAME, fallback_metadata.get(FM_DEFS.MODEL_NAME)
-        ),
-        model_variant=metadata.get(
-            FM_DEFS.MODEL_VARIANT, fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
-        ),
+        model_name=model_name,
+        model_variant=model_variant,
         dataset_name=metadata.get(FM_DEFS.DATASET_NAME),
         dataset_uri=metadata.get(FM_DEFS.DATASET_URI),
         category=metadata.get(FM_DEFS.CATEGORY),
@@ -3877,6 +4397,64 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
         FM_DEFS.DATASET_URI: ge.dataset_uri,
         FM_DEFS.CATEGORY: ge.category,
     }
+
+
+def _get_disk_name(
+    model_name: str,
+    model_variant: Optional[str] = None,
+) -> str:
+    """Get a version of the model label which can be used for a filename."""
+    if model_variant is None:
+        return model_name
+    return f"{model_name}_{model_variant}"
+
+
+def _get_model_label(
+    model_name: str,
+    model_variant: Optional[str] = None,
+) -> str:
+    """Get a human-readable label for a foundation model.
+
+    Looks up (model_name, model_variant) in a curated table of display names.
+    Falls back to an auto-generated label if no curated name exists.
+
+    Auto-generated format:
+    - "model_name (model_variant)" if model_variant is not None
+    - "model_name" if model_variant is None
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the foundation model (e.g., "scGPT", "AIDOCell").
+    model_variant : str, optional
+        Variant of the model (e.g., "aido_cell_100m", "small").
+
+    Returns
+    -------
+    str
+        Human-readable model label.
+
+    Examples
+    --------
+    >>> get_model_label("AIDOCell", "aido_cell_100m")
+    'AIDO.Cell (100M)'
+    >>> get_model_label("scGPT")
+    'scGPT'
+    >>> get_model_label("scPRINT", "small")
+    'scPRINT (small)'
+    >>> get_model_label("NewModel", "v2")
+    'NewModel (v2)'
+    >>> get_model_label("NewModel")
+    'NewModel'
+    """
+    key = (model_name, model_variant)
+    if key in MODEL_NICE_NAMES:
+        return MODEL_NICE_NAMES[key]
+
+    # Auto-generate
+    if model_variant is not None:
+        return f"{model_name} ({model_variant})"
+    return model_name
 
 
 def _load_results(
