@@ -11,9 +11,10 @@ import logging
 from typing import List
 
 import pandas as pd
-from napistu.constants import BQB, IDENTIFIERS, ONTOLOGIES, SBML_DFS
+from napistu.constants import BQB, IDENTIFIERS, SBML_DFS
 from napistu.identifiers import _check_species_identifiers_table
 from napistu.network.constants import NAPISTU_GRAPH_VERTICES
+from napistu.ontologies.constants import ONTOLOGIES
 from napistu.ontologies.standardization import create_uri_url
 
 from napistu_torch.utils.constants import EXPECTED_NAME_TO_SID_MAP_COLUMNS

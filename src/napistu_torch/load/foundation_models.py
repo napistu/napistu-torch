@@ -61,12 +61,15 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
 from napistu_torch.load.constants import (
+    COMPARE_EMBEDDINGS_COMPARISONS,
+    COMPARE_EMBEDDINGS_SETTINGS,
     EMBEDDING_METADATA_FIELDS,
     FM_DEFS,
     FM_EDGELIST,
     FM_LAYER_CONSENSUS_METHODS,
     MODEL_NICE_NAMES,
     SCOPING_FIELDS,
+    VALID_COMPARE_EMBEDDINGS_COMPARISONS,
     VALID_FM_LAYER_CONSENSUS_METHODS,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
@@ -651,6 +654,7 @@ class GeneEmbeddingsSet:
         cls,
         embeddings: List[GeneEmbeddings],
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
     ) -> "GeneEmbeddingsSet":
         """Align embeddings to common genes and construct container.
 
@@ -667,6 +671,8 @@ class GeneEmbeddingsSet:
             it is wrapped directly without alignment.
         align_on : str, optional
             Column in gene_annotations to align on (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -714,7 +720,9 @@ class GeneEmbeddingsSet:
             common_gene_ids = emb.gene_ids_in_ontology(align_on)
             data = {labels[0]: emb}
         else:
-            aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
+            aligned_embeddings = _align_gene_embeddings(
+                embeddings, align_on=align_on, verbose=verbose
+            )
             common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
             data = {
                 label: aligned_emb
@@ -1522,7 +1530,12 @@ class FoundationModel(BaseModel):
     # methods
 
     @classmethod
-    def load(cls, output_dir: str, prefix: str) -> "FoundationModel":
+    def load(
+        cls,
+        output_dir: str,
+        prefix: str,
+        verbose: bool = True,
+    ) -> "FoundationModel":
         """
         Load foundation model from saved files.
 
@@ -1532,6 +1545,8 @@ class FoundationModel(BaseModel):
             Directory path containing the saved files
         prefix : str
             Prefix used for the saved files
+        verbose : bool
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -1549,7 +1564,7 @@ class FoundationModel(BaseModel):
             model_metadata,
             static_gene_embedding_metadata,
             dataset_gene_embeddings_metadata,
-        ) = _load_results(output_dir, prefix)
+        ) = _load_results(output_dir, prefix, verbose=verbose)
 
         # Infer model_variant from prefix if not in metadata
         if (
@@ -1600,9 +1615,10 @@ class FoundationModel(BaseModel):
         # Reconstruct dataset gene embeddings
         dataset_gene_embeddings = None
         if dataset_gene_embeddings_metadata:
-            logger.info(
-                f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
-            )
+            if verbose:
+                logger.info(
+                    f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
+                )
 
             dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
 
@@ -1631,7 +1647,7 @@ class FoundationModel(BaseModel):
                 dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
                 for ds_name, ge_list in dataset_gene_embeddings_lists.items():
                     dataset_sets[ds_name] = GeneEmbeddingsSet.from_gene_embeddings(
-                        ge_list
+                        ge_list, verbose=verbose
                     )
                 dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
 
@@ -1757,24 +1773,21 @@ class FoundationModels(BaseModel):
     models : List[FoundationModel]
         List of foundation model instances (minimum 2 required)
 
+    Properties
+    ----------
+    model_names : List[str]
+        List of model names.
+
     Public Methods
     --------------
     get_common_identifiers(ontology='ensembl_gene', verbose=True)
         Get common identifiers across all models.
-    get_consensus_top_attentions(k=10000, consensus_method='absolute-argmax', apply_softmax=False, reextract_union=False, verbose=False)
-        Compute consensus top-k attention edges across all models for common genes.
-    get_consensus_attentions(consensus_method='absolute-argmax', apply_softmax=False)
-        Compute consensus attention scores across all models for common genes.
     get_model(full_name)
         Get a specific model by its full_name attribute.
-    get_specific_attentions(edge_list, apply_softmax=False, verbose=False)
-        Extract specific attention values across all models and layers for given edges.
-    get_top_attentions(k=10000, apply_softmax=False, reextract_union=False, verbose=False)
-        Extract top-k attention edges across all models for common genes.
+    get_summary()
+        Get a summary of model metadata.
     load_multiple(output_dir, prefixes)
         Load multiple foundation models from saved files (classmethod).
-    model_names
-        Property returning list of model names.
 
     Private Methods
     --------------
@@ -1797,6 +1810,11 @@ class FoundationModels(BaseModel):
         if not all(isinstance(model, FoundationModel) for model in v):
             raise ValueError("All elements must be FoundationModel instances")
         return v
+
+    @property
+    def model_names(self) -> List[str]:
+        """Get list of model names."""
+        return [model.full_name for model in self.models]
 
     def get_common_identifiers(
         self, ontology: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True
@@ -1887,8 +1905,27 @@ class FoundationModels(BaseModel):
             f"Model '{full_name}' not found. Available models: {available_models}"
         )
 
+    def get_summary(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "full_name": [x.full_name for x in self.models],
+                "model": [x.model_name for x in self.models],
+                "variant": [
+                    x.model_variant if x.model_variant is not None else ""
+                    for x in self.models
+                ],
+                "n_layers": [x.n_layers for x in self.models],
+                "n_heads": [x.n_heads for x in self.models],
+                "parameter_count": [
+                    x.weights.count_attention_parameters() for x in self.models
+                ],
+            }
+        )
+
     @classmethod
-    def load_multiple(cls, output_dir: str, prefixes: List[str]) -> "FoundationModels":
+    def load_multiple(
+        cls, output_dir: str, prefixes: List[str], verbose: bool = True
+    ) -> "FoundationModels":
         """
         Load multiple foundation models from saved files.
 
@@ -1898,6 +1935,8 @@ class FoundationModels(BaseModel):
             Directory path containing the saved model files
         prefixes : List[str]
             List of prefixes for the models to load
+        verbose : bool
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -1913,7 +1952,8 @@ class FoundationModels(BaseModel):
         >>> common_ids = models.get_common_identifiers()
         """
         loaded_models = [
-            FoundationModel.load(output_dir, prefix) for prefix in prefixes
+            FoundationModel.load(output_dir, prefix, verbose=verbose)
+            for prefix in prefixes
         ]
 
         # Create instance and sort by parameters
@@ -1921,11 +1961,6 @@ class FoundationModels(BaseModel):
         instance._sort_models_by_parameters()
 
         return instance
-
-    @property
-    def model_names(self) -> List[str]:
-        """Get list of model names."""
-        return [model.full_name for model in self.models]
 
     # private methods
 
@@ -2668,9 +2703,9 @@ class AttendedEmbeddingsSet:
 
     Public Methods
     --------------
-    from_static(foundation_models: FoundationModels, align_on: str = ONTOLOGIES.ENSEMBL_GENE) -> "AttendedEmbeddingsSet":
+    from_static(foundation_models: FoundationModels, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
         Create AttendedEmbeddings from the static gene embeddings of all models.
-    from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE) -> "AttendedEmbeddingsSet":
+    from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
         Create AttendedEmbeddings from expression-contextualized embeddings.
     get_consensus_attention(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
         Compute consensus attention across all layers for each embedding.
@@ -2794,6 +2829,160 @@ class AttendedEmbeddingsSet:
                 result.append(ae.model_name)
         return result
 
+    def compare(
+        self,
+        comparison_types: List[str] = VALID_COMPARE_EMBEDDINGS_COMPARISONS,
+        top_k: int = 10000,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.SUM,
+        by_absolute_value: bool = False,
+        ignore_self_attention: bool = True,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+
+        invalid_comparison_types = set(comparison_types) - set(
+            VALID_COMPARE_EMBEDDINGS_COMPARISONS
+        )
+        if invalid_comparison_types:
+            raise ValueError(
+                f"The following requested comparison types are not valid: {invalid_comparison_types}. Valid comparison types: {VALID_COMPARE_EMBEDDINGS_COMPARISONS}."
+            )
+
+        if consensus_method not in VALID_FM_LAYER_CONSENSUS_METHODS:
+            raise ValueError(
+                f"The requested consensus method is not valid: {consensus_method}. Valid consensus methods: {VALID_FM_LAYER_CONSENSUS_METHODS}."
+            )
+
+        # precalculate and cache operations that take more than a minute or so
+        comparisons = dict()
+        n_genes = self.n_common_genes
+
+        # gene embedding correlations
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS
+            in comparison_types
+        ):
+            logger.info("Calculating gene embedding correlations...")
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = (
+                self.embeddings_set.compare_embeddings(verbose=verbose)
+            )
+        else:
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = (
+                None
+            )
+
+        # within model layer x layer comparisons (correlations and rank agreement)
+        if COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS in comparison_types:
+            logger.info("Calculating within model layer x layer comparisons...")
+            (
+                comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS],
+                comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT],
+            ) = self.get_within_embeddings_layer_comparisons(
+                top_k, ignore_self_attention, by_absolute_value, verbose
+            )
+        else:
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS] = None
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT] = (
+                None
+            )
+
+        # cross model x layer top attentions
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            in comparison_types
+        ):
+            logger.info("Calculating cross model x layer top attentions...")
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            ] = self.get_top_attentions(
+                k=top_k,
+                by_absolute_value=by_absolute_value,
+                reextract_union=True,
+                compute_ranks=True,
+                ignore_self_attention=ignore_self_attention,
+                verbose=verbose,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            in comparison_types
+        ):
+            logger.info(
+                "Comparing ranks of topK attentions in one model/layer to all other models/layers..."
+            )
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            ] = compare_top_k_union_ranks(
+                comparisons[
+                    COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+                ],
+                grouping_vars=[FM_EDGELIST.MODEL, FM_EDGELIST.LAYER],
+                defining_vars=[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE],
+                max_rank=n_genes**2,
+                top_k=top_k,
+                rank_col=FM_EDGELIST.ATTENTION_RANK,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            in comparison_types
+        ):
+            logger.info("Calculating cross model consensus top attentions...")
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            ] = self.get_consensus_top_attentions(
+                k=top_k,
+                consensus_method=consensus_method,
+                by_absolute_value=by_absolute_value,
+                reextract_union=True,
+                compute_ranks=True,
+                ignore_self_attention=ignore_self_attention,
+                verbose=verbose,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            in comparison_types
+        ):
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            ] = compare_top_k_union_ranks(
+                comparisons[
+                    COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+                ],
+                grouping_vars=[FM_EDGELIST.MODEL],
+                defining_vars=[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE],
+                max_rank=n_genes**2,
+                top_k=top_k,
+                rank_col=FM_EDGELIST.ATTENTION_RANK,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            ] = None
+
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS] = {
+            COMPARE_EMBEDDINGS_SETTINGS.TOP_K: top_k,
+            COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD: consensus_method,
+            COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE: by_absolute_value,
+            COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION: ignore_self_attention,
+            COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS: self.embedding_keys,
+            COMPARE_EMBEDDINGS_SETTINGS.N_GENES: n_genes,
+        }
+
+        return comparisons
+
     @classmethod
     def from_expression(
         cls,
@@ -2801,6 +2990,7 @@ class AttendedEmbeddingsSet:
         dataset_name: str,
         category: str,
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
     ) -> "AttendedEmbeddingsSet":
         """Create AttendedEmbeddings from expression-contextualized embeddings.
 
@@ -2819,6 +3009,8 @@ class AttendedEmbeddingsSet:
             Category within the dataset (e.g., 'adipocyte (0)', 'T_cell').
         align_on : str, optional
             Ontology column for gene alignment (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -2877,7 +3069,7 @@ class AttendedEmbeddingsSet:
             expression_embeddings.append(ge_set[category])
 
         embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
-            expression_embeddings, align_on=align_on
+            expression_embeddings, align_on=align_on, verbose=verbose
         )
 
         return cls(
@@ -2890,6 +3082,7 @@ class AttendedEmbeddingsSet:
         cls,
         foundation_models: FoundationModels,
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
     ) -> "AttendedEmbeddingsSet":
         """Create AttendedEmbeddings from the static gene embeddings of all models.
 
@@ -2903,6 +3096,8 @@ class AttendedEmbeddingsSet:
             Container with 2+ loaded foundation models.
         align_on : str, optional
             Ontology column for gene alignment (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -2929,7 +3124,7 @@ class AttendedEmbeddingsSet:
         ]
 
         embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
-            static_embeddings, align_on=align_on
+            static_embeddings, align_on=align_on, verbose=verbose
         )
 
         return cls(
@@ -3319,6 +3514,258 @@ class AttendedEmbeddingsSet:
             f")"
         )
 
+    def get_within_embeddings_layer_comparisons(
+        self,
+        top_k: int,
+        ignore_self_attention: bool = True,
+        by_absolute_value: bool = False,
+        verbose: bool = False,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Get within model layer x layer comparisons.
+
+        For each of the embeddings in the set calculate cross-layer attention consistency.
+
+        Parameters
+        ----------
+        top_k : int
+            The number of attention pairs to summarize for "top" summaries.
+        ignore_self_attention : bool
+            Should self-attention (i.e., gene A - gene A) be ignored when summarizing top attention pairs. Default is True.
+        by_absolute_value : bool
+            Should the absolute value of the attention be used when summarizing top attention pairs. If False (default) then top-attention is selected from the most positive attention values. Default is False.
+        verbose : bool
+            Should verbose output be printed. Default is False.
+
+        Returns
+        -------
+        tuple
+            A tuple of two dictionaries. The first contains the model x layer correlations and the second contains the model x layer rank agreement.
+
+        """
+
+        model_layer_correlations = {}
+        model_layer_rank_agreement = {}
+
+        for an_attended_embeddings in self.attended_embeddings.values():
+
+            model_name = an_attended_embeddings.model_name
+            logger.info(
+                f"Summarizing cross-layer attention consistency for {model_name}..."
+            )
+
+            (
+                model_layer_correlations[model_name],
+                model_layer_rank_agreement[model_name],
+            ) = an_attended_embeddings.compare_layer_attention_consistency(
+                top_k=top_k,
+                ignore_self_attention=ignore_self_attention,
+                by_absolute_value=by_absolute_value,
+                verbose=verbose,
+            )
+
+        return model_layer_correlations, model_layer_rank_agreement
+
+
+# Public functions
+
+
+def aggregate_embedding_comparisons_over_categories(
+    embedding_comparisons: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Combine a dictionary of foundation model comparison dicts into a single dict of summaries.
+
+    For matrix-based summaries, take the median across categories.
+    For DataFrame-based summaries, concatenate the DataFrames across categories and add the category as a column.
+    Each comparison field is either present (dict/DataFrame) or None for a category; only whole-field None is checked.
+    If all categories have None for a field, that field is omitted.
+
+    Parameters
+    ----------
+    embedding_comparisons : dict
+        A dictionary of embedding comparison dicts (e.g. from AttendedEmbeddingsSet.compare() per category).
+
+    Returns
+    -------
+    dict
+        A dictionary of aggregated embedding comparisons (no SETTINGS roll-up; callers have per-category settings).
+    """
+    comparisons = dict()
+    categories = list(embedding_comparisons.keys())
+    if not categories:
+        return comparisons
+
+    def _non_none(key: str):
+        return [
+            embedding_comparisons[cat][key]
+            for cat in categories
+            if embedding_comparisons[cat].get(key) is not None
+        ]
+
+    def _concat_categories(key: str):
+        parts = [
+            embedding_comparisons[cat][key].assign(category=cat)
+            for cat in categories
+            if embedding_comparisons[cat].get(key) is not None
+        ]
+        if not parts:
+            return None
+        return pd.concat(parts, ignore_index=True)
+
+    # gene_embedding_correlations: median over categories (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS)
+    if vals:
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = {
+            key: np.median([cat[key] for cat in vals]) for key in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS,
+        )
+
+    # model_layer_correlations: median over categories per model (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS)
+    if vals:
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS] = {
+            model: np.median([v[model] for v in vals], axis=0) for model in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS,
+        )
+
+    # model_layer_rank_agreement: concat DataFrames per model (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT)
+    if vals:
+        key_mlra = COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT
+        comparisons[key_mlra] = {
+            model: pd.concat(
+                [
+                    embedding_comparisons[cat][key_mlra][model].assign(category=cat)
+                    for cat in categories
+                    if embedding_comparisons[cat].get(key_mlra) is not None
+                ],
+                ignore_index=True,
+            )
+            for model in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT,
+        )
+
+    # DataFrame fields
+    for key in (
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT,
+    ):
+        result = _concat_categories(key)
+        if result is not None:
+            comparisons[key] = result
+        else:
+            logger.debug("Omitting %s: all categories had None", key)
+
+    return comparisons
+
+
+def validate_embedding_comparisons_settings(
+    embedding_comparisons: Dict[str, Any],
+    top_k: int,
+    consensus_method: str,
+    by_absolute_value: bool,
+    ignore_self_attention: bool,
+    embeddings_keys: Optional[List[str]] = None,
+) -> None:
+    """
+    Validate embedding comparisons to ensure that their recorded settings agree with the provided settings.
+
+    Parameters
+    ----------
+    embedding_comparisons : Dict[str, Any]
+        The comparisons to validate. Created by AttendedEmbeddingsSet.compare().
+    top_k : int
+        The number of top-k attention pairs to summarize.
+    consensus_method : str
+        The consensus method to use. Valid options are: {VALID_FM_LAYER_CONSENSUS_METHODS}.
+    by_absolute_value : bool
+        Whether to use the absolute value of the attention.
+    ignore_self_attention : bool
+        Whether to ignore self-attention.
+    embeddings_keys : Optional[List[str]]
+        The embeddings keys to validate. If None, all embeddings keys will be validated.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the comparisons do not match the provided settings.
+    """
+
+    # check compatibility between the loaded results and the current settings
+    if (
+        top_k
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.TOP_K
+        ]
+    ):
+        logger.warning(
+            f"TOP_K mismatch: {top_k} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.TOP_K]}"
+        )
+    if (
+        consensus_method
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD
+        ]
+    ):
+        logger.warning(
+            f"CONSENSUS_METHOD mismatch: {consensus_method} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD]}"
+        )
+    if (
+        by_absolute_value
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE
+        ]
+    ):
+        logger.warning(
+            f"BY_ABSOLUTE_VALUE mismatch: {by_absolute_value} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE]}"
+        )
+    if (
+        ignore_self_attention
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION
+        ]
+    ):
+        logger.warning(
+            f"IGNORE_SELF_ATTENTION mismatch: {ignore_self_attention} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION]}"
+        )
+    if embeddings_keys is not None:
+        if set(embeddings_keys) != set(
+            embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+            ]
+        ):
+            extra_models = set(
+                embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                    COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+                ]
+            ) - set(embeddings_keys)
+            missing_models = set(embeddings_keys) - set(
+                embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                    COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+                ]
+            )
+            logger.warning(f"Extra models: {extra_models}")
+            logger.warning(f"Missing models: {missing_models}")
+
 
 # Private utility functions
 
@@ -3326,6 +3773,7 @@ class AttendedEmbeddingsSet:
 def _align_gene_embeddings(
     embeddings: List[GeneEmbeddings],
     align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    verbose: bool = True,
 ) -> List[GeneEmbeddings]:
     """Align multiple GeneEmbeddings to their common genes via a shared ontology.
 
@@ -3346,6 +3794,8 @@ def _align_gene_embeddings(
         Column name in gene_annotations to use as the common ontology
         (default: 'ensembl_gene'). Must be present in every embedding's
         gene_annotations.
+    verbose : bool, optional
+        Extra reporting (default: True)
 
     Returns
     -------
@@ -3422,10 +3872,11 @@ def _align_gene_embeddings(
     # Use a stable sorted order for the common gene set
     common_ids_ordered = sorted(common_ids)
 
-    logger.info(
-        f"Found {len(common_ids_ordered)} common genes across "
-        f"{len(embeddings)} embeddings (ontology: '{align_on}')"
-    )
+    if verbose:
+        logger.info(
+            f"Found {len(common_ids_ordered)} common genes across "
+            f"{len(embeddings)} embeddings (ontology: '{align_on}')"
+        )
 
     # --- Filter and reorder each embedding ---
     aligned = []
@@ -4191,7 +4642,9 @@ def _get_model_label(
 
 
 def _load_results(
-    output_dir: str, prefix: str
+    output_dir: str,
+    prefix: str,
+    verbose: bool = True,
 ) -> Tuple[dict, pd.DataFrame, dict, Optional[dict], List[dict]]:
     """
     Load foundation model results from files.
@@ -4202,6 +4655,8 @@ def _load_results(
         Directory path containing the saved files
     prefix : str
         Prefix used for the saved files
+    verbose : bool
+        Extra reporting (default: True)
 
     Returns
     -------
@@ -4221,9 +4676,10 @@ def _load_results(
     weights_path = os.path.join(output_dir, weights_filename)
     metadata_path = os.path.join(output_dir, metadata_filename)
 
-    logger.info(
-        f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
-    )
+    if verbose:
+        logger.info(
+            f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
+        )
 
     # Load weights from npz
     weights_data = np.load(weights_path, allow_pickle=True)
@@ -4253,7 +4709,8 @@ def _load_results(
         FM_DEFS.DATASET_GENE_EMBEDDINGS, []
     )
 
-    logger.info("Successfully loaded all results")
+    if verbose:
+        logger.info("Successfully loaded all results")
 
     return (
         weights_dict,

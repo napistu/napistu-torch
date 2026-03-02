@@ -320,6 +320,30 @@ FM_LAYER_CONSENSUS_METHODS = SimpleNamespace(
 
 VALID_FM_LAYER_CONSENSUS_METHODS = list(FM_LAYER_CONSENSUS_METHODS.__dict__.values())
 
+COMPARE_EMBEDDINGS_COMPARISONS = SimpleNamespace(
+    GENE_EMBEDDING_CORRELATIONS="gene_embedding_correlations",
+    MODEL_LAYER_CORRELATIONS="model_layer_correlations",
+    MODEL_LAYER_RANK_AGREEMENT="model_layer_rank_agreement",
+    CROSS_MODEL_X_LAYER_TOP_ATTENTIONS="cross_model_x_layer_top_attentions",
+    CROSS_MODEL_X_LAYER_RANK_AGREEMENT="cross_model_x_layer_rank_agreement",
+    CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS="cross_model_consensus_top_attentions",
+    CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT="cross_model_consensus_top_attentions_rank_agreement",
+    SETTINGS="settings",
+)
+
+VALID_COMPARE_EMBEDDINGS_COMPARISONS = list(
+    COMPARE_EMBEDDINGS_COMPARISONS.__dict__.values()
+)
+
+COMPARE_EMBEDDINGS_SETTINGS = SimpleNamespace(
+    TOP_K="top_k",
+    IGNORE_SELF_ATTENTION="ignore_self_attention",
+    BY_ABSOLUTE_VALUE="by_absolute_value",
+    CONSENSUS_METHOD="consensus_method",
+    EMBEDDING_KEYS="embedding_keys",
+    N_GENES="n_genes",
+)
+
 # scFoundation constants
 SCFOUNDATION_DEFS = SimpleNamespace(
     MODEL_NAME=FOUNDATION_MODEL_NAMES.SCFOUNDATION,
