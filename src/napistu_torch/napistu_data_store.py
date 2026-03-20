@@ -69,7 +69,7 @@ class NapistuDataStore:
     --------------
     create(store_dir, sbml_dfs_path, napistu_graph_path, copy_to_store=False, overwrite=False)
         Create a new NapistuDataStore
-    enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+    enable_artifact_creation(sbml_dfs_path, napistu_graph_path, copy_to_store=False)
         Convert a read-only store to non-read-only by enabling artifact creation.
     ensure_artifacts(artifact_names, artifact_registry=DEFAULT_ARTIFACT_REGISTRY, overwrite=False)
         Ensure specified artifacts exist in the store, creating if missing.
@@ -77,7 +77,7 @@ class NapistuDataStore:
         Check which artifacts are missing from the store.
     from_config(config)
         Create or load a NapistuDataStore from a DataConfig.
-    from_huggingface(repo_id, store_dir, revision=None, token=None, sbml_dfs_path=None, napistu_graph_path=None)
+    from_huggingface(repo_id, store_dir, revision=None, token=None, sbml_dfs_path=None, napistu_graph_path=None, copy_to_store=False)
         Download and create a NapistuDataStore from HuggingFace Hub.
         Optionally convert from read-only to non-read-only by providing paths.
     list_napistu_datas()
@@ -337,6 +337,7 @@ class NapistuDataStore:
         self,
         sbml_dfs_path: Union[str, Path],
         napistu_graph_path: Union[str, Path],
+        copy_to_store: bool = False,
     ) -> None:
         """
         Convert a read-only store to non-read-only by enabling artifact creation.
@@ -350,6 +351,9 @@ class NapistuDataStore:
             Path to SBML_dfs pickle file
         napistu_graph_path : Union[str, Path]
             Path to NapistuGraph pickle file
+        copy_to_store : bool, default=False
+            If True, copy the files into the store directory and store relative paths.
+            If False, store absolute paths to the original files.
 
         Raises
         ------
@@ -381,16 +385,45 @@ class NapistuDataStore:
             "Converting store from read-only to non-read-only by updating registry..."
         )
 
-        # Resolve paths (handles both absolute and relative paths)
-        resolved_sbml_path = _resolve_path(str(sbml_dfs_path), self.store_dir)
-        resolved_ng_path = _resolve_path(str(napistu_graph_path), self.store_dir)
+        # Resolve paths: user-provided paths are relative to CWD, not store_dir
+        resolved_sbml_path = sbml_dfs_path.resolve()
+        resolved_ng_path = napistu_graph_path.resolve()
+
+        if copy_to_store:
+            napistu_raw_dir = self.store_dir / NAPISTU_DATA_STORE_STRUCTURE.NAPISTU_RAW
+            napistu_raw_dir.mkdir(exist_ok=True)
+
+            cached_sbml_path = napistu_raw_dir / sbml_dfs_path.name
+            cached_ng_path = napistu_raw_dir / napistu_graph_path.name
+
+            logger.info(
+                f"Copying SBML_dfs from {resolved_sbml_path} to {cached_sbml_path}"
+            )
+            logger.info(
+                f"Copying NapistuGraph from {resolved_ng_path} to {cached_ng_path}"
+            )
+
+            shutil.copy2(resolved_sbml_path, cached_sbml_path)
+            shutil.copy2(resolved_ng_path, cached_ng_path)
+
+            sbml_relative = cached_sbml_path.relative_to(self.store_dir)
+            ng_relative = cached_ng_path.relative_to(self.store_dir)
+
+            napistu_entry = {
+                NAPISTU_DATA_STORE.SBML_DFS: str(sbml_relative),
+                NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(ng_relative),
+            }
+            resolved_sbml_path = cached_sbml_path.resolve()
+            resolved_ng_path = cached_ng_path.resolve()
+        else:
+            napistu_entry = {
+                NAPISTU_DATA_STORE.SBML_DFS: str(resolved_sbml_path),
+                NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(resolved_ng_path),
+            }
 
         # Update registry
         self.registry[NAPISTU_DATA_STORE.READ_ONLY] = False
-        self.registry[NAPISTU_DATA_STORE.NAPISTU_RAW] = {
-            NAPISTU_DATA_STORE.SBML_DFS: str(resolved_sbml_path),
-            NAPISTU_DATA_STORE.NAPISTU_GRAPH: str(resolved_ng_path),
-        }
+        self.registry[NAPISTU_DATA_STORE.NAPISTU_RAW] = napistu_entry
 
         # Save updated registry
         self._save_registry()
@@ -738,6 +771,7 @@ class NapistuDataStore:
         token: Optional[str] = None,
         sbml_dfs_path: Optional[Union[str, Path]] = None,
         napistu_graph_path: Optional[Union[str, Path]] = None,
+        copy_to_store: bool = False,
     ) -> "NapistuDataStore":
         """
         Download and create a NapistuDataStore from HuggingFace Hub.
@@ -764,6 +798,10 @@ class NapistuDataStore:
         napistu_graph_path : Optional[Union[str, Path]]
             Path to NapistuGraph pickle file. If provided along with sbml_dfs_path,
             converts the store from read-only to non-read-only.
+        copy_to_store : bool, default=False
+            If True, copy sbml_dfs and napistu_graph into the store directory and
+            store relative paths. If False, store absolute paths to the original files.
+            Only applies when sbml_dfs_path and napistu_graph_path are provided.
 
         Returns
         -------
@@ -796,6 +834,15 @@ class NapistuDataStore:
         ...     napistu_graph_path=Path("/data/graph.pkl")
         ... )
         >>>
+        >>> # Load and copy raw data into store for portability
+        >>> store = NapistuDataStore.from_huggingface(
+        ...     repo_id="username/my-dataset",
+        ...     store_dir=Path("./local_store"),
+        ...     sbml_dfs_path=Path("./.napistu/sbml_dfs.pkl"),
+        ...     napistu_graph_path=Path("./.napistu/graph.pkl"),
+        ...     copy_to_store=True
+        ... )
+        >>>
         >>> # Use the store
         >>> napistu_data = store.load_napistu_data("edge_prediction")
         """
@@ -821,7 +868,9 @@ class NapistuDataStore:
                     "to convert the store from read-only to non-read-only. "
                     "Cannot provide only one."
                 )
-            store.enable_artifact_creation(sbml_dfs_path, napistu_graph_path)
+            store.enable_artifact_creation(
+                sbml_dfs_path, napistu_graph_path, copy_to_store=copy_to_store
+            )
 
         return store
 
