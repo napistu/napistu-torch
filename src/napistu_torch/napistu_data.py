@@ -147,6 +147,8 @@ class NapistuData(Data):
         Trim the NapistuData object to keep only the specified attributes
     unencode_features(napistu_graph, attribute_type, attribute, encoding_manager=None)
         Unencode features from the NapistuData object
+    validate_graph_alignment(napistu_graph)
+        Validate the alignment of the NapistuData object with the NapistuGraph
 
     Private Methods
     ---------------
@@ -1325,6 +1327,136 @@ class NapistuData(Data):
             decoded_values = decoded.flatten()
 
         return pd.Series(decoded_values, name=attribute)
+
+    def validate_graph_alignment(self, napistu_graph: NapistuGraph) -> None:
+        """
+        Validate structural alignment between this NapistuData and a NapistuGraph.
+
+        Checks that vertex and edge counts match, and that the stored ng_vertex_names
+        and ng_edge_names in this NapistuData are consistent with the NapistuGraph's
+        vertex and edge ordering.
+
+        Parameters
+        ----------
+        napistu_graph : NapistuGraph
+            The NapistuGraph this data was built from (or should align with).
+
+        Raises
+        ------
+        ValueError
+            If vertex counts, edge counts, or name orderings don't match.
+        """
+        # Vertex alignment
+        ng_vertex_names = self.get_vertex_names()
+        graph_vertex_df = napistu_graph.get_vertex_dataframe()
+
+        if self.num_nodes != len(graph_vertex_df):
+            raise ValueError(
+                f"Vertex count mismatch: NapistuData has {self.num_nodes} nodes, "
+                f"NapistuGraph has {len(graph_vertex_df)} vertices."
+            )
+
+        if ng_vertex_names is not None:
+            if len(ng_vertex_names) != len(graph_vertex_df):
+                raise ValueError(
+                    f"ng_vertex_names length ({len(ng_vertex_names)}) does not match "
+                    f"NapistuGraph vertex count ({len(graph_vertex_df)})."
+                )
+            graph_names = graph_vertex_df[NAPISTU_GRAPH_VERTICES.NAME].values
+            if not (ng_vertex_names.values == graph_names).all():
+                first_mismatch = next(
+                    i
+                    for i, (a, b) in enumerate(zip(ng_vertex_names.values, graph_names))
+                    if a != b
+                )
+                raise ValueError(
+                    "Vertex name ordering mismatch between NapistuData and NapistuGraph. "
+                    f"First mismatch at index {first_mismatch}: "
+                    f"NapistuData='{ng_vertex_names.iloc[first_mismatch]}', "
+                    f"NapistuGraph='{graph_names[first_mismatch]}'."
+                )
+        else:
+            logger.warning(
+                "ng_vertex_names not present in NapistuData — vertex name alignment "
+                "cannot be verified."
+            )
+
+        # Edge alignment
+        ng_edge_names = self.get_edge_names()
+        graph_edge_df = napistu_graph.get_edge_dataframe()
+
+        if self.num_edges != len(graph_edge_df):
+            raise ValueError(
+                f"Edge count mismatch: NapistuData has {self.num_edges} edges, "
+                f"NapistuGraph has {len(graph_edge_df)} edges."
+            )
+
+        if ng_edge_names is not None:
+            if len(ng_edge_names) != len(graph_edge_df):
+                raise ValueError(
+                    f"ng_edge_names length ({len(ng_edge_names)}) does not match "
+                    f"NapistuGraph edge count ({len(graph_edge_df)})."
+                )
+            from_match = (
+                ng_edge_names[NAPISTU_GRAPH_EDGES.FROM].values
+                == graph_edge_df[NAPISTU_GRAPH_EDGES.FROM].values
+            ).all()
+            to_match = (
+                ng_edge_names[NAPISTU_GRAPH_EDGES.TO].values
+                == graph_edge_df[NAPISTU_GRAPH_EDGES.TO].values
+            ).all()
+            if not (from_match and to_match):
+                raise ValueError(
+                    "Edge (from, to) ordering mismatch between NapistuData and NapistuGraph. "
+                    "Cannot safely assign learned weights or validate features."
+                )
+        else:
+            logger.warning(
+                "ng_edge_names not present in NapistuData — edge name alignment "
+                "cannot be verified."
+            )
+
+    def reverse_edges(self, inplace: bool = True) -> Optional["NapistuData"]:
+        """
+        Reverse all edges by swapping source and target in edge_index.
+
+        Only the edge indices are swapped. Edge attributes (edge_attr) are not
+        modified. If direction-dependent edge attributes need to be swapped as
+        well, reverse the NapistuGraph prior to NapistuData construction.
+
+        Parameters
+        ----------
+        inplace : bool, default=True
+            If True, modify in place. If False, return a new NapistuData.
+
+        Returns
+        -------
+        NapistuData or None
+            If inplace=False, returns a new NapistuData with reversed edges.
+        """
+        logger.warning(
+            "reverse_edges only swaps edge_index (source/target). Edge attributes "
+            "(edge_attr) are not modified. If direction-dependent edge attributes "
+            "need to be swapped, reverse the NapistuGraph prior to NapistuData "
+            "construction."
+        )
+        data = self if inplace else self.clone()
+        data.edge_index = data.edge_index[[1, 0], :]
+
+        # Swap ng_edge_names from/to to stay aligned with edge_index
+        ng_edge_names = getattr(data, NAPISTU_DATA.NG_EDGE_NAMES, None)
+        if (
+            ng_edge_names is not None
+            and NAPISTU_GRAPH_EDGES.FROM in ng_edge_names.columns
+        ):
+            data.ng_edge_names = ng_edge_names.rename(
+                columns={
+                    NAPISTU_GRAPH_EDGES.FROM: "_tmp",
+                    NAPISTU_GRAPH_EDGES.TO: NAPISTU_GRAPH_EDGES.FROM,
+                }
+            ).rename(columns={"_tmp": NAPISTU_GRAPH_EDGES.TO})
+
+        return None if inplace else data
 
     def _validate_vertex_encoding(
         self,

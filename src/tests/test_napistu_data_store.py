@@ -766,3 +766,54 @@ def test_enable_artifact_creation(sbml_dfs, napistu_graph):
         assert reloaded_store.read_only is False
         assert reloaded_store.sbml_dfs_path is not None
         assert reloaded_store.napistu_graph_path is not None
+
+
+@pytest.mark.skip_on_windows
+def test_enable_artifact_creation_copy_to_store(sbml_dfs, napistu_graph):
+    """Test enable_artifact_creation with copy_to_store=True copies files and stores relative paths."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create pickle files outside the store
+        data_dir = Path(temp_dir) / "external_data"
+        data_dir.mkdir()
+        sbml_dfs_path = data_dir / "sbml_dfs.pkl"
+        napistu_graph_path = data_dir / "napistu_graph.pkl"
+        sbml_dfs.to_pickle(sbml_dfs_path)
+        napistu_graph.to_pickle(napistu_graph_path)
+
+        # Create read-only store
+        store_dir = Path(temp_dir) / "store"
+        read_only_store = NapistuDataStore.create(
+            store_dir=store_dir,
+            read_only=True,
+        )
+
+        # Enable artifact creation with copy_to_store
+        read_only_store.enable_artifact_creation(
+            sbml_dfs_path, napistu_graph_path, copy_to_store=True
+        )
+
+        # Verify files were copied into store
+        napistu_raw_dir = store_dir / "napistu_raw"
+        assert (napistu_raw_dir / "sbml_dfs.pkl").exists()
+        assert (napistu_raw_dir / "napistu_graph.pkl").exists()
+
+        # Verify registry has relative paths
+        napistu_raw = read_only_store.registry[NAPISTU_DATA_STORE.NAPISTU_RAW]
+        assert napistu_raw[NAPISTU_DATA_STORE.SBML_DFS] == "napistu_raw/sbml_dfs.pkl"
+        assert (
+            napistu_raw[NAPISTU_DATA_STORE.NAPISTU_GRAPH]
+            == "napistu_raw/napistu_graph.pkl"
+        )
+
+        # Verify we can load (from copied files)
+        loaded_sbml = read_only_store.load_sbml_dfs()
+        loaded_ng = read_only_store.load_napistu_graph()
+        assert loaded_sbml is not None
+        assert loaded_ng is not None
+
+        # Remove original files and verify store still works (uses copies)
+        sbml_dfs_path.unlink()
+        napistu_graph_path.unlink()
+        reloaded_store = NapistuDataStore(store_dir=store_dir)
+        assert reloaded_store.load_sbml_dfs() is not None
+        assert reloaded_store.load_napistu_graph() is not None

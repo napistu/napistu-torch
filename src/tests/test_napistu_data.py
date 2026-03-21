@@ -8,13 +8,14 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
-from napistu.constants import IDENTIFIERS
+from napistu.constants import IDENTIFIERS, SBML_DFS
 from napistu.network.constants import (
     NAPISTU_GRAPH,
     NAPISTU_GRAPH_EDGES,
     NAPISTU_GRAPH_NODE_TYPES,
     NAPISTU_GRAPH_VERTICES,
 )
+from napistu.network.ng_core import NapistuGraph
 from napistu.ontologies.constants import ONTOLOGIES
 from utils import assert_tensors_equal
 
@@ -830,3 +831,41 @@ def test_get_symmetrical_relation_indices_failure_cases(edge_masked_napistu_data
     )
     with pytest.raises(ValueError, match="malformed relation names"):
         data_malformed.get_symmetrical_relation_indices()
+
+
+def test_validate_graph_alignment_passes(napistu_data, augmented_napistu_graph):
+    """Validate graph alignment passes when NapistuData was built from the given graph."""
+    napistu_data.validate_graph_alignment(augmented_napistu_graph)
+
+
+def test_validate_graph_alignment_fails_on_wrong_graph(napistu_data):
+    """Validate graph alignment raises when compared to a different (random) graph."""
+    # Build a small graph that does not match napistu_data
+    wrong_graph = NapistuGraph(directed=True)
+    wrong_graph.add_vertex(name="X", node_type=SBML_DFS.SPECIES)
+    wrong_graph.add_vertex(name="Y", node_type=SBML_DFS.SPECIES)
+    wrong_graph.add_vertex(name="Z", node_type=SBML_DFS.SPECIES)
+    wrong_graph.add_edge("X", "Y")
+    wrong_graph.add_edge("Y", "Z")
+
+    with pytest.raises(ValueError, match="Vertex count mismatch"):
+        napistu_data.validate_graph_alignment(wrong_graph)
+
+
+def test_reverse_edges_swaps_edge_index(napistu_data):
+    """reverse_edges swaps source and target in edge_index."""
+    original_src = napistu_data.edge_index[0].clone()
+    original_tgt = napistu_data.edge_index[1].clone()
+    napistu_data.reverse_edges(inplace=True)
+    assert torch.equal(napistu_data.edge_index[0], original_tgt)
+    assert torch.equal(napistu_data.edge_index[1], original_src)
+
+
+def test_reverse_edges_out_of_place_returns_new(napistu_data):
+    """reverse_edges(inplace=False) returns new NapistuData without modifying original."""
+    original_edge_index = napistu_data.edge_index.clone()
+    reversed_data = napistu_data.reverse_edges(inplace=False)
+    assert reversed_data is not napistu_data
+    assert torch.equal(napistu_data.edge_index, original_edge_index)
+    assert torch.equal(reversed_data.edge_index[0], original_edge_index[1])
+    assert torch.equal(reversed_data.edge_index[1], original_edge_index[0])
