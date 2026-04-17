@@ -1914,6 +1914,7 @@ class FoundationModels(BaseModel):
                     x.model_variant if x.model_variant is not None else ""
                     for x in self.models
                 ],
+                "embed_dim": [x.embed_dim for x in self.models],
                 "n_layers": [x.n_layers for x in self.models],
                 "n_heads": [x.n_heads for x in self.models],
                 "parameter_count": [
