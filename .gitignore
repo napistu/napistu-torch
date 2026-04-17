@@ -4,5 +4,6 @@ build
 __pycache__
 
 napistu_data
+uv.lock
 
 .DS_Store

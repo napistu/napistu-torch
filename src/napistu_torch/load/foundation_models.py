@@ -24,6 +24,25 @@ FoundationModel
     Complete foundation model including weights, annotations, and metadata.
 FoundationModels
     Container for multiple foundation models with cross-model analysis capabilities.
+
+Class Relationships
+-------------------
+FoundationModels
+    FoundationModel
+        FoundationModelWeights
+            GeneEmbeddings (static)
+                GeneAnnotations
+            List[AttentionLayer]
+        DatasetGeneEmbeddings
+            GeneEmbeddingsSet (all embeddings for a given dataset)
+                GeneEmbeddings (a single 2D embedding matrix, e.g., of a cell type, cluster, or individual sample)
+                    GeneAnnotations
+        ModelMetadata
+
+AttendedEmbeddingsSet
+    AttendedEmbeddings
+        GeneEmbeddingsSet (a set of embedding of interest - static, expression-based, etc.)
+        FoundationModels (the models containing the attention weights for these embeddings)
 """
 
 import json
@@ -42,16 +61,24 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from torch import Tensor
 
 from napistu_torch.load.constants import (
+    COMPARE_EMBEDDINGS_COMPARISONS,
+    COMPARE_EMBEDDINGS_SETTINGS,
+    EMBEDDING_METADATA_FIELDS,
     FM_DEFS,
     FM_EDGELIST,
     FM_LAYER_CONSENSUS_METHODS,
+    MODEL_NICE_NAMES,
+    SCOPING_FIELDS,
+    VALID_COMPARE_EMBEDDINGS_COMPARISONS,
     VALID_FM_LAYER_CONSENSUS_METHODS,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
 from napistu_torch.utils.constants import CORRELATION_METHODS
 from napistu_torch.utils.pd_utils import calculate_ranks
+from napistu_torch.utils.statistics import compare_top_k_union_ranks
 from napistu_torch.utils.tensor_utils import (
     compute_correlation,
+    compute_correlation_matrix,
     compute_cosine_distances_torch,
     compute_max_abs_over_z,
     compute_max_over_z,
@@ -118,6 +145,8 @@ class GeneEmbeddings(BaseModel):
         Return a new GeneEmbeddings filtered and reordered to match target_ids.
     compute_pairwise_distances(device=None)
         Compute gene-gene cosine distance matrix.
+    get_gene_mask(target_ids=None)
+        Return a boolean mask and gene IDs for optionally restricting to target_ids.
 
     Examples
     --------
@@ -331,6 +360,43 @@ class GeneEmbeddings(BaseModel):
         """
         return compute_cosine_distances_torch(self.embedding, device=device)
 
+    def get_gene_mask(
+        self, target_ids: Optional[List[str]] = None
+    ) -> Tuple[Optional[np.ndarray], List[str]]:
+        """Return a boolean mask and gene IDs for optionally restricting to target_ids.
+
+        Parameters
+        ----------
+        target_ids : List[str], optional
+            Subset of gene IDs to restrict to. Must all be present in this
+            embedding. If None, uses all genes.
+
+        Returns
+        -------
+        gene_mask : np.ndarray or None
+            Boolean array of shape (n_genes,) with True for genes in target_ids,
+            in the order of ordered_gene_ids. None if target_ids is None.
+        gene_ids : List[str]
+            ordered_gene_ids if target_ids is None, else target_ids (to preserve
+            their order for downstream use).
+
+        Raises
+        ------
+        ValueError
+            If any target_ids are not found in this embedding.
+        """
+        gene_ids = self.ordered_gene_ids
+        if target_ids is None:
+            return None, gene_ids
+        missing = [gid for gid in target_ids if gid not in self.gene_ids_set]
+        if missing:
+            raise ValueError(
+                f"{len(missing)} target_ids not found in embedding. "
+                f"First few: {missing[:5]}"
+            )
+        gene_mask = np.array([gid in set(target_ids) for gid in gene_ids], dtype=bool)
+        return gene_mask, target_ids
+
     def gene_ids_in_ontology(self, ontology: str) -> List[str]:
         """Return gene identifiers in the given ontology column, in row order."""
         if ontology not in self.gene_annotations.columns:
@@ -368,16 +434,26 @@ class GeneEmbeddingsSet:
     ``ordered_gene_ids``. This enables direct cross-embedding comparison without
     repeated alignment overhead.
 
-    When constructed with a single embedding, it serves as a validated wrapper
-    that still provides the same dict-like interface and summary properties.
+    Keys are automatically scoped to the minimal distinguishing metadata. For example,
+    if all embeddings share the same model and dataset, keys are just the category
+    (e.g., "adipocyte (0)"). The constant parts are available as ``constant_label``
+    for use in plot titles.
 
     Attributes
     ----------
+    data : Dict[str, GeneEmbeddings]
+        Mapping from scoped key to aligned GeneEmbeddings.
     common_gene_ids : List[str]
         Gene identifiers (in the alignment ontology) shared across all embeddings,
         in the order used for alignment.
-    align_on : str
+    aligned_on : str
         The ontology column used for alignment.
+    embedding_metadata : pd.DataFrame
+        One row per embedding with source metadata, model_label, and scoped_key.
+    constant_label : str
+        Human-readable label for metadata that is constant across all embeddings.
+        Useful for plot titles. e.g., "scGPT / efthymiou2025". Empty string if
+        nothing is constant.
 
     Properties
     ----------
@@ -390,29 +466,41 @@ class GeneEmbeddingsSet:
 
     Public Methods
     --------------
+    compare_embeddings(device=None, verbose=False)
+        Compare embeddings of all models using Spearman correlation of distance matrices.
     from_gene_embeddings(embeddings, align_on='ensembl_gene')
         Classmethod: align embeddings and construct container.
+
+    Dictionary-like Methods
+    -----------------------
     get(key)
         Return the aligned GeneEmbeddings for a given key.
     keys()
-        Return embedding labels.
+        Return embedding labels (scoped keys).
     values()
         Return GeneEmbeddings instances.
     items()
-        Return (label, GeneEmbeddings) pairs.
+        Return (scoped_key, GeneEmbeddings) pairs.
 
     Examples
     --------
+    >>> # Cross-model alignment — keys are model names
     >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
     ...     [ge_scgpt, ge_aido, ge_scprint]
     ... )
-    >>> aligned.n_common_genes
-    15234
-    >>> aligned.summary
-          key     model_name model_variant  ... n_genes embed_dim
-    0  scGPT          scGPT          None  ...   15234       512
-    1  AIDOCell_100m  AIDOCell  aido_cell_100m  ...   15234       768
-    >>> scgpt_emb = aligned["scGPT"]
+    >>> aligned.keys()
+    ['scGPT', 'AIDOCell_aido_cell_100m', 'scPRINT']
+    >>> aligned.constant_label
+    ''
+    >>>
+    >>> # Within-model, within-dataset — keys are just categories
+    >>> categories = GeneEmbeddingsSet.from_gene_embeddings(
+    ...     [ge_adipocyte, ge_tcell, ge_bcell]
+    ... )
+    >>> categories.keys()
+    ['adipocyte (0)', 'T_cell', 'B_cell']
+    >>> categories.constant_label
+    'scGPT / efthymiou2025'
     """
 
     def __init__(
@@ -430,11 +518,12 @@ class GeneEmbeddingsSet:
         Parameters
         ----------
         data : Dict[str, GeneEmbeddings]
-            Mapping from label to aligned GeneEmbeddings.
+            Mapping from source_label to aligned GeneEmbeddings. Will be
+            re-keyed to scoped keys automatically.
         common_gene_ids : List[str]
             The common gene IDs (in the alignment ontology) shared by all
             embeddings, in the order used for alignment.
-        align_on : str
+        aligned_on : str
             The ontology column that was used for alignment.
 
         Raises
@@ -451,7 +540,6 @@ class GeneEmbeddingsSet:
         for key, emb in data.items():
             emb_ids = emb.gene_ids_in_ontology(align_on)
             if emb_ids != common_gene_ids:
-                # Find first mismatch for a helpful error message
                 for i, (a, b) in enumerate(zip(emb_ids, common_gene_ids)):
                     if a != b:
                         raise ValueError(
@@ -459,27 +547,121 @@ class GeneEmbeddingsSet:
                             f"do not match common_gene_ids. "
                             f"First mismatch at index {i}: '{a}' != '{b}'"
                         )
-                # Length mismatch
                 raise ValueError(
                     f"Embedding '{key}' has {len(emb_ids)} genes but "
                     f"common_gene_ids has {len(common_gene_ids)}"
                 )
 
-        self._data: Dict[str, GeneEmbeddings] = dict(data)
-        self._common_gene_ids: List[str] = list(common_gene_ids)
-        self._align_on: str = align_on
+        # Build metadata and compute scoped keys
+        embedding_metadata = _build_embedding_metadata(data)
+        source_to_scoped, constant_label = _compute_scoped_keys(embedding_metadata)
+
+        # Add scoped keys to metadata
+        embedding_metadata[EMBEDDING_METADATA_FIELDS.SCOPED_KEY] = embedding_metadata[
+            EMBEDDING_METADATA_FIELDS.SOURCE_LABEL
+        ].map(source_to_scoped)
+
+        # Re-key data dict using scoped keys
+        self.data: Dict[str, GeneEmbeddings] = {
+            source_to_scoped[source_label]: emb for source_label, emb in data.items()
+        }
+        self.common_gene_ids: List[str] = list(common_gene_ids)
+        self.aligned_on: str = align_on
+        self.embedding_metadata: pd.DataFrame = embedding_metadata
+        self.constant_label: str = constant_label
+
+    # --- Properties ---
+
+    @property
+    def n_embeddings(self) -> int:
+        """Number of stored embeddings."""
+        return len(self.data)
+
+    @property
+    def n_common_genes(self) -> int:
+        """Number of common genes."""
+        return len(self.common_gene_ids)
+
+    @property
+    def summary(self) -> pd.DataFrame:
+        """Summary DataFrame with one row per embedding.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: key, model_name, model_variant, dataset_name, dataset_uri,
+            category, n_genes, embed_dim.
+        """
+        rows = []
+        for key, emb in self.data.items():
+            rows.append(
+                {
+                    "key": key,
+                    "model_name": emb.model_name,
+                    "model_variant": emb.model_variant,
+                    "dataset_name": emb.dataset_name,
+                    "dataset_uri": emb.dataset_uri,
+                    "category": emb.category,
+                    "n_genes": emb.n_genes,
+                    "embed_dim": emb.embed_dim,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    def compare_embeddings(
+        self,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> Dict[str, float]:
+        """Compare embeddings by Spearman correlation of pairwise distance matrices.
+
+        For each pair of embeddings, computes gene-gene cosine distances and then
+        calculates the Spearman correlation between the upper triangles of the
+        two distance matrices.
+
+        Parameters
+        ----------
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+        verbose : bool, optional
+            Whether to print progress (default: False).
+
+        Returns
+        -------
+        Dict[str, float]
+            Dictionary mapping embedding pair names to Spearman correlation
+            coefficients (e.g., {"scGPT_vs_scPRINT": 0.42}).
+
+        Raises
+        ------
+        ValueError
+            If fewer than 2 embeddings are in the set.
+        """
+        if self.n_embeddings < 2:
+            raise ValueError(
+                "compare_embeddings requires at least 2 embeddings, "
+                f"got {self.n_embeddings}"
+            )
+
+        aligned_embeddings = {key: emb.embedding for key, emb in self.data.items()}
+
+        return _calculate_embedding_correlations(
+            aligned_embeddings, device=device, verbose=verbose
+        )
 
     @classmethod
     def from_gene_embeddings(
         cls,
         embeddings: List[GeneEmbeddings],
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
     ) -> "GeneEmbeddingsSet":
         """Align embeddings to common genes and construct container.
 
-        Uses ``align_gene_embeddings`` to find common genes across all
+        Uses ``_align_gene_embeddings`` to find common genes across all
         embeddings and reorder each to a consistent row ordering. Keys
-        are derived from each embedding's ``source_label``.
+        are derived from each embedding's ``source_label`` and then
+        automatically scoped to minimal distinguishing labels.
 
         Parameters
         ----------
@@ -489,11 +671,13 @@ class GeneEmbeddingsSet:
             it is wrapped directly without alignment.
         align_on : str, optional
             Column in gene_annotations to align on (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
 
         Returns
         -------
         GeneEmbeddingsSet
-            Container with aligned embeddings.
+            Container with aligned embeddings and scoped keys.
 
         Raises
         ------
@@ -504,14 +688,8 @@ class GeneEmbeddingsSet:
 
         Examples
         --------
-        >>> # Multiple embeddings — aligns to common genes
         >>> aligned = GeneEmbeddingsSet.from_gene_embeddings(
         ...     [ge_scgpt, ge_aido],
-        ...     align_on='ensembl_gene',
-        ... )
-        >>> # Single embedding — wraps directly
-        >>> single = GeneEmbeddingsSet.from_gene_embeddings(
-        ...     [ge_scgpt],
         ...     align_on='ensembl_gene',
         ... )
         """
@@ -532,7 +710,6 @@ class GeneEmbeddingsSet:
             )
 
         if len(embeddings) == 1:
-            # Single embedding: validate align_on column exists, wrap directly
             emb = embeddings[0]
             if align_on not in emb.gene_annotations.columns:
                 raise ValueError(
@@ -543,8 +720,9 @@ class GeneEmbeddingsSet:
             common_gene_ids = emb.gene_ids_in_ontology(align_on)
             data = {labels[0]: emb}
         else:
-            # Multiple embeddings: align to common genes
-            aligned_embeddings = _align_gene_embeddings(embeddings, align_on=align_on)
+            aligned_embeddings = _align_gene_embeddings(
+                embeddings, align_on=align_on, verbose=verbose
+            )
             common_gene_ids = aligned_embeddings[0].gene_ids_in_ontology(align_on)
             data = {
                 label: aligned_emb
@@ -557,63 +735,15 @@ class GeneEmbeddingsSet:
             align_on=align_on,
         )
 
-    # --- Properties ---
-
-    @property
-    def common_gene_ids(self) -> List[str]:
-        """Gene identifiers shared across all embeddings (in the alignment ontology)."""
-        return list(self._common_gene_ids)
-
-    @property
-    def align_on(self) -> str:
-        """The ontology column used for alignment."""
-        return self._align_on
-
-    @property
-    def n_embeddings(self) -> int:
-        """Number of stored embeddings."""
-        return len(self._data)
-
-    @property
-    def n_common_genes(self) -> int:
-        """Number of common genes."""
-        return len(self._common_gene_ids)
-
-    @property
-    def summary(self) -> pd.DataFrame:
-        """Summary DataFrame with one row per embedding.
-
-        Returns
-        -------
-        pd.DataFrame
-            Columns: key, model_name, model_variant, dataset_name, dataset_uri,
-            category, n_genes, embed_dim.
-        """
-        rows = []
-        for key, emb in self._data.items():
-            rows.append(
-                {
-                    "key": key,
-                    "model_name": emb.model_name,
-                    "model_variant": emb.model_variant,
-                    "dataset_name": emb.dataset_name,
-                    "dataset_uri": emb.dataset_uri,
-                    "category": emb.category,
-                    "n_genes": emb.n_genes,
-                    "embed_dim": emb.embed_dim,
-                }
-            )
-        return pd.DataFrame(rows)
-
     # --- Dict-like access ---
 
     def get(self, key: str) -> GeneEmbeddings:
-        """Get aligned GeneEmbeddings by label.
+        """Get aligned GeneEmbeddings by scoped key.
 
         Parameters
         ----------
         key : str
-            Label (source_label) of the embedding to retrieve.
+            Scoped key of the embedding to retrieve.
 
         Returns
         -------
@@ -625,46 +755,47 @@ class GeneEmbeddingsSet:
         KeyError
             If key is not found.
         """
-        if key not in self._data:
+        if key not in self.data:
             raise KeyError(
                 f"Embedding '{key}' not found. "
-                f"Available keys: {list(self._data.keys())}"
+                f"Available keys: {list(self.data.keys())}"
             )
-        return self._data[key]
+        return self.data[key]
 
     def __getitem__(self, key: str) -> GeneEmbeddings:
         return self.get(key)
 
     def __contains__(self, key: str) -> bool:
-        return key in self._data
+        return key in self.data
 
     def __len__(self) -> int:
-        return len(self._data)
+        return len(self.data)
 
     def keys(self):
-        """Return embedding labels."""
-        return self._data.keys()
+        """Return embedding labels (scoped keys)."""
+        return self.data.keys()
 
     def values(self):
         """Return GeneEmbeddings instances."""
-        return self._data.values()
+        return self.data.values()
 
     def items(self):
-        """Return (label, GeneEmbeddings) pairs."""
-        return self._data.items()
+        """Return (scoped_key, GeneEmbeddings) pairs."""
+        return self.data.items()
 
     # --- Dunder methods ---
 
     def __repr__(self) -> str:
-        keys = list(self._data.keys())
-        return (
-            f"GeneEmbeddingsSet("
-            f"n_embeddings={self.n_embeddings}, "
-            f"n_common_genes={self.n_common_genes}, "
-            f"align_on='{self._align_on}', "
-            f"keys={keys}"
-            f")"
-        )
+        keys = list(self.data.keys())
+        parts = [
+            f"n_embeddings={self.n_embeddings}",
+            f"n_common_genes={self.n_common_genes}",
+            f"aligned_on='{self.aligned_on}'",
+            f"keys={keys}",
+        ]
+        if self.constant_label:
+            parts.insert(0, f"constant_label='{self.constant_label}'")
+        return f"GeneEmbeddingsSet({', '.join(parts)})"
 
 
 class DatasetGeneEmbeddings:
@@ -772,7 +903,7 @@ class DatasetGeneEmbeddings:
                     "dataset_name": name,
                     "n_embeddings": ge_set.n_embeddings,
                     "n_common_genes": ge_set.n_common_genes,
-                    "align_on": ge_set.align_on,
+                    "aligned_on": ge_set.aligned_on,
                     "embed_dims": embed_dims,
                 }
             )
@@ -1001,8 +1132,6 @@ class FoundationModelWeights(BaseModel):
 
     Public Methods
     --------------
-    compute_attention_from_weights(layer_idx, n_heads, vocab_mask=None, apply_softmax=True, return_tensor=False, device=None)
-        Compute attention scores for a specific layer with proper multi-head handling.
     count_attention_parameters()
         Count the total number of parameters across all attention layers.
     """
@@ -1046,75 +1175,6 @@ class FoundationModelWeights(BaseModel):
                     )
 
         return self
-
-    def compute_attention_from_weights(
-        self,
-        layer_idx: int,
-        n_heads: int,
-        gene_mask: Optional[np.ndarray] = None,
-        apply_softmax: bool = True,
-        return_tensor: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Union[Tensor, np.ndarray]:
-        """
-        Compute attention scores for a specific layer with proper multi-head handling.
-
-        Parameters
-        ----------
-        layer_idx : int
-            Index of the layer to compute attention for
-        n_heads : int
-            Number of attention heads in the model
-        gene_mask : np.ndarray, optional
-            Boolean mask of shape (n_genes,) indicating which genes to include.
-            If provided, only embeddings corresponding to True values will be used.
-            Default: None (use all genes).
-        apply_softmax : bool, optional
-            If True, apply softmax to get attention probabilities (default: True).
-            If False, return raw attention scores (Q @ K.T / sqrt(d_k))
-        return_tensor : bool, optional
-            If True, return attention as torch.Tensor (default: False).
-            If False, return as numpy array.
-        device : str or torch.device, optional
-            Device to perform computation on (default: None, to automatically select a device)
-
-        Returns
-        -------
-        torch.Tensor or np.ndarray
-            Attention scores matrix of shape (n_selected, n_selected) if gene_mask
-            is provided, otherwise (n_genes, n_genes).
-
-        Raises
-        ------
-        ValueError
-            If layer_idx is out of range or gene_mask has incorrect shape
-        """
-        if layer_idx >= len(self.attention_layers):
-            raise ValueError(
-                f"Layer index {layer_idx} out of range "
-                f"(model has {len(self.attention_layers)} layers)"
-            )
-
-        embeddings = self.static_gene_embeddings.embedding
-        n_genes = self.static_gene_embeddings.n_genes
-
-        if gene_mask is not None:
-            gene_mask = np.asarray(gene_mask, dtype=bool)
-            if gene_mask.shape != (n_genes,):
-                raise ValueError(
-                    f"gene_mask must have shape ({n_genes},), got {gene_mask.shape}"
-                )
-            embeddings = embeddings[gene_mask]
-
-        layer = self.attention_layers[layer_idx]
-
-        return layer.compute_attention_pattern(
-            embeddings=embeddings,
-            n_heads=n_heads,
-            apply_softmax=apply_softmax,
-            return_tensor=return_tensor,
-            device=device,
-        )
 
     def count_attention_parameters(self) -> int:
         """
@@ -1305,27 +1365,19 @@ class FoundationModel(BaseModel):
     weights : FoundationModelWeights
         Model weight matrices (embeddings and attention layers)
 
+    Properties
+    ----------
+    disk_name : str
+        Version of the model label which can be used for a filename.
+    full_name : str
+        Full unique identifier (model_name with model_variant if present).
+
     Public Methods
     --------------
-    compute_consensus_attention(target_ids, consensus_method='absolute-argmax', gene_annotation_target_var='ensembl_gene', apply_softmax=False)
-        Compute consensus attention across all layers for target genes.
-    compute_reordered_attention(layer_idx, target_ids, gene_annotation_target_var='ensembl_gene', apply_softmax=True, return_tensor=False, device=None)
-        Compute attention scores for a specific layer and reorder to match a target gene ordering.
-    full_name
-        Property returning full unique identifier (model_name with model_variant if present).
-    get_specific_attentions(edge_list, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
-        Extract specific attention values across specified layers for given edges.
-    get_top_attentions(k, layer_indices=None, target_ids=None, gene_annotation_target_var='ensembl_gene', apply_softmax=False, device=None, verbose=False)
-        Extract top-k strongest attention edges across all layers.
     load(output_dir, prefix)
         Load foundation model from saved files (classmethod).
     save(output_dir, prefix)
         Save foundation model to files.
-
-    Private Methods
-    --------------
-    _compute_attention(layer_idx, apply_softmax=True, vocab_mask=None, return_tensor=False, device=None)
-        Compute attention scores for a specific layer with optional vocabulary mask.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -1463,558 +1515,27 @@ class FoundationModel(BaseModel):
             raise ValueError("ordered_vocabulary must contain only strings")
         return v
 
-    def compute_consensus_attention(
-        self,
-        target_ids: List[str],
-        consensus_method: str = "absolute-argmax",
-        gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
-        apply_softmax: bool = False,
-        return_layer_indices: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
-        """
-        Compute consensus attention across all layers for target genes.
+    # properties
 
-        For each gene pair, aggregates attention values across layers using the
-        specified consensus method. The default method ("absolute-argmax") finds the layer
-        with the strongest attention (by absolute value) and returns that attention
-        value with its original sign preserved.
-
-        Parameters
-        ----------
-        target_ids : List[str]
-            Ordered list of gene identifiers to compute attention for
-        consensus_method : str, optional
-            Method for aggregating attention across layers to compute consensus.
-            Currently supported:
-            - "absolute-argmax" (default): Find layer with maximum absolute attention
-                and return that value with sign preserved
-            - "max": Find layer with maximum attention value (without taking absolute value)
-                and return that value
-            - "sum": Sum attention values across all layers
-        gene_annotation_target_var : str, optional
-            Column name in gene_annotations to match against target_ids
-            (default: ONTOLOGIES.ENSEMBL_GENE)
-        apply_softmax : bool, optional
-            If True, apply softmax to get attention probabilities (default: False).
-            If False, return raw attention scores (Q @ K.T / sqrt(d_k))
-        return_layer_indices : bool, optional
-            If True, also return which layer had max attention for each gene pair
-            (default: False)
-        device : str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-
-        Returns
-        -------
-        torch.Tensor
-            Consensus attention, shape (len(target_ids), len(target_ids))
-            where result[i, j] is the consensus attention from target_ids[i] to target_ids[j]
-            across all layers
-        torch.Tensor (optional)
-            If return_layer_indices=True, also returns layer indices where max occurred,
-            shape (len(target_ids), len(target_ids))
-
-        Examples
-        --------
-        >>> # Find strongest attention relationships across all layers
-        >>> common_genes = ['ENSG00000000003', 'ENSG00000000005', ...]
-        >>> consensus_attn = model.compute_consensus_attention(common_genes)
-        >>> # Identify which layer had the strongest attention
-        >>> consensus_attn, layer_idx = model.compute_consensus_attention(common_genes, return_layer_indices=True)
-        >>> # Compare consensus attention across models
-        >>> consensus_attn1 = model1.compute_consensus_attention(common_genes)
-        >>> consensus_attn2 = model2.compute_consensus_attention(common_genes)
-        """
-        # Pre-allocate 3D tensor: (n_genes, n_genes, n_layers)
-        n_genes = len(target_ids)
-        all_attention = torch.zeros(
-            (n_genes, n_genes, self.n_layers), dtype=torch.float32
-        )
-
-        # Fill in layer by layer
-        for layer_idx in range(self.n_layers):
-            attention = self.compute_reordered_attention(
-                layer_idx=layer_idx,
-                target_ids=target_ids,
-                gene_annotation_target_var=gene_annotation_target_var,
-                apply_softmax=apply_softmax,
-                return_tensor=True,
-                device=device,
-            )
-            all_attention[:, :, layer_idx] = attention
-
-        # Aggregate attention across layers using specified consensus method
-        if consensus_method == FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX:
-            return compute_max_abs_over_z(
-                all_attention, return_indices=return_layer_indices
-            )
-        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.MAX:
-            return compute_max_over_z(
-                all_attention, return_indices=return_layer_indices
-            )
-        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.SUM:
-            # Sum across layers (z dimension)
-            if return_layer_indices:
-                # For sum, indices don't make sense, but return zeros for consistency
-                return all_attention.sum(dim=2), torch.zeros(
-                    (n_genes, n_genes), dtype=torch.long
-                )
-            return all_attention.sum(dim=2)
-        else:
-            raise ValueError(
-                f"Unknown consensus_method '{consensus_method}'. Supported methods: {VALID_FM_LAYER_CONSENSUS_METHODS}"
-            )
-
-    def compute_reordered_attention(
-        self,
-        layer_idx: int,
-        target_ids: List[str],
-        gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
-        apply_softmax: bool = True,
-        return_tensor: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Union[Tensor, np.ndarray]:
-        """
-        Compute attention scores reordered to match a target gene ordering.
-
-        This method computes attention for genes in target_ids and reorders the
-        resulting attention matrix to match the order of target_ids. This enables
-        direct comparison of attention matrices across different models and layers.
-
-        Parameters
-        ----------
-        layer_idx : int
-            Index of the layer to compute attention for
-        target_ids : List[str]
-            Ordered list of gene identifiers to compute attention for.
-            The output attention matrix will be ordered to match this list.
-        gene_annotation_target_var : str, optional
-            Column name in gene_annotations to match against target_ids
-            (default: ONTOLOGIES.ENSEMBL_GENE)
-        apply_softmax : bool, optional
-            If True, apply softmax to get attention probabilities (default: True).
-            If False, return raw attention scores (Q @ K.T / sqrt(d_k))
-        return_tensor : bool, optional
-            If True, return attention as torch.Tensor (default: False).
-            If False, return as numpy array.
-        device : str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-
-        Returns
-        -------
-        Tensor or np.ndarray
-            Attention scores matrix of shape (len(target_ids), len(target_ids))
-            where reordered_attention[i, j] represents attention from target_ids[i]
-            to target_ids[j]. Softmax is applied.
-
-        Raises
-        ------
-        ValueError
-            If layer_idx is out of range
-            If gene_annotation_target_var is not a column in gene_annotations
-            If any target_ids are not found in gene_annotations
-
-        Examples
-        --------
-        >>> # Compare attention across models for same genes
-        >>> common_genes = ['ENSG00000000003', 'ENSG00000000005', ...]
-        >>> attn1 = model1.compute_attention_reordered(0, common_genes)
-        >>> attn2 = model2.compute_attention_reordered(0, common_genes)
-        >>> correlation = np.corrcoef(attn1.flatten(), attn2.flatten())[0, 1]
-        """
-        # Validate gene_annotation_target_var exists
-        if gene_annotation_target_var not in self.gene_annotations.columns:
-            raise ValueError(
-                f"Column '{gene_annotation_target_var}' not found in gene_annotations. "
-                f"Available columns: {list(self.gene_annotations.columns)}"
-            )
-
-        # Get gene annotations for genes in target_ids
-        target_gene_annotations = self.gene_annotations.query(
-            f"{gene_annotation_target_var} in @target_ids"
-        ).copy()
-
-        # Check that all target_ids were found
-        found_ids = set(target_gene_annotations[gene_annotation_target_var])
-        missing_ids = set(target_ids) - found_ids
-        if missing_ids:
-            raise ValueError(
-                f"Could not find {len(missing_ids)} target_ids in gene_annotations. "
-                f"First few missing: {list(missing_ids)[:5]}"
-            )
-
-        # Create vocab mask: which positions in ordered_vocabulary are in target_ids?
-        target_vocab_set = set(target_gene_annotations[FM_DEFS.VOCAB_NAME])
-        vocab_mask = [
-            vocab_name in target_vocab_set for vocab_name in self.ordered_vocabulary
-        ]
-
-        # Compute attention for masked vocabulary
-        attention = self._compute_attention(
-            layer_idx=layer_idx,
-            device=device,
-            vocab_mask=vocab_mask,
-            apply_softmax=apply_softmax,
-            return_tensor=return_tensor,
-        )
-
-        # REORDERING: Map from attention matrix order to target_ids order
-
-        # Step 1: Get vocab_names in attention matrix order (filtered ordered_vocabulary)
-        attention_ordered_vocab = [
-            vocab_name
-            for vocab_name, mask_val in zip(self.ordered_vocabulary, vocab_mask)
-            if mask_val
-        ]
-
-        # Step 2: Create lookup from vocab_name -> target identifier
-        vocab_to_target = dict(
-            zip(
-                target_gene_annotations[FM_DEFS.VOCAB_NAME],
-                target_gene_annotations[gene_annotation_target_var],
-            )
-        )
-
-        # Step 3: For each position in attention matrix, find its position in target_ids
-        attention_idx_to_target_idx = [
-            target_ids.index(vocab_to_target[vocab_name])
-            for vocab_name in attention_ordered_vocab
-        ]
-
-        # Step 4: Reorder both dimensions of attention matrix to match target_ids
-        reordered_attention = attention[attention_idx_to_target_idx, :][
-            :, attention_idx_to_target_idx
-        ]
-
-        return reordered_attention
-
-    def get_specific_attentions(
-        self,
-        edge_list: pd.DataFrame,
-        layer_indices: Optional[List[int]] = None,
-        target_ids: Optional[List[str]] = None,
-        gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
-        apply_softmax: bool = False,
-        compute_ranks: bool = False,
-        by_absolute_value: bool = True,
-        device: Optional[Union[str, torch.device]] = None,
-        verbose: bool = False,
-    ) -> pd.DataFrame:
-        """
-        Extract specific attention values across layers for given edges.
-
-        This complements find_top_k_attention_edges() by extracting the exact
-        attention values for specific gene pairs across specified layers.
-        Useful for analyzing how specific relationships vary across layers.
-
-        Parameters
-        ----------
-        edge_list : pd.DataFrame
-            DataFrame with at minimum 'from_gene' and 'to_gene' columns containing
-            gene identifiers. Typically the output from find_top_k_attention_edges().
-        layer_indices : List[int], optional
-            Layers to extract from. If None, uses all layers.
-        target_ids : List[str], optional
-            Gene identifiers to use. If None, uses all genes in the model.
-        gene_annotation_target_var : str, optional
-            Column name in gene_annotations to match against target_ids
-            (default: ONTOLOGIES.ENSEMBL_GENE)
-        apply_softmax : bool, optional
-            If True, use softmax-normalized attention probabilities (default: False).
-            If False, use raw attention scores.
-        compute_ranks : bool, optional
-            If True, compute ranks of attention values relative to the full attention tensor
-            for each layer and add them to the output table (default: False)
-        by_absolute_value : bool, optional
-            If True, rank by absolute value when calculating ranks (default: True).
-            Only used if compute_ranks=True.
-        device : str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-        verbose : bool, optional
-            Whether to print verbose output during computation (default: False)
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with columns:
-            - from_gene : str
-                Source gene identifier
-            - to_gene : str
-                Target gene identifier
-            - layer : int
-                Layer index
-            - attention : float
-                Attention value for this edge in this layer
-            - attention_rank : int (if compute_ranks=True)
-                Integer rank compared to all attention values in the full tensor for this layer (rank 1 = highest)
-
-        Examples
-        --------
-        >>> # Get top edges from one layer, then extract from all layers
-        >>> top_edges = model.get_top_attentions(k=1000, layer_indices=[0,2,3])
-        >>> unique_edges = top_edges[['from_gene', 'to_gene']].drop_duplicates()
-        >>> all_layers = model.get_specific_attentions(unique_edges)
-        >>>
-        >>> # Analyze how attention varies across layers for same edges
-        >>> pivot = all_layers.pivot_table(
-        ...     values='attention',
-        ...     index=['from_gene', 'to_gene'],
-        ...     columns='layer'
-        ... )
-        """
-        device = ensure_device(device, allow_autoselect=True)
-
-        if target_ids is None:
-            target_ids = list(
-                self.gene_annotations[gene_annotation_target_var].unique()
-            )
-
-        # Convert edge list to indices ONCE
-        edge_df = _edgelist_to_indices(
-            edge_list=edge_list,
-            gene_ids=target_ids,
-            verbose=verbose,
-        )
-
-        if layer_indices is None:
-            layer_indices = list(range(self.n_layers))
-        else:
-            layer_indices = normalize_and_validate_indices(
-                indices=layer_indices,
-                max_value=self.n_layers,
-                param_name="layer_indices",
-            )
-
-        results = []
-
-        with memory_manager(device):
-            # Create index tensors on device inside memory_manager
-            from_idx_tensor = (
-                torch.from_numpy(edge_df[FM_EDGELIST.FROM_IDX].values).long().to(device)
-            )
-            to_idx_tensor = (
-                torch.from_numpy(edge_df[FM_EDGELIST.TO_IDX].values).long().to(device)
-            )
-
-            for layer_idx in layer_indices:
-                if verbose:
-                    logger.info(f"Extracting attentions from layer {layer_idx}...")
-
-                # Compute attention matrix
-                attention = self.compute_reordered_attention(
-                    layer_idx=layer_idx,
-                    target_ids=target_ids,
-                    gene_annotation_target_var=gene_annotation_target_var,
-                    apply_softmax=apply_softmax,
-                    return_tensor=True,
-                    device=device,
-                )
-
-                if verbose:
-                    logger.debug(f"Attention tensor shape: {attention.shape}")
-                    logger.debug(f"From index tensor shape: {from_idx_tensor.shape}")
-                    logger.debug(f"To index tensor shape: {to_idx_tensor.shape}")
-
-                # Extract edges ON GPU using tensor indexing
-                edge_attentions = attention[from_idx_tensor, to_idx_tensor]
-
-                # Move only the extracted values to CPU
-                layer_df = edge_df[[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]].copy()
-                layer_df[FM_EDGELIST.LAYER] = layer_idx
-                layer_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
-
-                # Compute ranks if requested
-                if compute_ranks:
-                    if verbose:
-                        logger.info(f"Calculating ranks for layer {layer_idx}...")
-
-                    # Compute ranks only for the specific indices (memory-efficient)
-                    edge_ranks = compute_tensor_ranks_for_indices(
-                        attention,
-                        (from_idx_tensor, to_idx_tensor),
-                        by_absolute_value=by_absolute_value,
-                    )
-                    layer_df[FM_EDGELIST.ATTENTION_RANK] = edge_ranks.cpu().numpy()
-
-                results.append(layer_df)
-
-                # Clean up
-                cleanup_tensors(attention, edge_attentions, edge_ranks)
-
-        # Combine all layers
-        all_attentions = pd.concat(results, ignore_index=True)
-
-        if verbose:
-            logger.info(
-                f"Extracted {len(all_attentions)} total attention values "
-                f"({len(edge_df)} edges × {len(layer_indices)} layers)"
-            )
-
-        return all_attentions
-
-    def get_top_attentions(
-        self,
-        k: int,
-        layer_indices: Optional[List[int]] = None,
-        target_ids: Optional[List[str]] = None,
-        gene_annotation_target_var: str = ONTOLOGIES.ENSEMBL_GENE,
-        apply_softmax: bool = False,
-        by_absolute_value: bool = True,
-        compute_ranks: bool = False,
-        ignore_self_attention: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-        verbose: bool = False,
-    ) -> pd.DataFrame:
-        """
-        Extract top-k strongest attention edges across all layers.
-
-        For each layer, identifies the k gene pairs with highest attention values
-        (by absolute value or raw value depending on by_absolute_value parameter)
-        and returns them as a DataFrame. Useful for network construction and identifying
-        the most significant gene-gene relationships learned by the model.
-
-        Parameters
-        ----------
-        k : int
-            Number of top edges to extract per layer
-        layer_indices : List[int], optional
-            Layers to analyze. If None, uses all layers.
-        target_ids : List[str], optional
-            Gene identifiers to analyze. If None, uses all genes in the model.
-        gene_annotation_target_var : str, optional
-            Column name in gene_annotations to match against target_ids
-            (default: ONTOLOGIES.ENSEMBL_GENE)
-        apply_softmax : bool, optional
-            If True, use softmax-normalized attention probabilities (default: False).
-            If False, use raw attention scores for ranking.
-        by_absolute_value : bool, optional
-            If True, rank edges by absolute attention value (default: True).
-            If False, rank edges by raw attention value.
-        compute_ranks : bool, optional
-            If True, compute ranks of attention values relative to the full attention tensor
-            for each layer and add them to the output table (default: False)
-        ignore_self_attention : bool, optional
-            If True, exclude self-attention edges (where from_gene == to_gene) from
-            top-k selection (default: False).
-        device : str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-        verbose : bool, optional
-            Whether to print verbose output (default: False)
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with columns:
-            - layer : int
-                Layer index
-            - from_idx : int
-                Source gene index in target_ids
-            - to_idx : int
-                Target gene index in target_ids
-            - from_gene : str
-                Source gene identifier
-            - to_gene : str
-                Target gene identifier
-            - attention : float
-                Attention value (preserves sign if apply_softmax=False)
-            - attention_rank : int (if compute_ranks=True)
-                Integer rank compared to all attention values in the full tensor for this layer (rank 1 = highest)
-            Sorted by layer, then by descending absolute attention value (if by_absolute_value=True)
-            or descending raw attention value (if by_absolute_value=False).
-
-        Examples
-        --------
-        >>> # Get top 1000 edges per layer for common genes
-        >>> common_genes = ['ENSG00000000003', 'ENSG00000000005', ...]
-        >>> top_edges = model.get_top_attentions(k=1000, target_ids=common_genes)
-        >>>
-        >>> # Rank by raw value instead of absolute value
-        >>> top_edges = model.get_top_attentions(k=1000, by_absolute_value=False)
-        >>>
-        >>> # Exclude self-attention edges
-        >>> top_edges = model.get_top_attentions(k=1000, ignore_self_attention=True)
-        """
-
-        device = ensure_device(device, allow_autoselect=True)
-
-        # Use all genes if target_ids not provided
-        if target_ids is None:
-            target_ids = list(
-                self.gene_annotations[gene_annotation_target_var].unique()
-            )
-
-        results = []
-
-        if layer_indices is None:
-            layer_indices = list(range(self.n_layers))
-        else:
-            layer_indices = normalize_and_validate_indices(
-                indices=layer_indices,
-                max_value=self.n_layers,
-                param_name="layer_indices",
-            )
-
-        with memory_manager(device):
-            for layer_idx in layer_indices:
-                if verbose:
-                    value_type = "absolute value" if by_absolute_value else "raw value"
-                    logger.info(
-                        f"Extracting top-{k} edges from layer {layer_idx} by {value_type}..."
-                    )
-
-                # Get attention for this layer
-                attention = self.compute_reordered_attention(
-                    layer_idx=layer_idx,
-                    target_ids=target_ids,
-                    gene_annotation_target_var=gene_annotation_target_var,
-                    apply_softmax=apply_softmax,
-                    return_tensor=True,
-                    device=device,
-                )
-
-                # Extract top edges
-                layer_df = _find_top_k_edges_in_attention_layer(
-                    attention=attention,
-                    k=k,
-                    layer_idx=layer_idx,
-                    gene_ids=target_ids,
-                    by_absolute_value=by_absolute_value,
-                    ignore_self_attention=ignore_self_attention,
-                )
-
-                results.append(layer_df)
-
-                # Clean up attention tensor
-                cleanup_tensors(attention)
-
-        # Combine all layers
-        all_edges = pd.concat(results, ignore_index=True)
-
-        # Add ranks if requested (rank within each layer)
-        if compute_ranks:
-            all_edges[FM_EDGELIST.ATTENTION_RANK] = calculate_ranks(
-                df=all_edges,
-                value_col=FM_EDGELIST.ATTENTION,
-                by_absolute_value=by_absolute_value,
-                grouping_vars=FM_EDGELIST.LAYER,
-            )
-
-        if verbose:
-            logger.info(
-                f"Extracted {len(all_edges)} total edges across {self.n_layers} layers"
-            )
-
-        return all_edges
+    @property
+    def disk_name(self) -> str:
+        """Get a version of the model label which can be used for a filename."""
+        return _get_disk_name(self.model_name, self.model_variant)
 
     @property
     def full_name(self) -> str:
         """Get full unique identifier."""
-        if self.model_variant:
-            return f"{self.model_name}_{self.model_variant}"
-        return self.model_name
+        return _get_model_label(self.model_name, self.model_variant)
+
+    # methods
 
     @classmethod
-    def load(cls, output_dir: str, prefix: str) -> "FoundationModel":
+    def load(
+        cls,
+        output_dir: str,
+        prefix: str,
+        verbose: bool = True,
+    ) -> "FoundationModel":
         """
         Load foundation model from saved files.
 
@@ -2024,6 +1545,8 @@ class FoundationModel(BaseModel):
             Directory path containing the saved files
         prefix : str
             Prefix used for the saved files
+        verbose : bool
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -2034,13 +1557,14 @@ class FoundationModel(BaseModel):
         --------
         >>> model = FoundationModel.load('/path/to/output', 'scGPT')
         """
+
         (
             weights_dict,
             gene_annotations,
             model_metadata,
             static_gene_embedding_metadata,
             dataset_gene_embeddings_metadata,
-        ) = _load_results(output_dir, prefix)
+        ) = _load_results(output_dir, prefix, verbose=verbose)
 
         # Infer model_variant from prefix if not in metadata
         if (
@@ -2091,9 +1615,10 @@ class FoundationModel(BaseModel):
         # Reconstruct dataset gene embeddings
         dataset_gene_embeddings = None
         if dataset_gene_embeddings_metadata:
-            logger.info(
-                f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
-            )
+            if verbose:
+                logger.info(
+                    f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
+                )
 
             dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
 
@@ -2122,7 +1647,7 @@ class FoundationModel(BaseModel):
                 dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
                 for ds_name, ge_list in dataset_gene_embeddings_lists.items():
                     dataset_sets[ds_name] = GeneEmbeddingsSet.from_gene_embeddings(
-                        ge_list
+                        ge_list, verbose=verbose
                     )
                 dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
 
@@ -2224,63 +1749,6 @@ class FoundationModel(BaseModel):
 
         logger.info("Successfully saved all results")
 
-    def _compute_attention(
-        self,
-        layer_idx: int,
-        apply_softmax: bool = True,
-        vocab_mask: Optional[np.ndarray] = None,
-        return_tensor: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Union[Tensor, np.ndarray]:
-        """
-        Compute attention scores for a specific layer using the model's n_heads.
-
-        This is a convenience method that calls weights.compute_attention_from_weights
-        with the model's n_heads attribute automatically provided.
-
-        Parameters
-        ----------
-        layer_idx : int
-            Index of the layer to compute attention for
-        vocab_mask : np.ndarray, optional
-            Boolean mask of shape (n_vocab,) indicating which vocabulary items to include.
-            If provided, only embeddings corresponding to True values will be used.
-            Default: None.
-        apply_softmax : bool, optional
-            If True, apply softmax to get attention probabilities (default: True).
-            If False, return raw attention scores (Q @ K.T / sqrt(d_k))
-        return_tensor : bool, optional
-            If True, return attention as torch.Tensor (default: False).
-            If False, return as numpy array.
-        device : str or torch.device, optional
-            Device to perform computation on (default: None to automatically select a device)
-
-        Returns
-        -------
-        Tensor or np.ndarray
-            Attention scores matrix. If vocab_mask is provided, shape is (n_selected, n_selected),
-            otherwise shape is (n_vocab, n_vocab). Softmax is applied.
-
-        Raises
-        ------
-        ValueError
-            If layer_idx is out of range
-
-        Examples
-        --------
-        >>> attention = model._compute_attention(layer_idx=0)
-        >>> attention.shape
-        torch.Size([15000, 15000])
-        """
-        return self.weights.compute_attention_from_weights(
-            layer_idx=layer_idx,
-            n_heads=self.n_heads,
-            apply_softmax=apply_softmax,
-            vocab_mask=vocab_mask,
-            return_tensor=return_tensor,
-            device=device,
-        )
-
     def __repr__(self) -> str:
         """String representation of the FoundationModel instance."""
         return (
@@ -2305,28 +1773,21 @@ class FoundationModels(BaseModel):
     models : List[FoundationModel]
         List of foundation model instances (minimum 2 required)
 
+    Properties
+    ----------
+    model_names : List[str]
+        List of model names.
+
     Public Methods
     --------------
-    compare_embeddings(device=None, verbose=False)
-        Compare embeddings of all models using Spearman correlation of distance matrices.
     get_common_identifiers(ontology='ensembl_gene', verbose=True)
         Get common identifiers across all models.
-    get_consensus_top_attentions(k=10000, consensus_method='absolute-argmax', apply_softmax=False, reextract_union=False, verbose=False)
-        Compute consensus top-k attention edges across all models for common genes.
-    get_consensus_attentions(consensus_method='absolute-argmax', apply_softmax=False)
-        Compute consensus attention scores across all models for common genes.
     get_model(full_name)
         Get a specific model by its full_name attribute.
-    get_specific_attentions(edge_list, apply_softmax=False, verbose=False)
-        Extract specific attention values across all models and layers for given edges.
-    get_top_attentions(k=10000, apply_softmax=False, reextract_union=False, verbose=False)
-        Extract top-k attention edges across all models for common genes.
+    get_summary()
+        Get a summary of model metadata.
     load_multiple(output_dir, prefixes)
         Load multiple foundation models from saved files (classmethod).
-    model_names
-        Property returning list of model names.
-    __repr__()
-        String representation of the FoundationModels instance.
 
     Private Methods
     --------------
@@ -2350,40 +1811,10 @@ class FoundationModels(BaseModel):
             raise ValueError("All elements must be FoundationModel instances")
         return v
 
-    def compare_embeddings(
-        self, device: Optional[Union[str, torch.device]] = None, verbose: bool = False
-    ) -> Dict[str, float]:
-        """
-        Compare the embeddings of all models.
-
-        Aligns gene embeddings across all models based on common identifiers and then calculates Spearman correlations of distances between all pairs of models
-
-        Parameters
-        ----------
-        device : Optional[Union[str, torch.device]]
-            Device to use for the computation.
-        verbose : bool
-            Whether to print verbose output.
-
-        Returns
-        -------
-        Dict[str, float]
-            Dictionary mapping model pair names to Spearman correlation coefficients.
-        """
-
-        # Get common identifiers across all models
-        common_identifiers = self.get_common_identifiers(verbose=verbose)
-
-        # pull out and align embeddings across models
-        aligned_embeddings = self._align_embeddings(common_identifiers, verbose=verbose)
-
-        # calculate each model's gene-gene distance matrix and then Spearman correlations of
-        # distances between all pairs of models
-        comparisons = _calculate_embedding_correlations(
-            aligned_embeddings, common_identifiers, device, verbose
-        )
-
-        return comparisons
+    @property
+    def model_names(self) -> List[str]:
+        """Get list of model names."""
+        return [model.full_name for model in self.models]
 
     def get_common_identifiers(
         self, ontology: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True
@@ -2440,546 +1871,6 @@ class FoundationModels(BaseModel):
 
         return common_identifiers
 
-    def get_consensus_top_attentions(
-        self,
-        k: int = 10000,
-        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
-        by_absolute_value: bool = True,
-        reextract_union: bool = False,
-        apply_softmax: bool = False,
-        compute_ranks: bool = False,
-        ignore_self_attention: bool = False,
-        return_original_and_reextracted: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-        verbose: bool = False,
-    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
-        """
-        Extract top-k consensus attention edges across models.
-
-        For each model:
-        1. Compute consensus attention across all layers
-        2. Extract top-k strongest edges from consensus
-
-        Optionally re-extract the union of all models' top edges
-        from every model's consensus.
-
-        Parameters
-        ----------
-        k : int, optional
-            Number of top edges to extract per model (default: 10000)
-        consensus_method : str, optional
-            Method for aggregating attention across layers to compute consensus.
-            Currently supported:
-                - "absolute-argmax" (default): Find layer with maximum absolute attention
-                and return that value with sign preserved
-                - "max": Find layer with maximum attention value (without taking absolute value)
-                and return that value
-                - "sum": Sum attention values across all layers
-                Options: 'absolute-argmax', 'max', 'sum'
-        by_absolute_value : bool, optional
-            If True, rank edges by absolute attention value (default: True).
-            If False, rank edges by raw attention value.
-        compute_ranks : bool, optional
-            If True, compute ranks of attention values and add them to the output table.
-        reextract_union : bool, optional
-            If True, take union of all top edges and re-extract from all models
-            (default: False)
-        apply_softmax : bool, optional
-            Whether to apply softmax before computing consensus (default: False)
-        ignore_self_attention : bool, optional
-            If True, exclude self-attention edges (where from_gene == to_gene) from
-            top-k selection (default: False).
-        return_original_and_reextracted : bool, optional
-            If True and reextract_union=True, return tuple (original, reextracted).
-            If False and reextract_union=True, return only reextracted DataFrame.
-            Ignored if reextract_union=False (default: False)
-        device: str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-        verbose : bool, optional
-            Print progress information (default: False)
-
-        Returns
-        -------
-        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
-            If reextract_union=False:
-                Single DataFrame with columns:
-                - from_idx : int
-                - to_idx : int
-                - from_gene : str
-                - to_gene : str
-                - attention : float (consensus value)
-                - model : str
-
-            If reextract_union=True and return_original_and_reextracted=True:
-                Tuple of (top_edges_df, reextracted_union_df) where:
-                - top_edges_df: Same as above
-                - reextracted_union_df: DataFrame with union edges extracted from all models
-                    Columns: from_gene, to_gene, attention, model
-                - attention_rank : int (if compute_ranks=True)
-                    Integer rank compared to all attention values (rank 1 = highest)
-
-            If reextract_union=True and return_original_and_reextracted=False:
-                Single DataFrame with reextracted union edges (same structure as reextracted_union_df above)
-
-        Examples
-        --------
-        >>> # Get top-1000 consensus edges per model
-        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
-        >>> top_consensus = models.get_consensus_top_attentions(k=1000)
-        >>>
-        >>> # With union re-extraction: Compare how models score same edges
-        >>> top_edges, all_models_on_union = models.get_consensus_top_attentions(
-        ...     k=1000,
-        ...     reextract_union=True,
-        ...     return_original_and_reextracted=True
-        ... )
-        >>>
-        >>> # Just get reextracted union (without original)
-        >>> reextracted = models.get_consensus_top_attentions(
-        ...     k=1000,
-        ...     reextract_union=True,
-        ...     return_original_and_reextracted=False
-        ... )
-        >>>
-        >>> # Analyze: Which edges are in multiple models' top-k?
-        >>> from collections import Counter
-        >>> edge_counts = Counter(
-        ...     zip(top_edges['from_gene'], top_edges['to_gene'])
-        ... )
-        >>> shared_edges = {edge: count for edge, count in edge_counts.items()
-        ...                 if count > 1}
-        >>>
-        >>> # Analyze: How do models differ on the union edges?
-        >>> pivot = all_models_on_union.pivot_table(
-        ...     values='attention',
-        ...     index=['from_gene', 'to_gene'],
-        ...     columns='model'
-        ... )
-        """
-        # Get common genes across all models
-        common_ids = self.get_common_identifiers(verbose=False)
-
-        if verbose:
-            logger.info(
-                f"Computing consensus attention across {len(self.models)} models "
-                f"for {len(common_ids)} common genes..."
-            )
-
-        # Phase 1: Compute consensus for ALL models at once
-        # Returns: Tensor of shape (n_models, n_genes, n_genes)
-        all_consensus = self.get_consensus_attentions(
-            consensus_method=consensus_method,
-            apply_softmax=apply_softmax,
-        )
-
-        # Extract top-k from each model's consensus
-        top_edges_list = []
-
-        for i, model in enumerate(self.models):
-            if verbose:
-                logger.info(f"Extracting top-{k} edges from {model.full_name}...")
-
-            # Extract top-k using existing utility
-            model_top_k = _find_top_k_edges_in_attention_layer(
-                attention=all_consensus[i],
-                k=k,
-                layer_idx=None,  # No layer for consensus
-                gene_ids=common_ids,
-                by_absolute_value=by_absolute_value,
-                ignore_self_attention=ignore_self_attention,
-            )
-            model_top_k[FM_EDGELIST.MODEL] = model.full_name
-
-            top_edges_list.append(model_top_k)
-
-        all_top_edges = pd.concat(top_edges_list, ignore_index=True)
-
-        if verbose:
-            logger.info(
-                f"Extracted {len(all_top_edges)} total edges "
-                f"({k} per model × {len(self.models)} models)"
-            )
-
-        if not reextract_union:
-            if return_original_and_reextracted:
-                logger.warning(
-                    "return_original_and_reextracted=True but reextract_union=False, returning original top-k edges only"
-                )
-
-            return all_top_edges
-
-        # Phase 2: Union re-extraction
-        unique_edges = all_top_edges[
-            [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
-        ].drop_duplicates()
-
-        if verbose:
-            logger.info(
-                f"Re-extracting {len(unique_edges)} unique edges from all models..."
-            )
-
-        # Convert edges to indices ONCE
-        edge_df = _edgelist_to_indices(
-            edge_list=unique_edges,
-            gene_ids=common_ids,
-            verbose=verbose,
-        )
-
-        # Prepare attention tensors and metadata for utility function
-        # REUSE consensus from Phase 1 - no recomputation!
-        attention_tensors = [all_consensus[i] for i in range(len(self.models))]
-        metadata = [{FM_EDGELIST.MODEL: model.full_name} for model in self.models]
-
-        # Use utility to extract edges
-        reextracted_union = _extract_edges_from_attention_tensors(
-            edge_df=edge_df,
-            attention_tensors=attention_tensors,
-            metadata=metadata,
-            compute_ranks=compute_ranks,
-            by_absolute_value=by_absolute_value,
-            device=device,
-            verbose=verbose,
-        )
-
-        if verbose:
-            logger.info(
-                f"Extracted {len(reextracted_union)} total attention values "
-                f"({len(unique_edges)} edges × {len(self.models)} models)"
-            )
-
-        if return_original_and_reextracted:
-            return all_top_edges, reextracted_union
-        else:
-            return reextracted_union
-
-    def get_specific_attentions(
-        self,
-        edge_list: pd.DataFrame,
-        apply_softmax: bool = False,
-        compute_ranks: bool = False,
-        by_absolute_value: bool = True,
-        verbose: bool = False,
-    ) -> pd.DataFrame:
-        """
-        Extract specific attention values across all models and layers for given edges.
-
-        This complements get_top_attentions() by extracting the exact attention values
-        for specific gene pairs across all models and layers. Useful for comparing how
-        different models represent the same biological relationships.
-
-        Parameters
-        ----------
-        edge_list : pd.DataFrame
-            DataFrame with at minimum 'from_gene' and 'to_gene' columns containing
-            gene identifiers. Typically the output from get_top_attentions().
-        apply_softmax : bool, optional
-            If True, use softmax-normalized attention probabilities (default: False).
-            If False, use raw attention scores.
-        compute_ranks : bool, optional
-            If True, compute ranks of attention values relative to the full attention tensor
-            for each model/layer and add them to the output table (default: False)
-        by_absolute_value : bool, optional
-            If True, rank by absolute value when calculating ranks (default: True).
-            Only used if compute_ranks=True.
-        verbose : bool, optional
-            Whether to print verbose output during computation (default: False)
-
-        Returns
-        -------
-        pd.DataFrame
-            DataFrame with columns:
-            - from_gene : str
-                Source gene identifier
-            - to_gene : str
-                Target gene identifier
-            - model : str
-                Model name
-            - layer : int
-                Layer index
-            - attention : float
-                Attention value for this edge in this model/layer
-            - attention_rank : int (if compute_ranks=True)
-                Integer rank compared to all attention values in the full tensor for this model/layer (rank 1 = highest)
-
-        Examples
-        --------
-        >>> # Get top edges, then extract those same edges from all models/layers
-        >>> top_edges = models.get_top_attentions(k=1000)
-        >>> # Get unique edges (remove layer/model info)
-        >>> unique_edges = top_edges[['from_gene', 'to_gene']].drop_duplicates()
-        >>> # Extract these edges from all models and layers
-        >>> all_attentions = models.get_specific_attentions(unique_edges)
-        >>>
-        >>> # Now analyze how attention varies across models for same edges
-        >>> pivot = all_attentions.pivot_table(
-        ...     values='attention',
-        ...     index=['from_gene', 'to_gene', 'layer'],
-        ...     columns='model'
-        ... )
-        """
-        # Get common identifiers across all models
-        common_ids = self.get_common_identifiers(verbose=False)
-
-        results = []
-
-        # Iterate over models - delegate to FoundationModel method
-        for model in self.models:
-            model_name = model.full_name
-
-            if verbose:
-                logger.info(f"Extracting attentions from {model_name}...")
-
-            # Delegate to FoundationModel.get_specific_attentions()
-            model_attentions = model.get_specific_attentions(
-                edge_list=edge_list,
-                layer_indices=None,  # Extract from all layers
-                target_ids=common_ids,
-                apply_softmax=apply_softmax,
-                compute_ranks=compute_ranks,
-                by_absolute_value=by_absolute_value,
-                verbose=False,  # Suppress per-layer logging
-            )
-
-            # Add model name column
-            model_attentions[FM_EDGELIST.MODEL] = model_name
-
-            results.append(model_attentions)
-
-        # Combine all results
-        all_attentions = pd.concat(results, ignore_index=True)
-
-        if verbose:
-            n_edges = len(
-                edge_list[
-                    [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
-                ].drop_duplicates()
-            )
-            logger.info(
-                f"Extracted {len(all_attentions)} total attention values "
-                f"({n_edges} edges × {len(self.models)} models × "
-                f"{self.models[0].n_layers} layers)"
-            )
-
-        return all_attentions
-
-    def get_top_attentions(
-        self,
-        k: int = 10000,
-        by_absolute_value: bool = True,
-        reextract_union: bool = False,
-        apply_softmax: bool = False,
-        compute_ranks: bool = False,
-        ignore_self_attention: bool = False,
-        return_original_and_reextracted: bool = False,
-        verbose: bool = False,
-    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
-        """
-        Extract top-k attention edges across all models for common genes.
-
-        For each model, identifies the k strongest attention relationships per layer
-        among genes that are common across all models. This enables cross-model
-        comparison of attention patterns by identifying the most significant
-        gene-gene relationships learned by each model.
-
-        Parameters
-        ----------
-        k : int, optional
-            Number of top edges to extract per layer per model (default: 10000)
-        by_absolute_value : bool, optional
-            If True, rank edges by absolute attention value (default: True).
-            If False, rank edges by raw attention value.
-        reextract_union: bool, optional
-            If True, take the union of top edges and extract them from every model and layer.
-            If False, extract top edges from each model and layer separately.
-        apply_softmax : bool, optional
-            If True, use softmax-normalized attention probabilities (default: False).
-            If False, use raw attention scores for ranking.
-        compute_ranks : bool, optional
-            If True, compute ranks of attention values and add them to the output table.
-            Ranks are computed within each model and layer group (default: False)
-        ignore_self_attention : bool, optional
-            If True, exclude self-attention edges (where from_gene == to_gene) from
-            top-k selection (default: False).
-        return_original_and_reextracted : bool, optional
-            If True and reextract_union=True, return tuple (original, reextracted).
-            If False and reextract_union=True, return only reextracted DataFrame.
-            Ignored if reextract_union=False (default: False)
-        verbose : bool, optional
-            Whether to print verbose output during computation (default: False)
-
-        Returns
-        -------
-        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
-            If reextract_union is False, returns a single DataFrame with columns:
-            - layer : int
-                Layer index where attention was computed
-            - from_idx : int
-                Source gene index in common identifiers
-            - to_idx : int
-                Target gene index in common identifiers
-            - from_gene : str
-                Source gene identifier
-            - to_gene : str
-                Target gene identifier
-            - attention : float
-                Attention value (preserves sign if apply_softmax=False)
-            - model : str
-                Model name (e.g., 'scGPT', 'Geneformer')
-            - attention_rank : int (if compute_ranks=True)
-                Integer rank compared to all attention values within the same model and layer (rank 1 = highest)
-            Sorted by model, then layer, then by descending absolute attention value (if by_absolute_value=True)
-            or descending raw attention value (if by_absolute_value=False).
-
-        If reextract_union is True and return_original_and_reextracted is True:
-            Returns a tuple of two DataFrames:
-            - The first DataFrame is the same as above (original top edges).
-            - The second DataFrame has the attention for each top edge across all models and layers.
-                Includes 'attention_rank' column if compute_ranks=True (ranks within each model and layer).
-
-        If reextract_union is True and return_original_and_reextracted is False:
-            Returns a single DataFrame with reextracted union edges (same structure as second DataFrame above).
-                Includes 'attention_rank' column if compute_ranks=True (ranks within each model and layer).
-
-        Examples
-        --------
-        >>> # Get top 1000 attention edges per layer for all models
-        >>> models = FoundationModels.load_multiple('/path/to/output', ['scGPT', 'Geneformer'])
-        >>> top_edges = models.get_top_attentions(k=1000)
-        >>>
-        >>> # Compare attention patterns between models
-        >>> scgpt_edges = top_edges[top_edges['model'] == 'scGPT']
-        >>> geneformer_edges = top_edges[top_edges['model'] == 'Geneformer']
-        >>>
-        >>> # Get both original and reextracted union
-        >>> original, reextracted = models.get_top_attentions(
-        ...     k=1000,
-        ...     reextract_union=True,
-        ...     return_original_and_reextracted=True
-        ... )
-        >>>
-        >>> # Get only reextracted union
-        >>> reextracted = models.get_top_attentions(
-        ...     k=1000,
-        ...     reextract_union=True,
-        ...     return_original_and_reextracted=False
-        ... )
-        >>>
-        >>> # Rank by raw value instead of absolute value
-        >>> top_edges = models.get_top_attentions(k=1000, by_absolute_value=False)
-        """
-        common_ids = self.get_common_identifiers()
-        n_models = len(self.models)
-
-        top_attention_edges = list()
-        for i in range(n_models):
-            model = self.models[i]
-            model_name = model.full_name
-
-            logger.info(f"Computing top-k attention for {model_name}...")
-
-            model_top_k_attention = model.get_top_attentions(
-                k=k,
-                target_ids=common_ids,
-                apply_softmax=apply_softmax,
-                by_absolute_value=by_absolute_value,
-                compute_ranks=compute_ranks,
-                ignore_self_attention=ignore_self_attention,
-                verbose=verbose,
-            ).assign(model=model_name)
-
-            top_attention_edges.append(model_top_k_attention)
-
-        all_top_edges = pd.concat(top_attention_edges, ignore_index=True)
-
-        if reextract_union:
-            logger.info("Re-extracting top edges from every model and layer...")
-
-            reextracted_top_edges = self.get_specific_attentions(
-                all_top_edges,
-                apply_softmax=apply_softmax,
-                compute_ranks=compute_ranks,
-                by_absolute_value=by_absolute_value,
-                verbose=verbose,
-            )
-
-            if return_original_and_reextracted:
-                return all_top_edges, reextracted_top_edges
-            else:
-                return reextracted_top_edges
-        else:
-            if return_original_and_reextracted:
-                logger.warning(
-                    "return_original_and_reextracted=True but reextract_union=False, returning original top-k edges only"
-                )
-            return all_top_edges
-
-    def get_consensus_attentions(
-        self,
-        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
-        apply_softmax: bool = False,
-        device: Optional[Union[str, torch.device]] = None,
-    ) -> Tensor:
-        """
-        Compute maximum attention scores across all models for common genes.
-
-        For each model, computes the maximum absolute attention across all layers
-        for genes that are common across all models. This enables cross-model
-        comparison of attention patterns by identifying the strongest attention
-        relationships in each model.
-
-        Returns
-        -------
-        Tensor
-            3D tensor of shape (n_models, n_genes, n_genes) containing maximum
-            attention scores. The first dimension corresponds to each model in
-            self.models, and the last two dimensions represent attention from
-            gene i to gene j. Values are raw attention scores (no softmax applied).
-        consensus_method : str, optional
-            Method for aggregating attention across layers to compute consensus.
-            Currently supported:
-            - "absolute-argmax" (default): Find layer with maximum absolute attention
-              and return that value with sign preserved
-            - "max": Find layer with maximum attention value (without taking absolute value)
-              and return that value
-            - "sum": Sum attention values across all layers
-        softmax : bool, optional
-            If True, apply softmax to the attention scores (default: False).
-        device: str or torch.device, optional
-            Device to perform computation on (default: None to automatically select)
-
-
-        Examples
-        --------
-        >>> models = FoundationModels.load_multiple('/path/to/output', ['scGPT', 'Geneformer'])
-        >>> consensus_attentions = models.get_consensus_attentions()
-        >>> # Compare attention patterns between first two models
-        >>> model1_attn = consensus_attentions[0]
-        >>> model2_attn = consensus_attentions[1]
-        >>> correlation = np.corrcoef(model1_attn.flatten(), model2_attn.flatten())[0, 1]
-        """
-        common_ids = self.get_common_identifiers()
-        n_genes = len(common_ids)
-        n_models = len(self.models)
-
-        cross_model_attention = torch.zeros(
-            (n_models, n_genes, n_genes), dtype=torch.float32
-        )
-
-        for i in range(n_models):
-            model = self.models[i]
-            logger.info(f"Computing consensus attention for {model.full_name}...")
-
-            attention = model.compute_consensus_attention(
-                target_ids=common_ids,
-                consensus_method=consensus_method,
-                apply_softmax=apply_softmax,
-                device=device,
-            )
-
-            cross_model_attention[i] = attention
-
-        return cross_model_attention
-
     def get_model(self, full_name: str) -> FoundationModel:
         """
         Get a specific model by its full_name attribute.
@@ -3014,8 +1905,27 @@ class FoundationModels(BaseModel):
             f"Model '{full_name}' not found. Available models: {available_models}"
         )
 
+    def get_summary(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            {
+                "full_name": [x.full_name for x in self.models],
+                "model": [x.model_name for x in self.models],
+                "variant": [
+                    x.model_variant if x.model_variant is not None else ""
+                    for x in self.models
+                ],
+                "n_layers": [x.n_layers for x in self.models],
+                "n_heads": [x.n_heads for x in self.models],
+                "parameter_count": [
+                    x.weights.count_attention_parameters() for x in self.models
+                ],
+            }
+        )
+
     @classmethod
-    def load_multiple(cls, output_dir: str, prefixes: List[str]) -> "FoundationModels":
+    def load_multiple(
+        cls, output_dir: str, prefixes: List[str], verbose: bool = True
+    ) -> "FoundationModels":
         """
         Load multiple foundation models from saved files.
 
@@ -3025,6 +1935,8 @@ class FoundationModels(BaseModel):
             Directory path containing the saved model files
         prefixes : List[str]
             List of prefixes for the models to load
+        verbose : bool
+            Extra reporting (default: True)
 
         Returns
         -------
@@ -3040,7 +1952,8 @@ class FoundationModels(BaseModel):
         >>> common_ids = models.get_common_identifiers()
         """
         loaded_models = [
-            FoundationModel.load(output_dir, prefix) for prefix in prefixes
+            FoundationModel.load(output_dir, prefix, verbose=verbose)
+            for prefix in prefixes
         ]
 
         # Create instance and sort by parameters
@@ -3048,11 +1961,6 @@ class FoundationModels(BaseModel):
         instance._sort_models_by_parameters()
 
         return instance
-
-    @property
-    def model_names(self) -> List[str]:
-        """Get list of model names."""
-        return [model.full_name for model in self.models]
 
     # private methods
 
@@ -3192,12 +2100,1680 @@ class FoundationModels(BaseModel):
         return f"FoundationModels(models=[{model_full_names_str}])"
 
 
+class AttendedEmbeddings:
+    """A single gene embedding matrix paired with its model's attention machinery.
+
+    Pairs one GeneEmbeddings instance (static or expression-contextualized)
+    with a reference to the FoundationModel that produced it. This enables
+    computing attention patterns using this specific embedding's vectors
+    with the model's attention weight matrices.
+
+    Typically created by AttendedEmbeddingsSet rather than directly by users.
+
+    Attributes
+    ----------
+    gene_embeddings : GeneEmbeddings
+        The gene embedding matrix and associated metadata.
+    foundation_model : FoundationModel
+        Reference to the source model (for attention layers, n_heads,
+        gene_annotations, ordered_vocabulary).
+
+    Properties
+    ----------
+    embedding : np.ndarray
+        The embedding matrix (shortcut to gene_embeddings.embedding).
+    n_genes : int
+        Number of genes.
+    embed_dim : int
+        Embedding dimensionality.
+    n_layers : int
+        Number of attention layers (from the model).
+    n_heads : int
+        Number of attention heads (from the model).
+    attention_layers : List[AttentionLayer]
+        Attention layers (from the model).
+    model_name : str
+        Model display name (from the model).
+
+    Examples
+    --------
+    >>> ae = AttendedEmbeddings(gene_embeddings=ge, foundation_model=model)
+    >>> attn = ae.compute_attention(layer_idx=0)
+    >>> consensus = ae.compute_consensus_attention()
+    """
+
+    def __init__(
+        self,
+        gene_embeddings: GeneEmbeddings,
+        foundation_model: FoundationModel,
+    ):
+        if not isinstance(gene_embeddings, GeneEmbeddings):
+            raise TypeError(
+                f"gene_embeddings must be a GeneEmbeddings, "
+                f"got {type(gene_embeddings)}"
+            )
+        if not isinstance(foundation_model, FoundationModel):
+            raise TypeError(
+                f"foundation_model must be a FoundationModel, "
+                f"got {type(foundation_model)}"
+            )
+
+        # Validate that the embedding's model matches the foundation model
+        emb_label = _get_model_label(
+            gene_embeddings.model_name, gene_embeddings.model_variant
+        )
+        if emb_label != foundation_model.full_name:
+            raise ValueError(
+                f"Embedding model label '{emb_label}' does not match "
+                f"foundation model '{foundation_model.full_name}'"
+            )
+
+        if len(foundation_model.weights.attention_layers) == 0:
+            raise ValueError(
+                f"Model '{foundation_model.full_name}' has no attention layers."
+            )
+
+        self.gene_embeddings = gene_embeddings
+        self.foundation_model = foundation_model
+
+    # --- Properties (shortcuts) ---
+
+    @property
+    def embedding(self) -> np.ndarray:
+        """The embedding matrix."""
+        return self.gene_embeddings.embedding
+
+    @property
+    def n_genes(self) -> int:
+        """Number of genes."""
+        return self.gene_embeddings.n_genes
+
+    @property
+    def embed_dim(self) -> int:
+        """Embedding dimensionality."""
+        return self.gene_embeddings.embed_dim
+
+    @property
+    def n_layers(self) -> int:
+        """Number of attention layers."""
+        return self.foundation_model.n_layers
+
+    @property
+    def n_heads(self) -> int:
+        """Number of attention heads."""
+        return self.foundation_model.n_heads
+
+    @property
+    def attention_layers(self) -> List[AttentionLayer]:
+        """Attention layers from the model."""
+        return self.foundation_model.weights.attention_layers
+
+    @property
+    def model_name(self) -> str:
+        """Model display name."""
+        return self.foundation_model.full_name
+
+    def compare_layer_attention_consistency(
+        self,
+        top_k: int,
+        by_absolute_value: bool,
+        ignore_self_attention: bool,
+        target_ids: Optional[List[str]] = None,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+
+        _, gene_ids = self.gene_embeddings.get_gene_mask(target_ids)
+
+        top_k_attention_edges = self.get_top_attentions(
+            k=top_k,
+            target_ids=gene_ids,
+            by_absolute_value=by_absolute_value,
+            ignore_self_attention=ignore_self_attention,
+            verbose=verbose,
+        )
+        # re-extract the top-k edges across all layers
+        distinct_top_edges = top_k_attention_edges[
+            ["from_gene", "to_gene"]
+        ].drop_duplicates()
+
+        # extract the attention scores for the distinct top-k edges across all layers
+        top_k_union = self.get_specific_attentions(
+            distinct_top_edges,
+            target_ids=gene_ids,
+            compute_ranks=True,
+            by_absolute_value=by_absolute_value,
+            verbose=verbose,
+        )
+
+        wide_top_k_union = top_k_union.pivot(
+            index=["from_gene", "to_gene"], columns="layer", values="attention"
+        )
+
+        corr = compute_correlation_matrix(wide_top_k_union.to_numpy())
+        top_k_ranks = compare_top_k_union_ranks(
+            top_k_union,
+            grouping_vars=["layer"],
+            defining_vars=["from_gene", "to_gene"],
+            max_rank=len(gene_ids) ** 2,
+            top_k=top_k,
+            rank_col="attention_rank",
+        )
+
+        return corr, top_k_ranks
+
+    def compute_attention(
+        self,
+        layer_idx: int,
+        target_ids: Optional[List[str]] = None,
+        apply_softmax: bool = True,
+        return_tensor: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> Union[Tensor, np.ndarray]:
+        """Compute attention scores for a specific layer.
+
+        Uses this instance's embedding matrix with the model's attention
+        weight matrices to compute the attention pattern.
+
+        Parameters
+        ----------
+        layer_idx : int
+            Index of the layer to compute attention for.
+        target_ids : List[str], optional
+            Subset of gene IDs to compute attention for. Results will be
+            ordered to match target_ids. Must be a subset of this embedding's
+            gene IDs. If None, uses all genes in embedding order.
+        apply_softmax : bool, optional
+            If True, apply softmax to get attention probabilities (default: True).
+            If False, return raw scores (Q @ K.T / sqrt(d_k)).
+        return_tensor : bool, optional
+            If True, return torch.Tensor (default: False).
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+
+        Returns
+        -------
+        torch.Tensor or np.ndarray
+            Attention matrix of shape (n_target, n_target) if target_ids
+            is provided, otherwise (n_genes, n_genes). Rows and columns
+            are ordered to match target_ids when provided.
+
+        Raises
+        ------
+        ValueError
+            If layer_idx is out of range or target_ids contains unknown genes.
+        """
+        if layer_idx >= self.n_layers:
+            raise ValueError(
+                f"Layer index {layer_idx} out of range "
+                f"(model has {self.n_layers} layers)"
+            )
+
+        gene_mask, gene_ids = self.gene_embeddings.get_gene_mask(target_ids)
+
+        embeddings = self.embedding
+        if gene_mask is not None:
+            embeddings = embeddings[gene_mask]
+
+        layer = self.attention_layers[layer_idx]
+
+        attention = layer.compute_attention_pattern(
+            embeddings=embeddings,
+            n_heads=self.n_heads,
+            apply_softmax=apply_softmax,
+            return_tensor=True,
+            device=device,
+        )
+
+        # Reorder from embedding order to target_ids order if needed
+        if target_ids is not None:
+            masked_gene_ids = [
+                gid
+                for gid, m in zip(self.gene_embeddings.ordered_gene_ids, gene_mask)
+                if m
+            ]
+            masked_id_to_idx = {gid: i for i, gid in enumerate(masked_gene_ids)}
+            reorder_indices = [masked_id_to_idx[gid] for gid in target_ids]
+            attention = attention[reorder_indices, :][:, reorder_indices]
+
+        if return_tensor:
+            return attention
+        else:
+            return attention.cpu().numpy()
+
+    def compute_consensus_attention(
+        self,
+        target_ids: Optional[List[str]] = None,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
+        apply_softmax: bool = False,
+        return_layer_indices: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> Union[Tensor, Tuple[Tensor, Tensor]]:
+        """Compute consensus attention across all layers.
+
+        For each gene pair, aggregates attention values across layers using the
+        specified consensus method. The default method ("absolute-argmax") finds
+        the layer with the strongest attention (by absolute value) and returns
+        that value with its original sign preserved.
+
+        Parameters
+        ----------
+        target_ids : List[str], optional
+            Subset of gene IDs to compute consensus attention for. Results will be
+            ordered to match target_ids. Must be a subset of this embedding's
+            gene IDs. If None, uses all genes in embedding order.
+        consensus_method : str, optional
+            Method for aggregating across layers:
+            - "absolute-argmax" (default): Layer with max absolute value, sign preserved
+            - "max": Layer with maximum value
+            - "sum": Sum across all layers
+        apply_softmax : bool, optional
+            If True, apply softmax per layer (default: False).
+        return_layer_indices : bool, optional
+            If True, also return which layer had max attention (default: False).
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+
+        Returns
+        -------
+        torch.Tensor
+            Consensus attention of shape (n_genes, n_genes).
+        torch.Tensor (optional)
+            If return_layer_indices=True, layer indices of shape (n_genes, n_genes).
+        """
+
+        all_attention = torch.zeros(
+            (self.n_genes, self.n_genes, self.n_layers), dtype=torch.float32
+        )
+
+        for layer_idx in range(self.n_layers):
+            attention = self.compute_attention(
+                layer_idx=layer_idx,
+                target_ids=target_ids,
+                apply_softmax=apply_softmax,
+                return_tensor=True,
+                device=device,
+            )
+            all_attention[:, :, layer_idx] = attention
+
+        if consensus_method == FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX:
+            return compute_max_abs_over_z(
+                all_attention, return_indices=return_layer_indices
+            )
+        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.MAX:
+            return compute_max_over_z(
+                all_attention, return_indices=return_layer_indices
+            )
+        elif consensus_method == FM_LAYER_CONSENSUS_METHODS.SUM:
+            if return_layer_indices:
+                return all_attention.sum(dim=2), torch.zeros(
+                    (self.n_genes, self.n_genes), dtype=torch.long
+                )
+            return all_attention.sum(dim=2)
+        else:
+            raise ValueError(
+                f"Unknown consensus_method '{consensus_method}'. "
+                f"Supported methods: {VALID_FM_LAYER_CONSENSUS_METHODS}"
+            )
+
+    def get_specific_attentions(
+        self,
+        edge_list: pd.DataFrame,
+        layer_indices: Optional[List[int]] = None,
+        target_ids: Optional[List[str]] = None,
+        apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        by_absolute_value: bool = True,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """Extract specific attention values across layers for given edges.
+
+        Extracts the exact attention values for specific gene pairs across
+        specified layers. Useful for analyzing how specific relationships
+        vary across layers.
+
+        Parameters
+        ----------
+        edge_list : pd.DataFrame
+            DataFrame with at minimum 'from_gene' and 'to_gene' columns.
+        layer_indices : List[int], optional
+            Layers to extract from. If None, uses all layers.
+        target_ids : List[str], optional
+            Subset of gene IDs to use for attention computation. Must be a
+            subset of this embedding's gene IDs. If None, uses all genes.
+        apply_softmax : bool, optional
+            If True, use softmax-normalized attention (default: False).
+        compute_ranks : bool, optional
+            If True, add attention ranks to output (default: False).
+        by_absolute_value : bool, optional
+            If True, rank by absolute value (default: True).
+            Only used if compute_ranks=True.
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+        verbose : bool, optional
+            Print progress (default: False).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: from_gene, to_gene, layer, attention,
+            and optionally attention_rank.
+        """
+        device = ensure_device(device, allow_autoselect=True)
+
+        _, gene_ids = self.gene_embeddings.get_gene_mask(target_ids)
+
+        # Convert edge list to indices ONCE
+        edge_df = _edgelist_to_indices(
+            edge_list=edge_list,
+            gene_ids=gene_ids,
+            verbose=verbose,
+        )
+
+        if layer_indices is None:
+            layer_indices = list(range(self.n_layers))
+        else:
+            layer_indices = normalize_and_validate_indices(
+                indices=layer_indices,
+                max_value=self.n_layers,
+                param_name="layer_indices",
+            )
+
+        results = []
+
+        with memory_manager(device):
+            from_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.FROM_IDX].values).long().to(device)
+            )
+            to_idx_tensor = (
+                torch.from_numpy(edge_df[FM_EDGELIST.TO_IDX].values).long().to(device)
+            )
+
+            for layer_idx in layer_indices:
+                if verbose:
+                    logger.info(f"Extracting attentions from layer {layer_idx}...")
+
+                attention = self.compute_attention(
+                    layer_idx=layer_idx,
+                    target_ids=target_ids,
+                    apply_softmax=apply_softmax,
+                    return_tensor=True,
+                    device=device,
+                )
+
+                # Extract edges using tensor indexing
+                edge_attentions = attention[from_idx_tensor, to_idx_tensor]
+
+                layer_df = edge_df[[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]].copy()
+                layer_df[FM_EDGELIST.LAYER] = layer_idx
+                layer_df[FM_EDGELIST.ATTENTION] = edge_attentions.cpu().numpy()
+
+                if compute_ranks:
+                    if verbose:
+                        logger.info(f"Calculating ranks for layer {layer_idx}...")
+
+                    edge_ranks = compute_tensor_ranks_for_indices(
+                        attention,
+                        (from_idx_tensor, to_idx_tensor),
+                        by_absolute_value=by_absolute_value,
+                    )
+                    layer_df[FM_EDGELIST.ATTENTION_RANK] = edge_ranks.cpu().numpy()
+
+                results.append(layer_df)
+                cleanup_tensors(attention, edge_attentions)
+
+        all_attentions = pd.concat(results, ignore_index=True)
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(all_attentions)} total attention values "
+                f"({len(edge_df)} edges × {len(layer_indices)} layers)"
+            )
+
+        return all_attentions
+
+    def get_top_attentions(
+        self,
+        k: int,
+        layer_indices: Optional[List[int]] = None,
+        target_ids: Optional[List[str]] = None,
+        apply_softmax: bool = False,
+        by_absolute_value: bool = True,
+        compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """Extract top-k strongest attention edges across layers.
+
+        For each layer, identifies the k gene pairs with highest attention
+        values and returns them as a DataFrame.
+
+        Parameters
+        ----------
+        k : int
+            Number of top edges to extract per layer.
+        layer_indices : List[int], optional
+            Layers to analyze. If None, uses all layers.
+        target_ids : List[str], optional
+            Subset of gene identifiers to analyze. Must be a subset of
+            this embedding's gene IDs. If None, uses all genes.
+        apply_softmax : bool, optional
+            If True, use softmax-normalized attention (default: False).
+        by_absolute_value : bool, optional
+            If True, rank by absolute attention value (default: True).
+        compute_ranks : bool, optional
+            If True, add attention ranks to output (default: False).
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (default: False).
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+        verbose : bool, optional
+            Print progress (default: False).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: layer, from_idx, to_idx, from_gene, to_gene, attention,
+            and optionally attention_rank.
+        """
+
+        device = ensure_device(device, allow_autoselect=True)
+
+        _, gene_ids = self.gene_embeddings.get_gene_mask(target_ids)
+
+        if layer_indices is None:
+            layer_indices = list(range(self.n_layers))
+        else:
+            layer_indices = normalize_and_validate_indices(
+                indices=layer_indices,
+                max_value=self.n_layers,
+                param_name="layer_indices",
+            )
+
+        results = []
+
+        with memory_manager(device):
+            for layer_idx in layer_indices:
+                if verbose:
+                    value_type = "absolute value" if by_absolute_value else "raw value"
+                    logger.info(
+                        f"Extracting top-{k} edges from layer {layer_idx} "
+                        f"by {value_type}..."
+                    )
+
+                attention = self.compute_attention(
+                    layer_idx=layer_idx,
+                    target_ids=target_ids,
+                    apply_softmax=apply_softmax,
+                    return_tensor=True,
+                    device=device,
+                )
+
+                layer_df = _find_top_k_edges_in_attention_layer(
+                    attention=attention,
+                    k=k,
+                    layer_idx=layer_idx,
+                    gene_ids=gene_ids,
+                    by_absolute_value=by_absolute_value,
+                    ignore_self_attention=ignore_self_attention,
+                )
+
+                results.append(layer_df)
+                cleanup_tensors(attention)
+
+        all_edges = pd.concat(results, ignore_index=True)
+
+        if compute_ranks:
+            all_edges[FM_EDGELIST.ATTENTION_RANK] = calculate_ranks(
+                df=all_edges,
+                value_col=FM_EDGELIST.ATTENTION,
+                by_absolute_value=by_absolute_value,
+                grouping_vars=FM_EDGELIST.LAYER,
+            )
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(all_edges)} total edges "
+                f"across {len(layer_indices)} layers"
+            )
+
+        return all_edges
+
+    # --- Dunder ---
+
+    def __repr__(self) -> str:
+        return (
+            f"AttendedEmbeddings("
+            f"model={self.model_name}, "
+            f"source={self.gene_embeddings.source_label}, "
+            f"n_genes={self.n_genes}, "
+            f"embed_dim={self.embed_dim}, "
+            f"n_layers={self.n_layers}"
+            f")"
+        )
+
+
+class AttendedEmbeddingsSet:
+    """Aligned gene embeddings paired with attention machinery for cross-embedding analysis.
+
+    Bundles a GeneEmbeddingsSet (aligned embeddings from one or more models/datasets)
+    with references to the FoundationModel instances that produced them. This enables
+    computing attention patterns from any embedding using its model's attention weights,
+    and comparing those patterns across embeddings.
+
+    The key insight is that attention computation requires:
+    1. An embedding matrix (from GeneEmbeddings — could be static or expression-contextualized)
+    2. Attention weight matrices (W_q, W_k, W_v, W_o from AttentionLayer)
+    3. n_heads (from the model metadata)
+
+    Items 2 and 3 are always model-level properties, while item 1 varies per embedding.
+    This class manages the mapping from each embedding to its corresponding model.
+
+    Parameters
+    ----------
+    embeddings_set : GeneEmbeddingsSet
+        Aligned gene embeddings. All embeddings must share the same common genes
+        in the same row order.
+    foundation_models : FoundationModels
+        Container of FoundationModel instances. Each embedding in embeddings_set
+        must map to exactly one model (via model_name + model_variant -> full_name).
+
+    Attributes
+    ----------
+    embeddings_set : GeneEmbeddingsSet
+        The aligned embeddings.
+    foundation_models : FoundationModels
+        The source foundation models (held by reference).
+    common_gene_ids : List[str]
+        Gene IDs shared across all embeddings (delegates to embeddings_set).
+    embedding_to_model_map : Dict[str, str]
+        Mapping from embedding key (source_label) to model full_name.
+
+    Properties
+    ----------
+    n_embeddings : int
+        Number of embeddings in the set.
+    n_common_genes : int
+        Number of common genes.
+    embedding_keys : List[str]
+        Labels for each embedding.
+    model_names : List[str]
+        Unique model names referenced by embeddings.
+
+    Public Methods
+    --------------
+    from_static(foundation_models: FoundationModels, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
+        Create AttendedEmbeddings from the static gene embeddings of all models.
+    from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
+        Create AttendedEmbeddings from expression-contextualized embeddings.
+    get_consensus_attention(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+        Compute consensus attention across all layers for each embedding.
+    get_consensus_top_attentions(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+        Extract top-k consensus attention edges across embeddings.
+    get_specific_attentions(edges: pd.DataFrame, target_ids: Optional[List[str]] = None, apply_softmax: bool = False, compute_ranks: bool = False, by_absolute_value: bool = True, verbose: bool = False) -> pd.DataFrame:
+        Extract specific attention edges across layers.
+    get_top_attentions(k: int, layer_indices: Optional[List[int]] = None, target_ids: Optional[List[str]] = None, apply_softmax: bool = False, by_absolute_value: bool = True, compute_ranks: bool = False, ignore_self_attention: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> pd.DataFrame:
+        Extract top-k strongest attention edges across layers.
+
+    Examples
+    --------
+    >>> # From static embeddings (most common entry point)
+    >>> attended = AttendedEmbeddingsSet.from_static(foundation_models)
+    >>> attended.n_common_genes
+    15234
+
+    >>> # From expression-contextualized embeddings
+    >>> attended = AttendedEmbeddingsSet.from_expression(
+    ...     foundation_models, dataset_name="efthymiou2025", category="adipocyte (0)"
+    ... )
+
+    >>> # From a pre-built GeneEmbeddingsSet
+    >>> attended = AttendedEmbeddingsSet(embeddings_set, foundation_models)
+    """
+
+    def __init__(
+        self,
+        embeddings_set: GeneEmbeddingsSet,
+        foundation_models: FoundationModels,
+    ):
+        # Validate types
+        if not isinstance(embeddings_set, GeneEmbeddingsSet):
+            raise TypeError(
+                f"embeddings_set must be a GeneEmbeddingsSet, "
+                f"got {type(embeddings_set)}"
+            )
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        # Build mapping: embedding key -> model full_name
+        # Each GeneEmbeddings carries model_name and model_variant;
+        # combine them the same way FoundationModel.full_name does.
+        embedding_to_model: Dict[str, str] = {}
+        available_model_names = set(foundation_models.model_names)
+
+        for key, emb in embeddings_set.items():
+            if emb.model_name is None:
+                raise ValueError(
+                    f"Embedding '{key}' has no model_name set. "
+                    f"Cannot map to a FoundationModel."
+                )
+
+            full_name = _get_model_label(emb.model_name, emb.model_variant)
+
+            if full_name not in available_model_names:
+                raise ValueError(
+                    f"Embedding '{key}' maps to model '{full_name}', "
+                    f"but no matching FoundationModel was found. "
+                    f"Available models: {sorted(available_model_names)}"
+                )
+
+            embedding_to_model[key] = full_name
+
+        # Validate that every referenced model has attention layers
+        referenced_models = set(embedding_to_model.values())
+        for model_name in referenced_models:
+            model = foundation_models.get_model(model_name)
+            if len(model.weights.attention_layers) == 0:
+                raise ValueError(
+                    f"Model '{model_name}' has no attention layers. "
+                    f"AttendedEmbeddings requires models with attention weights."
+                )
+
+        # Build AttendedEmbeddings instances
+        attended: Dict[str, AttendedEmbeddings] = {}
+        for key in embeddings_set.keys():
+            full_name = embedding_to_model[key]
+            model = foundation_models.get_model(full_name)
+            attended[key] = AttendedEmbeddings(
+                gene_embeddings=embeddings_set[key],
+                foundation_model=model,
+            )
+
+        self.embeddings_set = embeddings_set
+        self.attended_embeddings = attended
+
+    # --- Properties ---
+
+    @property
+    def common_gene_ids(self) -> List[str]:
+        """Gene IDs shared across all embeddings."""
+        return self.embeddings_set.common_gene_ids
+
+    @property
+    def n_embeddings(self) -> int:
+        """Number of embeddings."""
+        return len(self.attended_embeddings)
+
+    @property
+    def n_common_genes(self) -> int:
+        """Number of common genes."""
+        return self.embeddings_set.n_common_genes
+
+    @property
+    def embedding_keys(self) -> List[str]:
+        """Labels for each embedding (scoped keys)."""
+        return list(self.attended_embeddings.keys())
+
+    @property
+    def model_names(self) -> List[str]:
+        """Unique model names referenced by embeddings (preserves order)."""
+        seen = set()
+        result = []
+        for ae in self.attended_embeddings.values():
+            if ae.model_name not in seen:
+                seen.add(ae.model_name)
+                result.append(ae.model_name)
+        return result
+
+    def compare(
+        self,
+        comparison_types: List[str] = VALID_COMPARE_EMBEDDINGS_COMPARISONS,
+        top_k: int = 10000,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.SUM,
+        by_absolute_value: bool = False,
+        ignore_self_attention: bool = True,
+        verbose: bool = False,
+    ) -> Dict[str, Any]:
+
+        invalid_comparison_types = set(comparison_types) - set(
+            VALID_COMPARE_EMBEDDINGS_COMPARISONS
+        )
+        if invalid_comparison_types:
+            raise ValueError(
+                f"The following requested comparison types are not valid: {invalid_comparison_types}. Valid comparison types: {VALID_COMPARE_EMBEDDINGS_COMPARISONS}."
+            )
+
+        if consensus_method not in VALID_FM_LAYER_CONSENSUS_METHODS:
+            raise ValueError(
+                f"The requested consensus method is not valid: {consensus_method}. Valid consensus methods: {VALID_FM_LAYER_CONSENSUS_METHODS}."
+            )
+
+        # precalculate and cache operations that take more than a minute or so
+        comparisons = dict()
+        n_genes = self.n_common_genes
+
+        # gene embedding correlations
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS
+            in comparison_types
+        ):
+            logger.info("Calculating gene embedding correlations...")
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = (
+                self.embeddings_set.compare_embeddings(verbose=verbose)
+            )
+        else:
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = (
+                None
+            )
+
+        # within model layer x layer comparisons (correlations and rank agreement)
+        if COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS in comparison_types:
+            logger.info("Calculating within model layer x layer comparisons...")
+            (
+                comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS],
+                comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT],
+            ) = self.get_within_embeddings_layer_comparisons(
+                top_k, ignore_self_attention, by_absolute_value, verbose
+            )
+        else:
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS] = None
+            comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT] = (
+                None
+            )
+
+        # cross model x layer top attentions
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            in comparison_types
+        ):
+            logger.info("Calculating cross model x layer top attentions...")
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            ] = self.get_top_attentions(
+                k=top_k,
+                by_absolute_value=by_absolute_value,
+                reextract_union=True,
+                compute_ranks=True,
+                ignore_self_attention=ignore_self_attention,
+                verbose=verbose,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            in comparison_types
+        ):
+            logger.info(
+                "Comparing ranks of topK attentions in one model/layer to all other models/layers..."
+            )
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            ] = compare_top_k_union_ranks(
+                comparisons[
+                    COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
+                ],
+                grouping_vars=[FM_EDGELIST.MODEL, FM_EDGELIST.LAYER],
+                defining_vars=[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE],
+                max_rank=n_genes**2,
+                top_k=top_k,
+                rank_col=FM_EDGELIST.ATTENTION_RANK,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            in comparison_types
+        ):
+            logger.info("Calculating cross model consensus top attentions...")
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            ] = self.get_consensus_top_attentions(
+                k=top_k,
+                consensus_method=consensus_method,
+                by_absolute_value=by_absolute_value,
+                reextract_union=True,
+                compute_ranks=True,
+                ignore_self_attention=ignore_self_attention,
+                verbose=verbose,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+            ] = None
+
+        if (
+            COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            in comparison_types
+        ):
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            ] = compare_top_k_union_ranks(
+                comparisons[
+                    COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
+                ],
+                grouping_vars=[FM_EDGELIST.MODEL],
+                defining_vars=[FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE],
+                max_rank=n_genes**2,
+                top_k=top_k,
+                rank_col=FM_EDGELIST.ATTENTION_RANK,
+            )
+        else:
+            comparisons[
+                COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT
+            ] = None
+
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS] = {
+            COMPARE_EMBEDDINGS_SETTINGS.TOP_K: top_k,
+            COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD: consensus_method,
+            COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE: by_absolute_value,
+            COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION: ignore_self_attention,
+            COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS: self.embedding_keys,
+            COMPARE_EMBEDDINGS_SETTINGS.N_GENES: n_genes,
+        }
+
+        return comparisons
+
+    @classmethod
+    def from_expression(
+        cls,
+        foundation_models: FoundationModels,
+        dataset_name: str,
+        category: str,
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
+    ) -> "AttendedEmbeddingsSet":
+        """Create AttendedEmbeddings from expression-contextualized embeddings.
+
+        For each model, retrieves the GeneEmbeddings for the specified
+        dataset and category, aligns them to common genes, and wires up
+        the attention references.
+
+        Parameters
+        ----------
+        foundation_models : FoundationModels
+            Container with 2+ loaded foundation models. Each model must have
+            dataset_gene_embeddings containing the specified dataset and category.
+        dataset_name : str
+            Name of the expression dataset (e.g., 'efthymiou2025').
+        category : str
+            Category within the dataset (e.g., 'adipocyte (0)', 'T_cell').
+        align_on : str, optional
+            Ontology column for gene alignment (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
+
+        Returns
+        -------
+        AttendedEmbeddingsSet
+            Ready for analysis with aligned expression embeddings.
+
+        Raises
+        ------
+        ValueError
+            If any model lacks dataset_gene_embeddings.
+            If the specified dataset is not found in any model.
+            If the specified category is not found in any model's dataset.
+
+        Examples
+        --------
+        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
+        >>> attended = AttendedEmbeddingsSet.from_expression(
+        ...     models, dataset_name="efthymiou2025", category="adipocyte (0)"
+        ... )
+        >>> attended.n_embeddings
+        2
+        """
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        expression_embeddings: List[GeneEmbeddings] = []
+
+        for model in foundation_models.models:
+            # Validate model has expression embeddings
+            if model.dataset_gene_embeddings is None:
+                raise ValueError(
+                    f"Model '{model.full_name}' has no dataset_gene_embeddings. "
+                    f"Cannot extract expression embeddings."
+                )
+
+            # Validate dataset exists
+            if dataset_name not in model.dataset_gene_embeddings:
+                raise ValueError(
+                    f"Dataset '{dataset_name}' not found in model "
+                    f"'{model.full_name}'. Available datasets: "
+                    f"{model.dataset_gene_embeddings.dataset_names}"
+                )
+
+            ge_set = model.dataset_gene_embeddings[dataset_name]
+
+            if category not in ge_set:
+                raise ValueError(
+                    f"Category '{category}' not found in dataset '{dataset_name}' "
+                    f"for model '{model.full_name}'. "
+                    f"Available categories: {list(ge_set.keys())}"
+                )
+
+            expression_embeddings.append(ge_set[category])
+
+        embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+            expression_embeddings, align_on=align_on, verbose=verbose
+        )
+
+        return cls(
+            embeddings_set=embeddings_set,
+            foundation_models=foundation_models,
+        )
+
+    @classmethod
+    def from_static(
+        cls,
+        foundation_models: FoundationModels,
+        align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+        verbose: bool = True,
+    ) -> "AttendedEmbeddingsSet":
+        """Create AttendedEmbeddings from the static gene embeddings of all models.
+
+        Extracts each model's static gene embedding, aligns them to common genes,
+        and wires up the attention references. This replicates the current
+        FoundationModels cross-model analysis workflow.
+
+        Parameters
+        ----------
+        foundation_models : FoundationModels
+            Container with 2+ loaded foundation models.
+        align_on : str, optional
+            Ontology column for gene alignment (default: 'ensembl_gene').
+        verbose : bool, optional
+            Extra reporting (default: True)
+
+        Returns
+        -------
+        AttendedEmbeddingsSet
+            Ready for analysis with aligned static embeddings.
+
+        Examples
+        --------
+        >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
+        >>> attended = AttendedEmbeddingsSet.from_static(models)
+        >>> attended.n_common_genes
+        15234
+        >>> attended.embedding_keys
+        ['scGPT', 'scPRINT']
+        """
+        if not isinstance(foundation_models, FoundationModels):
+            raise TypeError(
+                f"foundation_models must be a FoundationModels, "
+                f"got {type(foundation_models)}"
+            )
+
+        static_embeddings = [
+            model.weights.static_gene_embeddings for model in foundation_models.models
+        ]
+
+        embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+            static_embeddings, align_on=align_on, verbose=verbose
+        )
+
+        return cls(
+            embeddings_set=embeddings_set,
+            foundation_models=foundation_models,
+        )
+
+    def get_consensus_attentions(
+        self,
+        target_ids: Optional[List[str]] = None,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
+        apply_softmax: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+    ) -> Tensor:
+        """Compute consensus attention for each embedding in the set.
+
+        For each embedding, computes consensus attention across all layers
+        using the specified method.
+
+        Parameters
+        ----------
+        target_ids : List[str], optional
+            Subset of gene IDs. If None, uses all common genes.
+        consensus_method : str, optional
+            Aggregation method across layers (default: 'absolute-argmax').
+        apply_softmax : bool, optional
+            If True, apply softmax per layer (default: False).
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+
+        Returns
+        -------
+        Tensor
+            3D tensor of shape (n_embeddings, n_genes, n_genes).
+        """
+        gene_ids = target_ids if target_ids is not None else self.common_gene_ids
+        n_genes = len(gene_ids)
+
+        cross_embedding_attention = torch.zeros(
+            (self.n_embeddings, n_genes, n_genes), dtype=torch.float32
+        )
+
+        for i, (key, ae) in enumerate(self.attended_embeddings.items()):
+            logger.info(f"Computing consensus attention for {key}...")
+
+            attention = ae.compute_consensus_attention(
+                target_ids=target_ids,
+                consensus_method=consensus_method,
+                apply_softmax=apply_softmax,
+                device=device,
+            )
+
+            cross_embedding_attention[i] = attention
+
+        return cross_embedding_attention
+
+    def get_consensus_top_attentions(
+        self,
+        k: int = 10000,
+        target_ids: Optional[List[str]] = None,
+        consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX,
+        by_absolute_value: bool = True,
+        reextract_union: bool = False,
+        apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
+        return_original_and_reextracted: bool = False,
+        device: Optional[Union[str, torch.device]] = None,
+        verbose: bool = False,
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+        """Extract top-k consensus attention edges across embeddings.
+
+        For each embedding:
+        1. Compute consensus attention across all layers
+        2. Extract top-k strongest edges
+
+        Optionally re-extract the union of all top edges from every
+        embedding's consensus.
+
+        Parameters
+        ----------
+        k : int, optional
+            Number of top edges per embedding (default: 10000).
+        target_ids : List[str], optional
+            Subset of gene IDs. If None, uses all common genes.
+        consensus_method : str, optional
+            Aggregation method across layers (default: 'absolute-argmax').
+        by_absolute_value : bool, optional
+            If True, rank by absolute value (default: True).
+        reextract_union : bool, optional
+            If True, re-extract union from all embeddings (default: False).
+        apply_softmax : bool, optional
+            If True, use softmax attention (default: False).
+        compute_ranks : bool, optional
+            If True, add ranks to output (default: False).
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (default: False).
+        return_original_and_reextracted : bool, optional
+            If True and reextract_union=True, return tuple (default: False).
+        device : str or torch.device, optional
+            Device for computation (default: None to auto-select).
+        verbose : bool, optional
+            Print progress (default: False).
+
+        Returns
+        -------
+        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
+            DataFrame with columns: from_idx, to_idx, from_gene, to_gene,
+            attention, model, and optionally attention_rank.
+        """
+        gene_ids = target_ids if target_ids is not None else self.common_gene_ids
+
+        if verbose:
+            logger.info(
+                f"Computing consensus attention across {self.n_embeddings} embeddings "
+                f"for {len(gene_ids)} genes..."
+            )
+
+        # Phase 1: Compute consensus for all embeddings
+        all_consensus = self.get_consensus_attentions(
+            target_ids=target_ids,
+            consensus_method=consensus_method,
+            apply_softmax=apply_softmax,
+            device=device,
+        )
+
+        # Extract top-k from each embedding's consensus
+        top_edges_list = []
+        keys = list(self.attended_embeddings.keys())
+
+        for i, key in enumerate(keys):
+            ae = self.attended_embeddings[key]
+            if verbose:
+                logger.info(f"Extracting top-{k} edges from {key}...")
+
+            model_top_k = _find_top_k_edges_in_attention_layer(
+                attention=all_consensus[i],
+                k=k,
+                layer_idx=None,
+                gene_ids=gene_ids,
+                by_absolute_value=by_absolute_value,
+                ignore_self_attention=ignore_self_attention,
+            )
+            model_top_k[FM_EDGELIST.MODEL] = ae.model_name
+
+            top_edges_list.append(model_top_k)
+
+        all_top_edges = pd.concat(top_edges_list, ignore_index=True)
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(all_top_edges)} total edges "
+                f"({k} per embedding × {self.n_embeddings} embeddings)"
+            )
+
+        if not reextract_union:
+            if return_original_and_reextracted:
+                logger.warning(
+                    "return_original_and_reextracted=True but reextract_union=False, "
+                    "returning original top-k edges only"
+                )
+            return all_top_edges
+
+        # Phase 2: Union re-extraction
+        unique_edges = all_top_edges[
+            [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
+        ].drop_duplicates()
+
+        if verbose:
+            logger.info(
+                f"Re-extracting {len(unique_edges)} unique edges from all embeddings..."
+            )
+
+        edge_df = _edgelist_to_indices(
+            edge_list=unique_edges,
+            gene_ids=gene_ids,
+            verbose=verbose,
+        )
+
+        # Reuse consensus tensors from Phase 1
+        attention_tensors = [all_consensus[i] for i in range(self.n_embeddings)]
+        metadata = [
+            {FM_EDGELIST.MODEL: self.attended_embeddings[key].model_name}
+            for key in keys
+        ]
+
+        reextracted_union = _extract_edges_from_attention_tensors(
+            edge_df=edge_df,
+            attention_tensors=attention_tensors,
+            metadata=metadata,
+            compute_ranks=compute_ranks,
+            by_absolute_value=by_absolute_value,
+            device=device,
+            verbose=verbose,
+        )
+
+        if verbose:
+            logger.info(
+                f"Extracted {len(reextracted_union)} total attention values "
+                f"({len(unique_edges)} edges × {self.n_embeddings} embeddings)"
+            )
+
+        if return_original_and_reextracted:
+            return all_top_edges, reextracted_union
+        return reextracted_union
+
+    def get_model_for_embedding(self, embedding_key: str) -> FoundationModel:
+        if embedding_key not in self.attended_embeddings:
+            raise KeyError(
+                f"Embedding '{embedding_key}' not found. "
+                f"Available keys: {self.embedding_keys}"
+            )
+        return self.attended_embeddings[embedding_key].foundation_model
+
+    def get_specific_attentions(
+        self,
+        edge_list: pd.DataFrame,
+        target_ids: Optional[List[str]] = None,
+        apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        by_absolute_value: bool = True,
+        verbose: bool = False,
+    ) -> pd.DataFrame:
+        """Extract specific attention values across all embeddings and layers.
+
+        Parameters
+        ----------
+        edge_list : pd.DataFrame
+            DataFrame with 'from_gene' and 'to_gene' columns.
+        target_ids : List[str], optional
+            Subset of gene IDs. If None, uses all common genes.
+        apply_softmax : bool, optional
+            If True, use softmax attention (default: False).
+        compute_ranks : bool, optional
+            If True, add ranks to output (default: False).
+        by_absolute_value : bool, optional
+            If True, rank by absolute value (default: True).
+        verbose : bool, optional
+            Print progress (default: False).
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: from_gene, to_gene, model, layer, attention,
+            and optionally attention_rank.
+        """
+        results = []
+
+        for key, ae in self.attended_embeddings.items():
+            if verbose:
+                logger.info(f"Extracting attentions from {key}...")
+
+            model_attentions = ae.get_specific_attentions(
+                edge_list=edge_list,
+                target_ids=target_ids,
+                apply_softmax=apply_softmax,
+                compute_ranks=compute_ranks,
+                by_absolute_value=by_absolute_value,
+                verbose=False,
+            )
+
+            model_attentions[FM_EDGELIST.MODEL] = ae.model_name
+
+            results.append(model_attentions)
+
+        all_attentions = pd.concat(results, ignore_index=True)
+
+        if verbose:
+            n_edges = len(
+                edge_list[
+                    [FM_EDGELIST.FROM_GENE, FM_EDGELIST.TO_GENE]
+                ].drop_duplicates()
+            )
+            logger.info(
+                f"Extracted {len(all_attentions)} total attention values "
+                f"({n_edges} edges × {self.n_embeddings} embeddings)"
+            )
+
+        return all_attentions
+
+    def get_top_attentions(
+        self,
+        k: int = 10000,
+        target_ids: Optional[List[str]] = None,
+        by_absolute_value: bool = True,
+        reextract_union: bool = False,
+        apply_softmax: bool = False,
+        compute_ranks: bool = False,
+        ignore_self_attention: bool = False,
+        return_original_and_reextracted: bool = False,
+        verbose: bool = False,
+    ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
+        """Extract top-k attention edges across all embeddings.
+
+        For each embedding, identifies the k strongest attention relationships
+        per layer. Enables cross-embedding comparison of attention patterns.
+
+        Parameters
+        ----------
+        k : int, optional
+            Number of top edges per layer per embedding (default: 10000).
+        target_ids : List[str], optional
+            Subset of gene IDs. If None, uses all common genes.
+        by_absolute_value : bool, optional
+            If True, rank by absolute value (default: True).
+        reextract_union : bool, optional
+            If True, re-extract union of top edges from all embeddings (default: False).
+        apply_softmax : bool, optional
+            If True, use softmax attention (default: False).
+        compute_ranks : bool, optional
+            If True, add ranks to output (default: False).
+        ignore_self_attention : bool, optional
+            If True, exclude self-attention edges (default: False).
+        return_original_and_reextracted : bool, optional
+            If True and reextract_union=True, return tuple (default: False).
+        verbose : bool, optional
+            Print progress (default: False).
+
+        Returns
+        -------
+        pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
+            DataFrame with columns: layer, from_idx, to_idx, from_gene,
+            to_gene, attention, model, and optionally attention_rank.
+        """
+        top_attention_edges = []
+
+        for key, ae in self.attended_embeddings.items():
+            logger.info(f"Computing top-k attention for {key}...")
+
+            model_top_k = ae.get_top_attentions(
+                k=k,
+                target_ids=target_ids,
+                apply_softmax=apply_softmax,
+                by_absolute_value=by_absolute_value,
+                compute_ranks=compute_ranks,
+                ignore_self_attention=ignore_self_attention,
+                verbose=verbose,
+            ).assign(**{FM_EDGELIST.MODEL: ae.model_name})
+
+            top_attention_edges.append(model_top_k)
+
+        all_top_edges = pd.concat(top_attention_edges, ignore_index=True)
+
+        if reextract_union:
+            logger.info("Re-extracting top edges from every embedding and layer...")
+
+            reextracted = self.get_specific_attentions(
+                all_top_edges,
+                target_ids=target_ids,
+                apply_softmax=apply_softmax,
+                compute_ranks=compute_ranks,
+                by_absolute_value=by_absolute_value,
+                verbose=verbose,
+            )
+
+            if return_original_and_reextracted:
+                return all_top_edges, reextracted
+            return reextracted
+
+        if return_original_and_reextracted:
+            logger.warning(
+                "return_original_and_reextracted=True but reextract_union=False, "
+                "returning original top-k edges only"
+            )
+        return all_top_edges
+
+    # --- Dunder ---
+
+    def __getitem__(self, key: str) -> AttendedEmbeddings:
+        if key not in self.attended_embeddings:
+            raise KeyError(
+                f"Embedding '{key}' not found. "
+                f"Available keys: {self.embedding_keys}"
+            )
+        return self.attended_embeddings[key]
+
+    def __len__(self) -> int:
+        return self.n_embeddings
+
+    def __repr__(self) -> str:
+        return (
+            f"AttendedEmbeddingsSet("
+            f"n_embeddings={self.n_embeddings}, "
+            f"n_common_genes={self.n_common_genes}, "
+            f"models={self.model_names}, "
+            f"keys={self.embedding_keys}"
+            f")"
+        )
+
+    def get_within_embeddings_layer_comparisons(
+        self,
+        top_k: int,
+        ignore_self_attention: bool = True,
+        by_absolute_value: bool = False,
+        verbose: bool = False,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """
+        Get within model layer x layer comparisons.
+
+        For each of the embeddings in the set calculate cross-layer attention consistency.
+
+        Parameters
+        ----------
+        top_k : int
+            The number of attention pairs to summarize for "top" summaries.
+        ignore_self_attention : bool
+            Should self-attention (i.e., gene A - gene A) be ignored when summarizing top attention pairs. Default is True.
+        by_absolute_value : bool
+            Should the absolute value of the attention be used when summarizing top attention pairs. If False (default) then top-attention is selected from the most positive attention values. Default is False.
+        verbose : bool
+            Should verbose output be printed. Default is False.
+
+        Returns
+        -------
+        tuple
+            A tuple of two dictionaries. The first contains the model x layer correlations and the second contains the model x layer rank agreement.
+
+        """
+
+        model_layer_correlations = {}
+        model_layer_rank_agreement = {}
+
+        for an_attended_embeddings in self.attended_embeddings.values():
+
+            model_name = an_attended_embeddings.model_name
+            logger.info(
+                f"Summarizing cross-layer attention consistency for {model_name}..."
+            )
+
+            (
+                model_layer_correlations[model_name],
+                model_layer_rank_agreement[model_name],
+            ) = an_attended_embeddings.compare_layer_attention_consistency(
+                top_k=top_k,
+                ignore_self_attention=ignore_self_attention,
+                by_absolute_value=by_absolute_value,
+                verbose=verbose,
+            )
+
+        return model_layer_correlations, model_layer_rank_agreement
+
+
+# Public functions
+
+
+def aggregate_embedding_comparisons_over_categories(
+    embedding_comparisons: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    """
+    Combine a dictionary of foundation model comparison dicts into a single dict of summaries.
+
+    For matrix-based summaries, take the median across categories.
+    For DataFrame-based summaries, concatenate the DataFrames across categories and add the category as a column.
+    Each comparison field is either present (dict/DataFrame) or None for a category; only whole-field None is checked.
+    If all categories have None for a field, that field is omitted.
+
+    Parameters
+    ----------
+    embedding_comparisons : dict
+        A dictionary of embedding comparison dicts (e.g. from AttendedEmbeddingsSet.compare() per category).
+
+    Returns
+    -------
+    dict
+        A dictionary of aggregated embedding comparisons (no SETTINGS roll-up; callers have per-category settings).
+    """
+    comparisons = dict()
+    categories = list(embedding_comparisons.keys())
+    if not categories:
+        return comparisons
+
+    def _non_none(key: str):
+        return [
+            embedding_comparisons[cat][key]
+            for cat in categories
+            if embedding_comparisons[cat].get(key) is not None
+        ]
+
+    def _concat_categories(key: str):
+        parts = [
+            embedding_comparisons[cat][key].assign(category=cat)
+            for cat in categories
+            if embedding_comparisons[cat].get(key) is not None
+        ]
+        if not parts:
+            return None
+        return pd.concat(parts, ignore_index=True)
+
+    # gene_embedding_correlations: median over categories (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS)
+    if vals:
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS] = {
+            key: np.median([cat[key] for cat in vals]) for key in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.GENE_EMBEDDING_CORRELATIONS,
+        )
+
+    # model_layer_correlations: median over categories per model (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS)
+    if vals:
+        comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS] = {
+            model: np.median([v[model] for v in vals], axis=0) for model in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS,
+        )
+
+    # model_layer_rank_agreement: concat DataFrames per model (structure from first non-None)
+    vals = _non_none(COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT)
+    if vals:
+        key_mlra = COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT
+        comparisons[key_mlra] = {
+            model: pd.concat(
+                [
+                    embedding_comparisons[cat][key_mlra][model].assign(category=cat)
+                    for cat in categories
+                    if embedding_comparisons[cat].get(key_mlra) is not None
+                ],
+                ignore_index=True,
+            )
+            for model in vals[0]
+        }
+    else:
+        logger.debug(
+            "Omitting %s: all categories had None",
+            COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT,
+        )
+
+    # DataFrame fields
+    for key in (
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS,
+        COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT,
+    ):
+        result = _concat_categories(key)
+        if result is not None:
+            comparisons[key] = result
+        else:
+            logger.debug("Omitting %s: all categories had None", key)
+
+    return comparisons
+
+
+def validate_embedding_comparisons_settings(
+    embedding_comparisons: Dict[str, Any],
+    top_k: int,
+    consensus_method: str,
+    by_absolute_value: bool,
+    ignore_self_attention: bool,
+    embeddings_keys: Optional[List[str]] = None,
+) -> None:
+    """
+    Validate embedding comparisons to ensure that their recorded settings agree with the provided settings.
+
+    Parameters
+    ----------
+    embedding_comparisons : Dict[str, Any]
+        The comparisons to validate. Created by AttendedEmbeddingsSet.compare().
+    top_k : int
+        The number of top-k attention pairs to summarize.
+    consensus_method : str
+        The consensus method to use. Valid options are: {VALID_FM_LAYER_CONSENSUS_METHODS}.
+    by_absolute_value : bool
+        Whether to use the absolute value of the attention.
+    ignore_self_attention : bool
+        Whether to ignore self-attention.
+    embeddings_keys : Optional[List[str]]
+        The embeddings keys to validate. If None, all embeddings keys will be validated.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If the comparisons do not match the provided settings.
+    """
+
+    # check compatibility between the loaded results and the current settings
+    if (
+        top_k
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.TOP_K
+        ]
+    ):
+        logger.warning(
+            f"TOP_K mismatch: {top_k} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.TOP_K]}"
+        )
+    if (
+        consensus_method
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD
+        ]
+    ):
+        logger.warning(
+            f"CONSENSUS_METHOD mismatch: {consensus_method} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.CONSENSUS_METHOD]}"
+        )
+    if (
+        by_absolute_value
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE
+        ]
+    ):
+        logger.warning(
+            f"BY_ABSOLUTE_VALUE mismatch: {by_absolute_value} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.BY_ABSOLUTE_VALUE]}"
+        )
+    if (
+        ignore_self_attention
+        != embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+            COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION
+        ]
+    ):
+        logger.warning(
+            f"IGNORE_SELF_ATTENTION mismatch: {ignore_self_attention} != {embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][COMPARE_EMBEDDINGS_SETTINGS.IGNORE_SELF_ATTENTION]}"
+        )
+    if embeddings_keys is not None:
+        if set(embeddings_keys) != set(
+            embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+            ]
+        ):
+            extra_models = set(
+                embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                    COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+                ]
+            ) - set(embeddings_keys)
+            missing_models = set(embeddings_keys) - set(
+                embedding_comparisons[COMPARE_EMBEDDINGS_COMPARISONS.SETTINGS][
+                    COMPARE_EMBEDDINGS_SETTINGS.EMBEDDING_KEYS
+                ]
+            )
+            logger.warning(f"Extra models: {extra_models}")
+            logger.warning(f"Missing models: {missing_models}")
+
+
 # Private utility functions
 
 
 def _align_gene_embeddings(
     embeddings: List[GeneEmbeddings],
     align_on: str = ONTOLOGIES.ENSEMBL_GENE,
+    verbose: bool = True,
 ) -> List[GeneEmbeddings]:
     """Align multiple GeneEmbeddings to their common genes via a shared ontology.
 
@@ -3218,6 +3794,8 @@ def _align_gene_embeddings(
         Column name in gene_annotations to use as the common ontology
         (default: 'ensembl_gene'). Must be present in every embedding's
         gene_annotations.
+    verbose : bool, optional
+        Extra reporting (default: True)
 
     Returns
     -------
@@ -3294,10 +3872,11 @@ def _align_gene_embeddings(
     # Use a stable sorted order for the common gene set
     common_ids_ordered = sorted(common_ids)
 
-    logger.info(
-        f"Found {len(common_ids_ordered)} common genes across "
-        f"{len(embeddings)} embeddings (ontology: '{align_on}')"
-    )
+    if verbose:
+        logger.info(
+            f"Found {len(common_ids_ordered)} common genes across "
+            f"{len(embeddings)} embeddings (ontology: '{align_on}')"
+        )
 
     # --- Filter and reorder each embedding ---
     aligned = []
@@ -3309,12 +3888,9 @@ def _align_gene_embeddings(
         # Reorder indices to match common_ids_ordered
         reorder_indices = np.array([ontology_to_row[gid] for gid in common_ids_ordered])
 
-        # Build new ordered_gene_ids in the native vocabulary, reordered
-        native_ids = [emb.ordered_gene_ids[i] for i in reorder_indices]
-
         aligned_emb = GeneEmbeddings(
             embedding=emb.embedding[reorder_indices],
-            ordered_gene_ids=native_ids,
+            ordered_gene_ids=common_ids_ordered,
             gene_annotations=emb.gene_annotations.iloc[reorder_indices].reset_index(
                 drop=True
             ),
@@ -3328,9 +3904,43 @@ def _align_gene_embeddings(
     return aligned
 
 
+def _build_embedding_metadata(
+    embeddings: Dict[str, GeneEmbeddings],
+) -> pd.DataFrame:
+    """Build a metadata DataFrame from a dict of GeneEmbeddings.
+
+    Parameters
+    ----------
+    embeddings : Dict[str, GeneEmbeddings]
+        Mapping from source_label to GeneEmbeddings.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per embedding with columns: source_label, model_name,
+        model_variant, model_label, dataset_name, category.
+        model_label combines model_name and model_variant with "_"
+        (e.g., "scGPT", "AIDOCell_aido_cell_100m"). None variant is omitted.
+    """
+    rows = []
+    for source_label, emb in embeddings.items():
+        model_label = _get_model_label(emb.model_name, emb.model_variant)
+
+        rows.append(
+            {
+                EMBEDDING_METADATA_FIELDS.SOURCE_LABEL: source_label,
+                EMBEDDING_METADATA_FIELDS.MODEL_NAME: emb.model_name,
+                EMBEDDING_METADATA_FIELDS.MODEL_VARIANT: emb.model_variant,
+                EMBEDDING_METADATA_FIELDS.MODEL_LABEL: model_label,
+                EMBEDDING_METADATA_FIELDS.DATASET_NAME: emb.dataset_name,
+                EMBEDDING_METADATA_FIELDS.CATEGORY: emb.category,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _calculate_embedding_correlations(
     aligned_embeddings: Dict[str, np.ndarray],
-    common_identifiers: List[str],
     device: Optional[Union[str, torch.device]] = None,
     verbose: bool = False,
 ) -> Dict[str, float]:
@@ -3341,8 +3951,6 @@ def _calculate_embedding_correlations(
     ----------
     aligned_embeddings : Dict[str, np.ndarray]
         Dictionary mapping model names to aligned embedding arrays.
-    common_identifiers : List[str]
-        List of common identifiers across all models.
     device : Optional[Union[str, torch.device]]
         Device to use for the computation.
     verbose : bool
@@ -3366,7 +3974,8 @@ def _calculate_embedding_correlations(
 
     # Compare distance matrices pairwise - all unique pairs from model_prefixes
     # Use upper triangle only (exclude diagonal and avoid redundancy)
-    mask = np.triu_indices(len(common_identifiers), k=1)  # k=1 excludes diagonal
+    n_genes = next(iter(aligned_embeddings.values())).shape[0]
+    mask = np.triu_indices(n_genes, k=1)  # k=1 excludes diagonal
 
     all_model_names = list(aligned_embeddings.keys())
     comparisons = {}
@@ -3391,6 +4000,100 @@ def _calculate_embedding_correlations(
                 logger.info(f"  {model1} vs {model2}: Spearman rho = {rho:.4f}")
 
     return comparisons
+
+
+def _compute_scoped_keys(
+    embedding_metadata: pd.DataFrame,
+) -> Tuple[Dict[str, str], str]:
+    """Compute minimal scoped keys and a constant label from embedding metadata.
+
+    For each scoping field (model_label, dataset_name, category):
+    - If the field is constant and non-None across all embeddings, it goes into
+      the constant_label and is excluded from keys.
+    - If the field varies (or is a mix of None and values), it stays in the keys.
+
+    None values are excluded from both keys and labels.
+
+    Parameters
+    ----------
+    embedding_metadata : pd.DataFrame
+        Output of _build_embedding_metadata. Must contain columns:
+        source_label, model_label, dataset_name, category.
+
+    Returns
+    -------
+    source_to_scoped : Dict[str, str]
+        Mapping from source_label to scoped key.
+    constant_label : str
+        "/"-joined label of constant non-None fields
+        (e.g., "scGPT / efthymiou2025"). Empty string if nothing is constant.
+
+    Raises
+    ------
+    ValueError
+        If scoped keys are not unique.
+
+    Examples
+    --------
+    >>> # Same model + dataset, different categories
+    >>> # constant_label = "scGPT / efthymiou2025"
+    >>> # keys: "adipocyte (0)", "T_cell"
+
+    >>> # Different models, no dataset/category
+    >>> # constant_label = ""
+    >>> # keys: "scGPT", "scPRINT", "AIDOCell_aido_cell_100m"
+
+    >>> # Different models, same dataset + category
+    >>> # constant_label = "efthymiou2025 / adipocyte (0)"
+    >>> # keys: "scGPT", "scPRINT"
+    """
+    constant_parts = []
+    varying_fields = []
+
+    for field in SCOPING_FIELDS:
+        non_null_values = embedding_metadata[field].dropna().unique()
+
+        if len(non_null_values) == 0:
+            # All None — skip
+            continue
+        elif len(non_null_values) == 1 and embedding_metadata[field].notna().all():
+            # Constant non-None across all embeddings
+            constant_parts.append(str(non_null_values[0]))
+        else:
+            # Varies across embeddings
+            varying_fields.append(field)
+
+    # Build scoped keys from varying fields
+    source_to_scoped = {}
+    for _, row in embedding_metadata.iterrows():
+        key_parts = []
+        for field in varying_fields:
+            val = row[field]
+            if pd.notna(val) and val is not None:
+                key_parts.append(str(val))
+
+        # Fallback to source_label if no varying fields produce a key
+        # (e.g., single embedding where everything is constant)
+        scoped_key = (
+            "/".join(key_parts)
+            if key_parts
+            else row[EMBEDDING_METADATA_FIELDS.SOURCE_LABEL]
+        )
+        source_to_scoped[row[EMBEDDING_METADATA_FIELDS.SOURCE_LABEL]] = scoped_key
+
+    # Validate uniqueness
+    scoped_values = list(source_to_scoped.values())
+    if len(scoped_values) != len(set(scoped_values)):
+        counts = Counter(scoped_values)
+        duplicates = {k: v for k, v in counts.items() if v > 1}
+        raise ValueError(
+            f"Scoped keys are not unique: {duplicates}. "
+            f"This indicates a bug in the scoping logic or duplicate embeddings."
+        )
+
+    constant_label = " / ".join(constant_parts)
+
+    return source_to_scoped, constant_label
 
 
 def _edgelist_to_indices(
@@ -3835,16 +4538,17 @@ def _gene_embeddings_from_save_dict(
             "Re-run the ETL pipeline to regenerate model outputs."
         )
 
+    # Always use model-level metadata for model_name/model_variant; per-embedding
+    # metadata may have been None (ETL never set it)
+    model_name = fallback_metadata.get(FM_DEFS.MODEL_NAME)
+    model_variant = fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
+
     return GeneEmbeddings(
         embedding=embedding,
         ordered_gene_ids=metadata.get(FM_DEFS.ORDERED_GENES, []),
         gene_annotations=pd.DataFrame(ge_annotations),
-        model_name=metadata.get(
-            FM_DEFS.MODEL_NAME, fallback_metadata.get(FM_DEFS.MODEL_NAME)
-        ),
-        model_variant=metadata.get(
-            FM_DEFS.MODEL_VARIANT, fallback_metadata.get(FM_DEFS.MODEL_VARIANT)
-        ),
+        model_name=model_name,
+        model_variant=model_variant,
         dataset_name=metadata.get(FM_DEFS.DATASET_NAME),
         dataset_uri=metadata.get(FM_DEFS.DATASET_URI),
         category=metadata.get(FM_DEFS.CATEGORY),
@@ -3879,8 +4583,68 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
     }
 
 
+def _get_disk_name(
+    model_name: str,
+    model_variant: Optional[str] = None,
+) -> str:
+    """Get a version of the model label which can be used for a filename."""
+    if model_variant is None:
+        return model_name
+    return f"{model_name}_{model_variant}"
+
+
+def _get_model_label(
+    model_name: str,
+    model_variant: Optional[str] = None,
+) -> str:
+    """Get a human-readable label for a foundation model.
+
+    Looks up (model_name, model_variant) in a curated table of display names.
+    Falls back to an auto-generated label if no curated name exists.
+
+    Auto-generated format:
+    - "model_name (model_variant)" if model_variant is not None
+    - "model_name" if model_variant is None
+
+    Parameters
+    ----------
+    model_name : str
+        Name of the foundation model (e.g., "scGPT", "AIDOCell").
+    model_variant : str, optional
+        Variant of the model (e.g., "aido_cell_100m", "small").
+
+    Returns
+    -------
+    str
+        Human-readable model label.
+
+    Examples
+    --------
+    >>> get_model_label("AIDOCell", "aido_cell_100m")
+    'AIDO.Cell (100M)'
+    >>> get_model_label("scGPT")
+    'scGPT'
+    >>> get_model_label("scPRINT", "small")
+    'scPRINT (small)'
+    >>> get_model_label("NewModel", "v2")
+    'NewModel (v2)'
+    >>> get_model_label("NewModel")
+    'NewModel'
+    """
+    key = (model_name, model_variant)
+    if key in MODEL_NICE_NAMES:
+        return MODEL_NICE_NAMES[key]
+
+    # Auto-generate
+    if model_variant is not None:
+        return f"{model_name} ({model_variant})"
+    return model_name
+
+
 def _load_results(
-    output_dir: str, prefix: str
+    output_dir: str,
+    prefix: str,
+    verbose: bool = True,
 ) -> Tuple[dict, pd.DataFrame, dict, Optional[dict], List[dict]]:
     """
     Load foundation model results from files.
@@ -3891,6 +4655,8 @@ def _load_results(
         Directory path containing the saved files
     prefix : str
         Prefix used for the saved files
+    verbose : bool
+        Extra reporting (default: True)
 
     Returns
     -------
@@ -3910,9 +4676,10 @@ def _load_results(
     weights_path = os.path.join(output_dir, weights_filename)
     metadata_path = os.path.join(output_dir, metadata_filename)
 
-    logger.info(
-        f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
-    )
+    if verbose:
+        logger.info(
+            f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
+        )
 
     # Load weights from npz
     weights_data = np.load(weights_path, allow_pickle=True)
@@ -3942,7 +4709,8 @@ def _load_results(
         FM_DEFS.DATASET_GENE_EMBEDDINGS, []
     )
 
-    logger.info("Successfully loaded all results")
+    if verbose:
+        logger.info("Successfully loaded all results")
 
     return (
         weights_dict,

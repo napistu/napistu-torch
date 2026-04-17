@@ -212,15 +212,19 @@ SCPRINT_VERSIONS = SimpleNamespace(
 )
 SCPRINT_VERSIONS_LIST = list(SCPRINT_VERSIONS.__dict__.values())
 
-
-ALL_MODEL_FULL_NAMES = (
-    {
-        FOUNDATION_MODEL_NAMES.SCFOUNDATION,
-        FOUNDATION_MODEL_NAMES.SCGPT,
-    }
-    | {FOUNDATION_MODEL_NAMES.AIDOCELL + "_" + x for x in AIDOCELL_CLASSES_LIST}
-    | {FOUNDATION_MODEL_NAMES.SCPRINT + "_" + x for x in SCPRINT_VERSIONS_LIST}
-)
+MODEL_NICE_NAMES = {
+    (FOUNDATION_MODEL_NAMES.AIDOCELL, AIDOCELL_CLASSES.THREE_M): "AIDO.Cell (3M)",
+    (FOUNDATION_MODEL_NAMES.AIDOCELL, AIDOCELL_CLASSES.TEN_M): "AIDO.Cell (10M)",
+    (
+        FOUNDATION_MODEL_NAMES.AIDOCELL,
+        AIDOCELL_CLASSES.ONE_HUNDRED_M,
+    ): "AIDO.Cell (100M)",
+    (FOUNDATION_MODEL_NAMES.SCGPT, None): "scGPT",
+    (FOUNDATION_MODEL_NAMES.SCFOUNDATION, None): "scFoundation",
+    (FOUNDATION_MODEL_NAMES.SCPRINT, SCPRINT_VERSIONS.SMALL): "scPRINT (small)",
+    (FOUNDATION_MODEL_NAMES.SCPRINT, SCPRINT_VERSIONS.MEDIUM): "scPRINT (medium)",
+    (FOUNDATION_MODEL_NAMES.SCPRINT, SCPRINT_VERSIONS.LARGE): "scPRINT (large)",
+}
 
 FM_CLASSES = SimpleNamespace(
     FOUNDATION_MODEL="FoundationModel",
@@ -279,6 +283,24 @@ FM_DEFAULTS = SimpleNamespace(
     MIN_CLUSTER_CELLS=10,
 )
 
+EMBEDDING_METADATA_FIELDS = SimpleNamespace(
+    MODEL_NAME=FM_DEFS.MODEL_NAME,
+    MODEL_VARIANT=FM_DEFS.MODEL_VARIANT,
+    DATASET_NAME=FM_DEFS.DATASET_NAME,
+    CATEGORY=FM_DEFS.CATEGORY,
+    MODEL_LABEL="model_label",
+    SOURCE_LABEL="source_label",
+    SCOPED_KEY="scoped_key",
+)
+
+# Ordered list of fields used for scoping. model_name and model_variant
+# are combined into model_label and treated as a single unit.
+SCOPING_FIELDS = [
+    EMBEDDING_METADATA_FIELDS.MODEL_LABEL,
+    EMBEDDING_METADATA_FIELDS.DATASET_NAME,
+    EMBEDDING_METADATA_FIELDS.CATEGORY,
+]
+
 FM_EDGELIST = SimpleNamespace(
     FROM_GENE="from_gene",
     TO_GENE="to_gene",
@@ -297,6 +319,30 @@ FM_LAYER_CONSENSUS_METHODS = SimpleNamespace(
 )
 
 VALID_FM_LAYER_CONSENSUS_METHODS = list(FM_LAYER_CONSENSUS_METHODS.__dict__.values())
+
+COMPARE_EMBEDDINGS_COMPARISONS = SimpleNamespace(
+    GENE_EMBEDDING_CORRELATIONS="gene_embedding_correlations",
+    MODEL_LAYER_CORRELATIONS="model_layer_correlations",
+    MODEL_LAYER_RANK_AGREEMENT="model_layer_rank_agreement",
+    CROSS_MODEL_X_LAYER_TOP_ATTENTIONS="cross_model_x_layer_top_attentions",
+    CROSS_MODEL_X_LAYER_RANK_AGREEMENT="cross_model_x_layer_rank_agreement",
+    CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS="cross_model_consensus_top_attentions",
+    CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS_RANK_AGREEMENT="cross_model_consensus_top_attentions_rank_agreement",
+    SETTINGS="settings",
+)
+
+VALID_COMPARE_EMBEDDINGS_COMPARISONS = list(
+    COMPARE_EMBEDDINGS_COMPARISONS.__dict__.values()
+)
+
+COMPARE_EMBEDDINGS_SETTINGS = SimpleNamespace(
+    TOP_K="top_k",
+    IGNORE_SELF_ATTENTION="ignore_self_attention",
+    BY_ABSOLUTE_VALUE="by_absolute_value",
+    CONSENSUS_METHOD="consensus_method",
+    EMBEDDING_KEYS="embedding_keys",
+    N_GENES="n_genes",
+)
 
 # scFoundation constants
 SCFOUNDATION_DEFS = SimpleNamespace(

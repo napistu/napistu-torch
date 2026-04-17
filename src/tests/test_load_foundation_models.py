@@ -1,5 +1,7 @@
 """Tests for foundation model data structures and validation."""
 
+from typing import List, Optional, Tuple
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -7,10 +9,531 @@ from napistu.ontologies.constants import ONTOLOGIES
 
 from napistu_torch.load.constants import FM_DEFS
 from napistu_torch.load.foundation_models import (
+    AttendedEmbeddings,
+    AttendedEmbeddingsSet,
+    AttentionLayer,
     DatasetGeneEmbeddings,
+    FoundationModel,
+    FoundationModels,
+    FoundationModelWeights,
     GeneEmbeddings,
     GeneEmbeddingsSet,
+    ModelMetadata,
 )
+
+# ---------------------------------------------------------------------------
+# Low-level factories
+# ---------------------------------------------------------------------------
+
+
+def make_gene_ids(
+    n: int,
+    prefix: str = "ENSG",
+    start: int = 0,
+) -> List[str]:
+    """Create deterministic gene IDs.
+
+    Parameters
+    ----------
+    n : int
+        Number of gene IDs to create.
+    prefix : str
+        Prefix for each ID (default: "ENSG").
+    start : int
+        Starting index (default: 0).
+
+    Returns
+    -------
+    List[str]
+        e.g., ["ENSG00000", "ENSG00001", ...]
+    """
+    return [f"{prefix}{str(i).zfill(5)}" for i in range(start, start + n)]
+
+
+def make_gene_annotations(
+    gene_ids: List[str],
+    vocab_names: Optional[List[str]] = None,
+    symbols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Create a gene annotations DataFrame.
+
+    Parameters
+    ----------
+    gene_ids : List[str]
+        Ensembl gene IDs.
+    vocab_names : List[str], optional
+        Vocabulary names. If None, uses gene_ids.
+    symbols : List[str], optional
+        Gene symbols. If None, generates SYM_00000, SYM_00001, ...
+
+    Returns
+    -------
+    pd.DataFrame
+        With columns: vocab_name, ensembl_gene, symbol.
+    """
+    if vocab_names is None:
+        vocab_names = list(gene_ids)
+    if symbols is None:
+        symbols = [f"SYM_{str(i).zfill(5)}" for i in range(len(gene_ids))]
+
+    return pd.DataFrame(
+        {
+            "vocab_name": vocab_names,
+            ONTOLOGIES.ENSEMBL_GENE: gene_ids,
+            "symbol": symbols,
+        }
+    )
+
+
+def make_gene_embeddings(
+    n_genes: int = 10,
+    embed_dim: int = 16,
+    gene_ids: Optional[List[str]] = None,
+    vocab_names: Optional[List[str]] = None,
+    model_name: Optional[str] = None,
+    model_variant: Optional[str] = None,
+    dataset_name: Optional[str] = None,
+    category: Optional[str] = None,
+    seed: int = 42,
+) -> GeneEmbeddings:
+    """Create a GeneEmbeddings with deterministic random data.
+
+    Parameters
+    ----------
+    n_genes : int
+        Number of genes (default: 10).
+    embed_dim : int
+        Embedding dimensionality (default: 16).
+    gene_ids : List[str], optional
+        Gene IDs. If None, generates ENSG00000, ENSG00001, ...
+    vocab_names : List[str], optional
+        Vocabulary names. If None, uses gene_ids.
+    model_name : str, optional
+        Source model name.
+    model_variant : str, optional
+        Source model variant.
+    dataset_name : str, optional
+        Source dataset name.
+    category : str, optional
+        Category within dataset.
+    seed : int
+        Random seed for reproducibility (default: 42).
+
+    Returns
+    -------
+    GeneEmbeddings
+    """
+    rng = np.random.default_rng(seed)
+
+    if gene_ids is None:
+        gene_ids = make_gene_ids(n_genes)
+    else:
+        n_genes = len(gene_ids)
+
+    annotations = make_gene_annotations(gene_ids=gene_ids, vocab_names=vocab_names)
+    embedding = rng.standard_normal((n_genes, embed_dim)).astype(np.float32)
+
+    return GeneEmbeddings(
+        embedding=embedding,
+        ordered_gene_ids=gene_ids,
+        gene_annotations=annotations,
+        model_name=model_name,
+        model_variant=model_variant,
+        dataset_name=dataset_name,
+        category=category,
+    )
+
+
+def make_attention_layer(
+    embed_dim: int = 16,
+    layer_idx: int = 0,
+    seed: int = 42,
+) -> AttentionLayer:
+    """Create an AttentionLayer with deterministic random weights.
+
+    Parameters
+    ----------
+    embed_dim : int
+        Model embedding dimension (default: 16).
+    layer_idx : int
+        Layer index (default: 0).
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    AttentionLayer
+    """
+    rng = np.random.default_rng(seed)
+    scale = 1.0 / np.sqrt(embed_dim)
+
+    return AttentionLayer(
+        layer_idx=layer_idx,
+        W_q=rng.standard_normal((embed_dim, embed_dim)).astype(np.float32) * scale,
+        W_k=rng.standard_normal((embed_dim, embed_dim)).astype(np.float32) * scale,
+        W_v=rng.standard_normal((embed_dim, embed_dim)).astype(np.float32) * scale,
+        W_o=rng.standard_normal((embed_dim, embed_dim)).astype(np.float32) * scale,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Mid-level factories
+# ---------------------------------------------------------------------------
+
+
+def make_foundation_model(
+    n_genes: int = 20,
+    embed_dim: int = 16,
+    n_layers: int = 2,
+    n_heads: int = 2,
+    model_name: str = "TestModel",
+    model_variant: Optional[str] = None,
+    gene_ids: Optional[List[str]] = None,
+    vocab_names: Optional[List[str]] = None,
+    extra_vocab: int = 2,
+    seed: int = 42,
+) -> FoundationModel:
+    """Create a complete FoundationModel with deterministic data.
+
+    Generates a model with `n_genes` real genes plus `extra_vocab` special tokens
+    (e.g., <pad>, <cls>). The static gene embedding covers the full vocabulary.
+
+    Parameters
+    ----------
+    n_genes : int
+        Number of real genes (default: 20).
+    embed_dim : int
+        Embedding dimension (default: 16).
+    n_layers : int
+        Number of attention layers (default: 2).
+    n_heads : int
+        Number of attention heads (default: 2).
+    model_name : str
+        Model name (default: "TestModel").
+    model_variant : str, optional
+        Model variant.
+    gene_ids : List[str], optional
+        Gene IDs. If None, generates ENSG00000 through ENSG{n_genes-1}.
+    vocab_names : List[str], optional
+        Vocabulary names for the genes. If None, uses gene_ids.
+    extra_vocab : int
+        Number of extra vocabulary tokens (default: 2).
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    FoundationModel
+    """
+    rng = np.random.default_rng(seed)
+
+    if gene_ids is None:
+        gene_ids = make_gene_ids(n_genes)
+    else:
+        n_genes = len(gene_ids)
+
+    if vocab_names is None:
+        vocab_names = list(gene_ids)
+
+    # Build full vocabulary: genes + special tokens
+    special_tokens = [f"<special_{i}>" for i in range(extra_vocab)]
+    full_vocab = vocab_names + special_tokens
+    n_vocab = len(full_vocab)
+
+    # Gene annotations cover only the real genes
+    annotations = make_gene_annotations(gene_ids=gene_ids, vocab_names=vocab_names)
+
+    # Static embedding covers full vocabulary
+    full_embedding = rng.standard_normal((n_vocab, embed_dim)).astype(np.float32)
+
+    # The GeneEmbeddings for static uses the gene portion only
+    static_ge = GeneEmbeddings(
+        embedding=full_embedding[:n_genes],
+        ordered_gene_ids=gene_ids,
+        gene_annotations=annotations,
+        model_name=model_name,
+        model_variant=model_variant,
+    )
+
+    # Attention layers with different seeds per layer
+    attention_layers = [
+        make_attention_layer(
+            embed_dim=embed_dim,
+            layer_idx=i,
+            seed=seed + i + 1,
+        )
+        for i in range(n_layers)
+    ]
+
+    weights = FoundationModelWeights(
+        static_gene_embeddings=static_ge,
+        attention_layers=attention_layers,
+    )
+
+    metadata = ModelMetadata(
+        model_name=model_name,
+        model_variant=model_variant,
+        n_genes=n_genes,
+        n_vocab=n_vocab,
+        ordered_vocabulary=full_vocab,
+        embed_dim=embed_dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+    )
+
+    return FoundationModel(
+        weights=weights,
+        gene_annotations=annotations,
+        model_metadata=metadata,
+    )
+
+
+def make_foundation_model_pair(
+    n_shared: int = 15,
+    n_unique_a: int = 5,
+    n_unique_b: int = 5,
+    embed_dim: int = 16,
+    n_layers_a: int = 2,
+    n_layers_b: int = 3,
+    n_heads: int = 2,
+    model_name_a: str = "ModelA",
+    model_name_b: str = "ModelB",
+    use_different_vocab: bool = False,
+    seed: int = 42,
+) -> Tuple[FoundationModel, FoundationModel, List[str]]:
+    """Create two FoundationModels with partially overlapping gene sets.
+
+    This is the key fixture for testing cross-model alignment. The two models
+    share `n_shared` genes and each has unique genes the other doesn't have.
+
+    Parameters
+    ----------
+    n_shared : int
+        Number of shared genes (default: 15).
+    n_unique_a : int
+        Genes only in model A (default: 5).
+    n_unique_b : int
+        Genes only in model B (default: 5).
+    embed_dim : int
+        Embedding dimension (default: 16).
+    n_layers_a : int
+        Layers for model A (default: 2).
+    n_layers_b : int
+        Layers for model B (default: 3).
+    n_heads : int
+        Attention heads (default: 2).
+    model_name_a : str
+        Name for model A (default: "ModelA").
+    model_name_b : str
+        Name for model B (default: "ModelB").
+    use_different_vocab : bool
+        If True, model B uses symbol-based vocab names instead of Ensembl IDs.
+        This tests alignment across different native vocabularies (default: False).
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    model_a : FoundationModel
+    model_b : FoundationModel
+    shared_gene_ids : List[str]
+        The Ensembl gene IDs shared by both models.
+    """
+    shared_ids = make_gene_ids(n_shared, prefix="ENSG", start=0)
+    unique_a_ids = make_gene_ids(n_unique_a, prefix="ENSG", start=n_shared)
+    unique_b_ids = make_gene_ids(n_unique_b, prefix="ENSG", start=n_shared + n_unique_a)
+
+    gene_ids_a = unique_a_ids + shared_ids  # unique first, shared after
+    gene_ids_b = shared_ids + unique_b_ids  # shared first, unique after
+
+    vocab_names_b = None
+    if use_different_vocab:
+        # Model B uses symbols as vocab names
+        symbols_b = [f"SYM_{str(i).zfill(5)}" for i in range(len(gene_ids_b))]
+        vocab_names_b = symbols_b
+
+    model_a = make_foundation_model(
+        gene_ids=gene_ids_a,
+        embed_dim=embed_dim,
+        n_layers=n_layers_a,
+        n_heads=n_heads,
+        model_name=model_name_a,
+        seed=seed,
+    )
+
+    model_b = make_foundation_model(
+        gene_ids=gene_ids_b,
+        vocab_names=vocab_names_b,
+        embed_dim=embed_dim,
+        n_layers=n_layers_b,
+        n_heads=n_heads,
+        model_name=model_name_b,
+        seed=seed + 1000,
+    )
+
+    return model_a, model_b, shared_ids
+
+
+# ---------------------------------------------------------------------------
+# High-level factories
+# ---------------------------------------------------------------------------
+
+
+def make_foundation_models(
+    n_models: int = 3,
+    n_shared: int = 15,
+    n_unique_per_model: int = 5,
+    embed_dim: int = 16,
+    n_layers: int = 2,
+    n_heads: int = 2,
+    seed: int = 42,
+) -> Tuple[FoundationModels, List[str]]:
+    """Create a FoundationModels container with multiple models.
+
+    All models share `n_shared` genes and each has `n_unique_per_model`
+    unique genes.
+
+    Parameters
+    ----------
+    n_models : int
+        Number of models (default: 3, minimum 2).
+    n_shared : int
+        Genes shared across all models (default: 15).
+    n_unique_per_model : int
+        Unique genes per model (default: 5).
+    embed_dim : int
+        Embedding dimension (default: 16).
+    n_layers : int
+        Layers per model (default: 2).
+    n_heads : int
+        Heads per model (default: 2).
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    foundation_models : FoundationModels
+    shared_gene_ids : List[str]
+        Ensembl gene IDs shared by all models.
+    """
+    shared_ids = make_gene_ids(n_shared, prefix="ENSG", start=0)
+
+    models = []
+    for i in range(n_models):
+        unique_start = n_shared + i * n_unique_per_model
+        unique_ids = make_gene_ids(
+            n_unique_per_model, prefix="ENSG", start=unique_start
+        )
+        # Interleave unique and shared to test ordering robustness
+        gene_ids = unique_ids + shared_ids
+
+        model = make_foundation_model(
+            gene_ids=gene_ids,
+            embed_dim=embed_dim,
+            n_layers=n_layers,
+            n_heads=n_heads,
+            model_name=f"TestModel{i}",
+            seed=seed + i * 1000,
+        )
+        models.append(model)
+
+    return FoundationModels(models=models), shared_ids
+
+
+def make_attended_embeddings(
+    n_genes: int = 10,
+    embed_dim: int = 16,
+    n_layers: int = 2,
+    n_heads: int = 2,
+    model_name: str = "TestModel",
+    seed: int = 42,
+) -> AttendedEmbeddings:
+    """Create a single AttendedEmbeddings for unit testing.
+
+    Parameters
+    ----------
+    n_genes : int
+        Number of genes (default: 10).
+    embed_dim : int
+        Embedding dimension (default: 16).
+    n_layers : int
+        Number of layers (default: 2).
+    n_heads : int
+        Number of heads (default: 2).
+    model_name : str
+        Model name (default: "TestModel").
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    AttendedEmbeddings
+    """
+    model = make_foundation_model(
+        n_genes=n_genes,
+        embed_dim=embed_dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        model_name=model_name,
+        seed=seed,
+    )
+
+    return AttendedEmbeddings(
+        gene_embeddings=model.weights.static_gene_embeddings,
+        foundation_model=model,
+    )
+
+
+def make_attended_embeddings_set(
+    n_models: int = 3,
+    n_shared: int = 15,
+    n_unique_per_model: int = 5,
+    embed_dim: int = 16,
+    n_layers: int = 2,
+    n_heads: int = 2,
+    seed: int = 42,
+) -> Tuple[AttendedEmbeddingsSet, List[str]]:
+    """Create an AttendedEmbeddingsSet for cross-model testing.
+
+    Parameters
+    ----------
+    n_models : int
+        Number of models (default: 3, minimum 2).
+    n_shared : int
+        Shared genes (default: 15).
+    n_unique_per_model : int
+        Unique genes per model (default: 5).
+    embed_dim : int
+        Embedding dimension (default: 16).
+    n_layers : int
+        Layers per model (default: 2).
+    n_heads : int
+        Heads per model (default: 2).
+    seed : int
+        Random seed (default: 42).
+
+    Returns
+    -------
+    attended_set : AttendedEmbeddingsSet
+    shared_gene_ids : List[str]
+        Gene IDs common to all models.
+    """
+    fm, shared_ids = make_foundation_models(
+        n_models=n_models,
+        n_shared=n_shared,
+        n_unique_per_model=n_unique_per_model,
+        embed_dim=embed_dim,
+        n_layers=n_layers,
+        n_heads=n_heads,
+        seed=seed,
+    )
+
+    attended_set = AttendedEmbeddingsSet.from_static(
+        fm, align_on=ONTOLOGIES.ENSEMBL_GENE
+    )
+
+    return attended_set, shared_ids
+
 
 # utility functions
 
@@ -91,7 +614,7 @@ def test_gene_embeddings_set_validation():
     ge_set2 = GeneEmbeddingsSet.from_gene_embeddings([ge1, ge2])
     assert ge_set2.n_embeddings == 2
     assert ge_set2.n_common_genes == 3
-    assert set(ge_set2.keys()) == {"ModelA/type1", "ModelA/type2"}
+    assert set(ge_set2.keys()) == {"type1", "type2"}
 
     # Invalid: duplicate source_label
     ge_dup = _make_gene_emb(genes, embed_dim=8, model_name="ModelA", category="type1")
@@ -279,3 +802,194 @@ def test_gene_embeddings_set_unaligned_vocab_output_aligned_and_gene_dim_matches
     summary = aligned_set.summary
     assert list(summary["n_genes"]) == [3, 3]
     assert list(summary["key"]) == ["ModelA", "ModelB"]
+
+
+# cross model and layer comparison
+
+
+class TestComputeAttentionReordering:
+    """Test that compute_attention with target_ids produces correctly ordered results."""
+
+    def test_target_ids_none_matches_full(self):
+        """Attention with target_ids=None equals full computation."""
+        ae = make_attended_embeddings(n_genes=10, seed=42)
+        full = ae.compute_attention(layer_idx=0, target_ids=None)
+        also_full = ae.compute_attention(
+            layer_idx=0, target_ids=ae.gene_embeddings.ordered_gene_ids
+        )
+        np.testing.assert_allclose(full, also_full, atol=1e-5)
+
+    def test_target_ids_subset_values_match(self):
+        """Subset attention values match corresponding entries in full matrix."""
+        ae = make_attended_embeddings(n_genes=10, seed=42)
+        gene_ids = ae.gene_embeddings.ordered_gene_ids
+
+        full = ae.compute_attention(layer_idx=0, target_ids=None, apply_softmax=False)
+        subset_ids = [gene_ids[2], gene_ids[5], gene_ids[7]]
+        subset = ae.compute_attention(
+            layer_idx=0, target_ids=subset_ids, apply_softmax=False
+        )
+
+        idx = [2, 5, 7]
+        expected = full[np.ix_(idx, idx)]
+        np.testing.assert_allclose(subset, expected, atol=1e-5)
+
+    def test_target_ids_reordering(self):
+        """Reversed target_ids produces transposed-like reordering."""
+        ae = make_attended_embeddings(n_genes=10, seed=42)
+        gene_ids = ae.gene_embeddings.ordered_gene_ids
+
+        forward = ae.compute_attention(layer_idx=0, target_ids=gene_ids[:5])
+        backward = ae.compute_attention(layer_idx=0, target_ids=gene_ids[:5][::-1])
+
+        # backward should be forward with rows and cols reversed
+        np.testing.assert_allclose(backward, forward[::-1, ::-1], atol=1e-5)
+
+
+class TestGetSpecificAttentionsConsistency:
+    """Test that get_specific_attentions returns correct values."""
+
+    def test_values_match_direct_computation(self):
+        """Edge values from get_specific_attentions match direct indexing."""
+        ae = make_attended_embeddings(n_genes=10, n_layers=2, seed=42)
+        gene_ids = ae.gene_embeddings.ordered_gene_ids
+
+        edges = pd.DataFrame(
+            {
+                "from_gene": [gene_ids[0], gene_ids[3]],
+                "to_gene": [gene_ids[1], gene_ids[7]],
+            }
+        )
+
+        result = ae.get_specific_attentions(
+            edges, target_ids=gene_ids, apply_softmax=False
+        )
+
+        for layer_idx in range(ae.n_layers):
+            full_attn = ae.compute_attention(
+                layer_idx=layer_idx, target_ids=gene_ids, apply_softmax=False
+            )
+            layer_rows = result[result["layer"] == layer_idx]
+
+            for _, row in layer_rows.iterrows():
+                i = gene_ids.index(row["from_gene"])
+                j = gene_ids.index(row["to_gene"])
+                np.testing.assert_allclose(row["attention"], full_attn[i, j], atol=1e-5)
+
+
+class TestCrossModelReextractionCompleteness:
+    """Test that cross-model re-extraction produces no NaNs."""
+
+    def test_reextract_union_no_nans(self):
+        """get_top_attentions with reextract_union=True has no NaN values."""
+        attended_set, shared_ids = make_attended_embeddings_set(
+            n_models=2, n_shared=15, n_unique_per_model=5, seed=42
+        )
+
+        result = attended_set.get_top_attentions(
+            k=20,
+            reextract_union=True,
+            compute_ranks=True,
+        )
+
+        assert (
+            not result["attention"].isna().any()
+        ), f"Found {result['attention'].isna().sum()} NaN attention values"
+        assert (
+            not result["attention_rank"].isna().any()
+        ), f"Found {result['attention_rank'].isna().sum()} NaN rank values"
+
+    def test_reextract_union_pivot_complete(self):
+        """Pivoted re-extraction has no NaN cells (all model×layer combos present)."""
+        attended_set, shared_ids = make_attended_embeddings_set(
+            n_models=2, n_shared=15, n_unique_per_model=5, seed=42
+        )
+
+        result = attended_set.get_top_attentions(
+            k=20,
+            reextract_union=True,
+        )
+
+        pivot = result.pivot(
+            index=["from_gene", "to_gene"],
+            columns=["model", "layer"],
+            values="attention",
+        )
+
+        n_nans = pivot.isna().sum().sum()
+        assert n_nans == 0, (
+            f"Pivot has {n_nans} NaN cells. "
+            f"Shape: {pivot.shape}, "
+            f"NaN per column:\n{pivot.isna().sum()}"
+        )
+
+    def test_all_edges_use_common_genes_only(self):
+        """Re-extracted edges only reference genes in the common set."""
+        attended_set, shared_ids = make_attended_embeddings_set(
+            n_models=2, n_shared=15, n_unique_per_model=5, seed=42
+        )
+
+        result = attended_set.get_top_attentions(
+            k=20,
+            reextract_union=True,
+        )
+
+        common_set = set(attended_set.common_gene_ids)
+        from_genes = set(result["from_gene"].unique())
+        to_genes = set(result["to_gene"].unique())
+
+        assert from_genes.issubset(common_set), (
+            f"from_gene contains genes not in common set: " f"{from_genes - common_set}"
+        )
+        assert to_genes.issubset(common_set), (
+            f"to_gene contains genes not in common set: " f"{to_genes - common_set}"
+        )
+
+
+class TestConsensusTopAttentionsCompleteness:
+    """Same completeness tests for consensus path."""
+
+    def test_consensus_reextract_no_nans(self):
+        """get_consensus_top_attentions with reextract_union has no NaNs."""
+        attended_set, shared_ids = make_attended_embeddings_set(
+            n_models=2, n_shared=15, n_unique_per_model=5, seed=42
+        )
+
+        result = attended_set.get_consensus_top_attentions(
+            k=20,
+            reextract_union=True,
+        )
+
+        assert not result["attention"].isna().any()
+
+
+class TestWithDifferentVocabularies:
+    """Test cross-model operations when models use different native vocabularies."""
+
+    def test_different_vocab_no_nans(self):
+        """Models with different vocab names still produce complete re-extraction."""
+        model_a, model_b, shared_ids = make_foundation_model_pair(
+            n_shared=15,
+            n_unique_a=5,
+            n_unique_b=5,
+            use_different_vocab=True,
+            seed=42,
+        )
+
+        fm = FoundationModels(models=[model_a, model_b])
+        attended_set = AttendedEmbeddingsSet.from_static(fm)
+
+        result = attended_set.get_top_attentions(
+            k=20,
+            reextract_union=True,
+        )
+
+        pivot = result.pivot(
+            index=["from_gene", "to_gene"],
+            columns=["model", "layer"],
+            values="attention",
+        )
+
+        assert (
+            pivot.isna().sum().sum() == 0
+        ), "NaN values found with different vocabulary models"
