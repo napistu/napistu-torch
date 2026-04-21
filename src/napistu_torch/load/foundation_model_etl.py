@@ -2097,10 +2097,24 @@ def _scgpt_load_model(model_dir: str) -> Tuple[Any, Any, dict, str]:
 
 @require_scgpt
 @require_torchtext
+@require_scgpt
+@require_torchtext
 def _scgpt_load_model_from_file(
     model_file: str, vocab: Any, model_configs: dict
 ) -> Any:
     """Load scGPT model from checkpoint file.
+
+    Handles the naming mismatch between scGPT's fast-transformer attention
+    (stores fused QKV as ``Wqkv``) and stock PyTorch ``nn.MultiheadAttention``
+    (stores fused QKV as ``in_proj``). The two layouts are identical in shape
+    and semantics -- both stack Q, K, V along dim 0 of a single (3*d, d)
+    tensor -- so we remap keys at load time.
+
+    This matters because scGPT checkpoints are saved from the fast-transformer
+    variant, but that variant requires ``flash_attn`` (CUDA-only). On MPS or
+    CPU we must use the vanilla variant. Without remapping, the trained
+    attention weights silently fail to load and every transformer layer runs
+    with random init.
 
     Parameters
     ----------
@@ -2114,13 +2128,13 @@ def _scgpt_load_model_from_file(
     Returns
     -------
     Any
-        Loaded scGPT TransformerModel
+        Loaded scGPT TransformerModel with trained weights
     """
     from scgpt.model import TransformerModel
 
     device = select_device()
 
-    ntokens = len(vocab)  # size of vocabulary
+    ntokens = len(vocab)
     model = TransformerModel(
         ntokens,
         model_configs[SCGPT_DEFS.EMBSIZE],
@@ -2132,28 +2146,45 @@ def _scgpt_load_model_from_file(
         n_input_bins=SCGPT_DEFS.N_INPUT_BINS,
     )
 
-    try:
-        model.load_state_dict(
-            torch.load(model_file, map_location=torch.device(DEVICE.CPU))
+    raw_checkpoint = torch.load(model_file, map_location=torch.device(DEVICE.CPU))
+    remapped_checkpoint = _scgpt_remap_checkpoint_keys(raw_checkpoint)
+
+    model_dict = model.state_dict()
+    compatible = {
+        k: v
+        for k, v in remapped_checkpoint.items()
+        if k in model_dict and v.shape == model_dict[k].shape
+    }
+
+    # Sanity: attention weights must have loaded. Vanilla MultiheadAttention
+    # stores them as in_proj_weight; if none of those matched after remapping,
+    # the model would run with random attention and silently produce garbage.
+    attn_loaded = [k for k in compatible if "self_attn.in_proj_weight" in k]
+    n_expected = model_configs[SCGPT_DEFS.NLAYERS]
+    if len(attn_loaded) != n_expected:
+        raise RuntimeError(
+            f"Expected {n_expected} attention weight tensors to load, "
+            f"but only {len(attn_loaded)} matched. The model would run with "
+            f"untrained attention. Checkpoint keys may use an unexpected "
+            f"layout. Matched attention keys: {attn_loaded}"
         )
-        print(f"Loading all model params from {model_file}")
-    except Exception as e:
-        logger.warning(
-            f"Error loading model: {e}; recovering by extracting specific parameters."
+
+    n_total = len(remapped_checkpoint)
+    n_matched = len(compatible)
+    if n_matched < n_total:
+        skipped = set(remapped_checkpoint) - set(compatible)
+        logger.info(
+            f"Loaded {n_matched}/{n_total} parameters from checkpoint. "
+            f"Skipped {len(skipped)} keys not present in the vanilla model "
+            f"(likely auxiliary heads): {sorted(skipped)[:5]}"
+            f"{'...' if len(skipped) > 5 else ''}"
         )
-        # only load params that are in the model and match the size
-        model_dict = model.state_dict()
-        pretrained_dict = torch.load(model_file, map_location=torch.device(DEVICE.CPU))
-        pretrained_dict = {
-            k: v
-            for k, v in pretrained_dict.items()
-            if k in model_dict and v.shape == model_dict[k].shape
-        }
-        model_dict.update(pretrained_dict)
-        model.load_state_dict(model_dict)
+
+    model_dict.update(compatible)
+    model.load_state_dict(model_dict)
+    logger.info(f"Loaded scGPT weights from {model_file}")
 
     model.to(device)
-
     return model
 
 
@@ -2293,6 +2324,37 @@ def _scgpt_preprocess_dataset(
     )
 
     return adata_subset, selected_genes, gene_indices
+
+
+def _scgpt_remap_checkpoint_keys(checkpoint: dict) -> dict:
+    """Remap scGPT fast-transformer checkpoint keys to vanilla PyTorch names.
+
+    scGPT's fast-transformer attention stores fused Q/K/V projections under
+    ``self_attn.Wqkv.{weight,bias}``. Stock ``nn.MultiheadAttention`` stores
+    the same tensors under ``self_attn.in_proj_{weight,bias}``. Shapes and
+    semantics are identical (Q, K, V stacked along dim 0 of a (3*d, d) tensor).
+
+    Parameters
+    ----------
+    checkpoint : dict
+        Raw state dict loaded from a fast-transformer scGPT checkpoint.
+
+    Returns
+    -------
+    dict
+        State dict with Wqkv keys renamed to in_proj keys. Other keys pass
+        through unchanged.
+    """
+    remapped = {}
+    for key, value in checkpoint.items():
+        if ".Wqkv.weight" in key:
+            new_key = key.replace(".Wqkv.weight", ".in_proj_weight")
+        elif ".Wqkv.bias" in key:
+            new_key = key.replace(".Wqkv.bias", ".in_proj_bias")
+        else:
+            new_key = key
+        remapped[new_key] = value
+    return remapped
 
 
 @require_scprint
