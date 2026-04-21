@@ -1709,6 +1709,121 @@ def _scfoundation_preprocess_dataset(
 
 
 @require_scgpt
+def _scgpt_capture_residual_streams_per_cluster(
+    model: "TransformerModel",
+    expression: torch.Tensor,
+    gene_indices: torch.Tensor,
+    batch_size: int = 64,
+    device: Optional[torch.device] = None,
+    verbose: bool = False,
+) -> torch.Tensor:
+    """Capture layer-wise residual streams for a cluster of cells, averaged across cells.
+
+    Runs cells through scGPT's full transformer via ``_encode``, capturing the
+    residual stream entering each of the N attention blocks via forward hooks.
+    Uses pre-layer numbering: residual stream at layer L is the activation
+    block L reads from. For a 12-block scGPT, this returns 12 residual streams
+    (indexed 0 through 11), one per attention block.
+
+    Accumulates running sums across cell batches to stay memory-bounded; the
+    per-cell activations are not retained.
+
+    Parameters
+    ----------
+    model : TransformerModel
+        Loaded scGPT model. Must be in eval mode and on the target device.
+    expression : torch.Tensor
+        Expression matrix (n_cells, n_genes), pre-binned, on CPU or device.
+    gene_indices : torch.Tensor
+        Gene vocabulary indices, shape (n_genes,).
+    batch_size : int, optional
+        Cells per forward pass (default: 64).
+    device : torch.device, optional
+        Device for computation (default: auto-select).
+    verbose : bool, optional
+        Log per-batch progress.
+
+    Returns
+    -------
+    torch.Tensor
+        Residual streams of shape (n_layers, n_genes, embed_dim), averaged
+        across cells. Index L is the activation entering block L.
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    t_expression = expression.to(device)
+    t_gene_indices = gene_indices.to(device)
+
+    n_cells, n_genes = t_expression.shape
+    n_layers = len(model.transformer_encoder.layers)
+    embed_dim = model.d_model
+
+    # One running sum per residual stream: (n_genes, embed_dim) per layer.
+    # Layer 0 captures from the pre-hook on transformer_encoder.
+    # Layers 1..N-1 capture from the forward hook on layers[0..N-2].
+    residual_sums = torch.zeros(
+        (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
+    )
+
+    def make_pre_hook(layer_idx):
+        def hook(module, inputs):
+            # inputs is a tuple; first arg is the (batch, n_genes, embed_dim) tensor
+            residual_sums[layer_idx] += inputs[0].sum(dim=0)
+        return hook
+
+    def make_forward_hook(layer_idx):
+        def hook(module, inputs, output):
+            residual_sums[layer_idx] += output.sum(dim=0)
+        return hook
+
+    handles = []
+    handles.append(
+        model.transformer_encoder.register_forward_pre_hook(make_pre_hook(0))
+    )
+    # Block i's output is the residual stream for layer i+1.
+    # Skip the final block (i = n_layers - 1) since its output is post-final-block,
+    # not a residual stream any attention reads from.
+    for i in range(n_layers - 1):
+        handles.append(
+            model.transformer_encoder.layers[i].register_forward_hook(
+                make_forward_hook(i + 1)
+            )
+        )
+
+    try:
+        with memory_manager(device), torch.no_grad():
+            for start in range(0, n_cells, batch_size):
+                if verbose:
+                    logger.info(
+                        f"  Batch {start // batch_size + 1} of "
+                        f"{(n_cells + batch_size - 1) // batch_size}"
+                    )
+
+                batch_expr = t_expression[start : start + batch_size]
+                bsz = batch_expr.shape[0]
+                src = t_gene_indices.unsqueeze(0).expand(bsz, -1)
+                src_key_padding_mask = torch.zeros(
+                    bsz, n_genes, dtype=torch.bool, device=device
+                )
+
+                # Hooks fire during this call and update residual_sums in place.
+                _ = model._encode(
+                    src, batch_expr, src_key_padding_mask, batch_labels=None
+                )
+
+                del src, src_key_padding_mask
+                empty_cache(device)
+    finally:
+        for h in handles:
+            h.remove()
+
+    residual_means = (residual_sums / n_cells).cpu()
+    del residual_sums, t_expression, t_gene_indices
+
+    return residual_means
+
+
+@require_scgpt
 def _scgpt_extract_attention_weights(
     state_dict: dict, n_layers: int, embed_dim: int
 ) -> List[AttentionLayer]:
