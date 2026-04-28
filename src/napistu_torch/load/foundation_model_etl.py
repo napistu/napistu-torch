@@ -1765,20 +1765,24 @@ def _scgpt_capture_residual_streams_per_cluster(
         (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
     )
 
-    def make_pre_hook(layer_idx):
+    def make_pre_hook(layer_idx, sums: torch.Tensor):
         def hook(module, inputs):
             # inputs is a tuple; first arg is the (batch, n_genes, embed_dim) tensor
-            residual_sums[layer_idx] += inputs[0].sum(dim=0)
+            sums[layer_idx] += inputs[0].sum(dim=0)
+
         return hook
 
-    def make_forward_hook(layer_idx):
+    def make_forward_hook(layer_idx, sums: torch.Tensor):
         def hook(module, inputs, output):
-            residual_sums[layer_idx] += output.sum(dim=0)
+            sums[layer_idx] += output.sum(dim=0)
+
         return hook
 
     handles = []
     handles.append(
-        model.transformer_encoder.register_forward_pre_hook(make_pre_hook(0))
+        model.transformer_encoder.register_forward_pre_hook(
+            make_pre_hook(0, residual_sums)
+        )
     )
     # Block i's output is the residual stream for layer i+1.
     # Skip the final block (i = n_layers - 1) since its output is post-final-block,
@@ -1786,7 +1790,7 @@ def _scgpt_capture_residual_streams_per_cluster(
     for i in range(n_layers - 1):
         handles.append(
             model.transformer_encoder.layers[i].register_forward_hook(
-                make_forward_hook(i + 1)
+                make_forward_hook(i + 1, residual_sums)
             )
         )
 

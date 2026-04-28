@@ -118,6 +118,10 @@ class GeneEmbeddings(BaseModel):
         Name of the source foundation model (e.g., 'scGPT', 'AIDOCell').
     model_variant : Optional[str]
         Variant of the source model (e.g., 'aido_cell_100m').
+    layer_idx : Optional[int]
+        Index of the transformer layer this embedding represents.
+        None for non-transformer embeddings or models that capture
+        a single activation per category.
     dataset_name : Optional[str]
         Name of the expression dataset used to contextualize embeddings.
         None for static (non-expression-aware) gene embeddings.
@@ -189,6 +193,7 @@ class GeneEmbeddings(BaseModel):
     # Source metadata
     model_name: Optional[str] = None
     model_variant: Optional[str] = None
+    layer_idx: Optional[int] = None
     dataset_name: Optional[str] = None
     dataset_uri: Optional[str] = None
     category: Optional[str] = None
@@ -271,6 +276,8 @@ class GeneEmbeddings(BaseModel):
             if self.model_variant:
                 label = f"{label}_{self.model_variant}"
             parts.append(label)
+        if self.layer_idx is not None:
+            parts.append(f"layer_{self.layer_idx}")
         if self.dataset_name:
             parts.append(self.dataset_name)
         if self.category:
@@ -3932,6 +3939,7 @@ def _build_embedding_metadata(
                 EMBEDDING_METADATA_FIELDS.MODEL_NAME: emb.model_name,
                 EMBEDDING_METADATA_FIELDS.MODEL_VARIANT: emb.model_variant,
                 EMBEDDING_METADATA_FIELDS.MODEL_LABEL: model_label,
+                EMBEDDING_METADATA_FIELDS.LAYER_IDX: emb.layer_idx,
                 EMBEDDING_METADATA_FIELDS.DATASET_NAME: emb.dataset_name,
                 EMBEDDING_METADATA_FIELDS.CATEGORY: emb.category,
             }
@@ -4007,7 +4015,7 @@ def _compute_scoped_keys(
 ) -> Tuple[Dict[str, str], str]:
     """Compute minimal scoped keys and a constant label from embedding metadata.
 
-    For each scoping field (model_label, dataset_name, category):
+    For each scoping field (model_label, dataset_name, category, layer_idx):
     - If the field is constant and non-None across all embeddings, it goes into
       the constant_label and is excluded from keys.
     - If the field varies (or is a mix of None and values), it stays in the keys.
@@ -4018,7 +4026,7 @@ def _compute_scoped_keys(
     ----------
     embedding_metadata : pd.DataFrame
         Output of _build_embedding_metadata. Must contain columns:
-        source_label, model_label, dataset_name, category.
+        source_label, model_label, dataset_name, category, layer_idx.
 
     Returns
     -------
@@ -4043,9 +4051,9 @@ def _compute_scoped_keys(
     >>> # constant_label = ""
     >>> # keys: "scGPT", "scPRINT", "AIDOCell_aido_cell_100m"
 
-    >>> # Different models, same dataset + category
-    >>> # constant_label = "efthymiou2025 / adipocyte (0)"
-    >>> # keys: "scGPT", "scPRINT"
+    >>> # Same model + dataset + category, multiple layers
+    >>> # constant_label = "scGPT / efthymiou2025 / adipocyte (0)"
+    >>> # keys: "layer_0", "layer_5", "layer_11"
     """
     constant_parts = []
     varying_fields = []
@@ -4058,7 +4066,7 @@ def _compute_scoped_keys(
             continue
         elif len(non_null_values) == 1 and embedding_metadata[field].notna().all():
             # Constant non-None across all embeddings
-            constant_parts.append(str(non_null_values[0]))
+            constant_parts.append(_format_scoping_value(field, non_null_values[0]))
         else:
             # Varies across embeddings
             varying_fields.append(field)
@@ -4070,7 +4078,7 @@ def _compute_scoped_keys(
         for field in varying_fields:
             val = row[field]
             if pd.notna(val) and val is not None:
-                key_parts.append(str(val))
+                key_parts.append(_format_scoping_value(field, val))
 
         # Fallback to source_label if no varying fields produce a key
         # (e.g., single embedding where everything is constant)
@@ -4499,6 +4507,30 @@ def _find_top_k_edges_in_attention_layer(
     col_order.append(FM_EDGELIST.ATTENTION)
 
     return df[col_order]
+
+
+def _format_scoping_value(field: str, val: Any) -> str:
+    """Format a scoping field's value for use in scoped keys or constant labels.
+
+    Most fields stringify directly. layer_idx gets a ``"layer_"`` prefix for
+    readability: a key like ``"adipocyte (0)/layer_5"`` is more self-documenting
+    than ``"adipocyte (0)/5"``.
+
+    Parameters
+    ----------
+    field : str
+        Field name from SCOPING_FIELDS.
+    val : Any
+        Non-None field value.
+
+    Returns
+    -------
+    str
+        Formatted string.
+    """
+    if field == EMBEDDING_METADATA_FIELDS.LAYER_IDX:
+        return f"layer_{int(val)}"
+    return str(val)
 
 
 def _gene_embeddings_from_save_dict(
