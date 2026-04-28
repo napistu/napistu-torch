@@ -243,6 +243,7 @@ FM_DEFS = SimpleNamespace(
     WEIGHTS_DICT="weights_dict",
     STATIC_GENE_EMBEDDINGS="static_gene_embeddings",
     ATTENTION_WEIGHTS="attention_weights",
+    LAYER_IDX="layer_idx",
     LAYER_NAME_TEMPLATE="layer_{layer_idx}",
     W_Q="W_q",
     W_K="W_k",
@@ -286,6 +287,7 @@ FM_DEFAULTS = SimpleNamespace(
 EMBEDDING_METADATA_FIELDS = SimpleNamespace(
     MODEL_NAME=FM_DEFS.MODEL_NAME,
     MODEL_VARIANT=FM_DEFS.MODEL_VARIANT,
+    LAYER_IDX=FM_DEFS.LAYER_IDX,
     DATASET_NAME=FM_DEFS.DATASET_NAME,
     CATEGORY=FM_DEFS.CATEGORY,
     MODEL_LABEL="model_label",
@@ -297,6 +299,7 @@ EMBEDDING_METADATA_FIELDS = SimpleNamespace(
 # are combined into model_label and treated as a single unit.
 SCOPING_FIELDS = [
     EMBEDDING_METADATA_FIELDS.MODEL_LABEL,
+    EMBEDDING_METADATA_FIELDS.LAYER_IDX,
     EMBEDDING_METADATA_FIELDS.DATASET_NAME,
     EMBEDDING_METADATA_FIELDS.CATEGORY,
 ]

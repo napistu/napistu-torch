@@ -19,6 +19,8 @@ from napistu_torch.load.foundation_models import (
     GeneEmbeddings,
     GeneEmbeddingsSet,
     ModelMetadata,
+    _build_embedding_metadata,
+    _compute_scoped_keys,
 )
 
 # ---------------------------------------------------------------------------
@@ -537,6 +539,14 @@ def make_attended_embeddings_set(
 
 # utility functions
 
+# Ensembl IDs shared by scoping tests (same genes; source_labels differ by
+# model/dataset/category/layer).
+SCOPING_TEST_GENES = [
+    "ENSG00000000001",
+    "ENSG00000000002",
+    "ENSG00000000003",
+]
+
 
 def _make_gene_annotations(genes):
     """DataFrame valid for GeneAnnotations (vocab_name + ensembl_gene)."""
@@ -548,7 +558,14 @@ def _make_gene_annotations(genes):
     )
 
 
-def _make_gene_emb(genes, embed_dim=4, model_name=None, category=None):
+def _make_gene_emb(
+    genes,
+    embed_dim=4,
+    model_name=None,
+    dataset_name=None,
+    category=None,
+    layer_idx=None,
+):
     """Minimal GeneEmbeddings for tests."""
     n = len(genes)
     return GeneEmbeddings(
@@ -556,8 +573,19 @@ def _make_gene_emb(genes, embed_dim=4, model_name=None, category=None):
         ordered_gene_ids=list(genes),
         gene_annotations=_make_gene_annotations(genes),
         model_name=model_name,
+        layer_idx=layer_idx,
+        dataset_name=dataset_name,
         category=category,
     )
+
+
+def _scope(embeddings):
+    data = {emb.source_label: emb for emb in embeddings}
+    metadata = _build_embedding_metadata(data)
+    return _compute_scoped_keys(metadata)
+
+
+# tests
 
 
 def test_gene_embeddings_field_validation():
@@ -685,6 +713,17 @@ def test_gene_embeddings_construction():
     assert ge.source_label == "scGPT"
     assert ge.embedding.shape == (3, 8)
 
+    ge = _make_gene_emb(genes, embed_dim=8, model_name="scGPT", layer_idx=0)
+    assert ge.layer_idx == 0
+    assert ge.source_label == "scGPT/layer_0"
+    assert ge.embedding.shape == (3, 8)
+    assert ge.gene_ids_set == frozenset(genes)
+    assert ge.gene_annotations.shape == (3, 2)
+    assert set(ge.gene_annotations.columns) == {
+        FM_DEFS.VOCAB_NAME,
+        ONTOLOGIES.ENSEMBL_GENE,
+    }
+
 
 def test_gene_embeddings_construction_validation():
     """GeneEmbeddings rejects bad embedding shape and row/gene count mismatch."""
@@ -752,9 +791,6 @@ def test_gene_embeddings_align_to_no_overlap_raises():
     assert "No genes in target_ids" in str(e.value)
 
 
-# --- GeneEmbeddingsSet ---
-
-
 def test_gene_embeddings_set_unaligned_vocab_output_aligned_and_gene_dim_matches():
     """From unaligned embeddings with different vocabs, output is aligned and gene dim matches."""
     # Shared ontology: ensembl_gene. Different native vocabs and order/subset per embedding.
@@ -802,9 +838,6 @@ def test_gene_embeddings_set_unaligned_vocab_output_aligned_and_gene_dim_matches
     summary = aligned_set.summary
     assert list(summary["n_genes"]) == [3, 3]
     assert list(summary["key"]) == ["ModelA", "ModelB"]
-
-
-# cross model and layer comparison
 
 
 class TestComputeAttentionReordering:
@@ -993,3 +1026,111 @@ class TestWithDifferentVocabularies:
         assert (
             pivot.isna().sum().sum() == 0
         ), "NaN values found with different vocabulary models"
+
+
+def test_scoping_current_behavior():
+    """Baseline: constant fields fold into label, varying fields go in keys."""
+    # Varying category only
+    scoped, constant = _scope(
+        [
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="adipocyte",
+            ),
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="T_cell",
+            ),
+        ]
+    )
+    assert set(scoped.values()) == {"adipocyte", "T_cell"}
+    assert constant == "scGPT / ds1"
+
+    # Varying model only
+    scoped, constant = _scope(
+        [
+            _make_gene_emb(SCOPING_TEST_GENES, model_name="scGPT"),
+            _make_gene_emb(SCOPING_TEST_GENES, model_name="scPRINT"),
+        ]
+    )
+    assert set(scoped.values()) == {"scGPT", "scPRINT"}
+    assert constant == ""
+
+    # Two varying fields compose
+    scoped, _ = _scope(
+        [
+            _make_gene_emb(
+                SCOPING_TEST_GENES, model_name="scGPT", category="adipocyte"
+            ),
+            _make_gene_emb(SCOPING_TEST_GENES, model_name="scGPT", category="T_cell"),
+            _make_gene_emb(
+                SCOPING_TEST_GENES, model_name="scPRINT", category="adipocyte"
+            ),
+            _make_gene_emb(SCOPING_TEST_GENES, model_name="scPRINT", category="T_cell"),
+        ]
+    )
+    assert set(scoped.values()) == {
+        "scGPT/adipocyte",
+        "scGPT/T_cell",
+        "scPRINT/adipocyte",
+        "scPRINT/T_cell",
+    }
+
+
+def test_scoping_with_layer_idx():
+    """After adding layer_idx to SCOPING_FIELDS: constant layer folds, varying layer appears in keys."""
+    # Constant layer_idx=0 across all embeddings -> keys unchanged from pre-migration
+    scoped, _ = _scope(
+        [
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="adipocyte",
+                layer_idx=0,
+            ),
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="T_cell",
+                layer_idx=0,
+            ),
+        ]
+    )
+
+    assert set(scoped.values()) == {"adipocyte", "T_cell"}
+
+    # Varying layer -> layer in keys
+    scoped, constant = _scope(
+        [
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="adipocyte",
+                layer_idx=0,
+            ),
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="adipocyte",
+                layer_idx=5,
+            ),
+            _make_gene_emb(
+                SCOPING_TEST_GENES,
+                model_name="scGPT",
+                dataset_name="ds1",
+                category="adipocyte",
+                layer_idx=11,
+            ),
+        ]
+    )
+
+    assert len(set(scoped.values())) == 3
+    assert constant == "scGPT / ds1 / adipocyte"
