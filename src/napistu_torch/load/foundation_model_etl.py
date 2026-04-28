@@ -700,7 +700,9 @@ def _aidocell_get_expression_embeddings(
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_3d=cluster_embeddings,
+        embeddings_4d=cluster_embeddings.unsqueeze(
+            1
+        ),  # (n_clusters, 1, n_genes, embed_dim)
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -1096,7 +1098,7 @@ def _embed_expression_batch(
 
 
 def _expression_tensor_to_gene_embeddings_set(
-    embeddings_3d: Union[np.ndarray, torch.Tensor],
+    embeddings_4d: Union[np.ndarray, torch.Tensor],
     ordered_genes: List[str],
     gene_annotations: pd.DataFrame,
     category_dict: Dict[int, str],
@@ -1107,30 +1109,23 @@ def _expression_tensor_to_gene_embeddings_set(
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
 ) -> "GeneEmbeddingsSet":
-    """Convert a 3D expression embedding tensor into a GeneEmbeddingsSet.
+    """Convert a 4D expression embedding tensor into a GeneEmbeddingsSet.
 
-    Slices a (n_categories, n_genes, embed_dim) tensor along the category axis
-    and creates one ``GeneEmbeddings`` per category, each with properly filtered
-    and aligned gene annotations. The resulting list is wrapped in a
-    ``GeneEmbeddingsSet`` since all categories within a dataset share the same
-    gene vocabulary.
-
-    Each category becomes a ``GeneEmbeddings`` that owns its full gene metadata,
-    and the set provides dict-like access by source_label.
+    Slices a (n_categories, n_layers, n_genes, embed_dim) tensor along the
+    category and layer axes, creating one ``GeneEmbeddings`` per
+    (category, layer) pair. Each ``GeneEmbeddings`` carries a ``layer_idx``
+    field encoding which residual stream it came from.
 
     Parameters
     ----------
-    embeddings_3d : np.ndarray or torch.Tensor
+    embeddings_4d : np.ndarray or torch.Tensor
         Expression-contextualized gene embeddings of shape
-        (n_categories, n_genes, embed_dim).
+        (n_categories, n_layers, n_genes, embed_dim).
     ordered_genes : List[str]
-        Gene identifiers matching dimension 1 of ``embeddings_3d``.
-        These are looked up in ``gene_annotations[gene_id_column]``
-        to filter and reorder the annotations.
+        Gene identifiers matching dimension 2 of ``embeddings_4d``.
     gene_annotations : pd.DataFrame
-        Full gene annotations table (may contain more genes than
-        ``ordered_genes``). Must contain ``vocab_name`` and ``ensembl_gene``
-        columns at minimum.
+        Full gene annotations table. Must contain ``vocab_name`` and
+        ``ensembl_gene`` columns at minimum.
     category_dict : Dict[int, str]
         Maps category index (0-based) to category name (e.g., cell type).
         Keys must be ``{0, 1, ..., n_categories - 1}``.
@@ -1138,8 +1133,8 @@ def _expression_tensor_to_gene_embeddings_set(
         Column in ``gene_annotations`` to match ``ordered_genes`` against
         (default: 'ensembl_gene').
     align_on : str, optional
-        Column in gene_annotations used for alignment validation in the
-        resulting GeneEmbeddingsSet (default: 'ensembl_gene').
+        Column used for alignment validation in the resulting
+        ``GeneEmbeddingsSet`` (default: 'ensembl_gene').
     model_name : Optional[str]
         Source model name.
     model_variant : Optional[str]
@@ -1152,41 +1147,37 @@ def _expression_tensor_to_gene_embeddings_set(
     Returns
     -------
     GeneEmbeddingsSet
-        Set of GeneEmbeddings, one per category, all sharing the same gene
-        vocabulary. Keyed by ``source_label`` (which encodes
-        model/variant/dataset/category).
+        Set of GeneEmbeddings, one per (category, layer) pair, all sharing
+        the same gene vocabulary. Keyed by ``source_label``.
 
     Raises
     ------
     ValueError
-        If ``embeddings_3d`` is not 3-dimensional.
-        If ``ordered_genes`` length doesn't match dimension 1.
+        If ``embeddings_4d`` is not 4-dimensional.
+        If ``ordered_genes`` length doesn't match dimension 2.
         If ``category_dict`` keys don't match ``{0, ..., n_categories - 1}``.
         If gene annotations cannot be aligned to ``ordered_genes``.
     """
-    # Convert torch to numpy
-    if isinstance(embeddings_3d, torch.Tensor):
-        embeddings_3d = embeddings_3d.numpy()
+    if isinstance(embeddings_4d, torch.Tensor):
+        embeddings_4d = embeddings_4d.numpy()
+    elif not isinstance(embeddings_4d, np.ndarray):
+        raise ValueError("embeddings_4d must be a numpy array or torch.Tensor")
 
-    if not isinstance(embeddings_3d, np.ndarray):
-        raise ValueError("embeddings_3d must be a numpy array or torch.Tensor")
-
-    if embeddings_3d.ndim != 3:
+    if embeddings_4d.ndim != 4:
         raise ValueError(
-            f"embeddings_3d must be 3-dimensional (n_categories, n_genes, embed_dim), "
-            f"got shape {embeddings_3d.shape}"
+            f"embeddings_4d must be 4-dimensional "
+            f"(n_categories, n_layers, n_genes, embed_dim), "
+            f"got shape {embeddings_4d.shape}"
         )
 
-    n_categories, n_genes, _ = embeddings_3d.shape
+    n_categories, n_layers, n_genes, _ = embeddings_4d.shape
 
-    # Validate ordered_genes length
     if len(ordered_genes) != n_genes:
         raise ValueError(
             f"ordered_genes has {len(ordered_genes)} entries but "
-            f"embeddings_3d has {n_genes} genes (dim 1)"
+            f"embeddings_4d has {n_genes} genes (dim 2)"
         )
 
-    # Validate category_dict keys
     category_dict = {int(k): v for k, v in category_dict.items()}
     expected_keys = set(range(n_categories))
     if set(category_dict.keys()) != expected_keys:
@@ -1195,42 +1186,48 @@ def _expression_tensor_to_gene_embeddings_set(
             f"got {sorted(category_dict.keys())}"
         )
 
-    # Filter and reorder gene annotations to match ordered_genes
     aligned_annotations = filter_and_reorder_df(
         df=gene_annotations,
         target_ids=ordered_genes,
         id_column=gene_id_column,
     )
 
-    # Validate that alignment succeeded for all genes
     if len(aligned_annotations) != n_genes:
-        n_found = len(aligned_annotations)
         raise ValueError(
-            f"Only {n_found} of {n_genes} ordered_genes found in "
-            f"gene_annotations['{gene_id_column}']. "
-            f"All genes must be present."
+            f"Only {len(aligned_annotations)} of {n_genes} ordered_genes found in "
+            f"gene_annotations['{gene_id_column}']. All genes must be present."
         )
 
-    # Slice along category axis and create GeneEmbeddings per category
     result = []
     for cat_idx in range(n_categories):
         category_name = category_dict[cat_idx]
+        for layer_idx in range(n_layers):
 
-        ge = GeneEmbeddings(
-            embedding=embeddings_3d[cat_idx],
-            ordered_gene_ids=list(ordered_genes),
-            gene_annotations=aligned_annotations.copy(),
-            model_name=model_name,
-            model_variant=model_variant,
-            dataset_name=dataset_name,
-            dataset_uri=dataset_uri,
-            category=str(category_name),
-        )
-        result.append(ge)
+            logger.debug(
+                f"Creating GeneEmbeddings: cat_idx={cat_idx}, layer_idx={layer_idx}, "
+                f"category={category_name!r}, embedding shape={embeddings_4d[cat_idx, layer_idx].shape}"
+            )
+
+            ge = GeneEmbeddings(
+                embedding=embeddings_4d[cat_idx, layer_idx],
+                ordered_gene_ids=list(ordered_genes),
+                gene_annotations=aligned_annotations.copy(),
+                model_name=model_name,
+                model_variant=model_variant,
+                dataset_name=dataset_name,
+                dataset_uri=dataset_uri,
+                category=str(category_name),
+                layer_idx=layer_idx,
+            )
+            result.append(ge)
+
+            logger.debug(
+                f"  -> ge.layer_idx={ge.layer_idx}, ge.source_label={ge.source_label!r}"
+            )
 
     logger.info(
         f"Created {len(result)} GeneEmbeddings from expression tensor "
-        f"({n_genes} genes, {n_categories} categories)"
+        f"({n_genes} genes, {n_categories} categories, {n_layers} layers)"
     )
 
     return GeneEmbeddingsSet.from_gene_embeddings(result, align_on=align_on)
@@ -1365,7 +1362,7 @@ def _get_cell_clusters_and_category_dict(
     # create unique category labels
     cell_cluster_dict = {
         i: f"{row[CELLXGENE_DEFS.CELL_TYPE]} ({row[CELLXGENE_DEFS.LEIDEN_SCVI]})"
-        for i, row in cell_clusters.iterrows()
+        for i, row in cell_clusters.reset_index(drop=True).iterrows()
     }
     return cell_clusters, cell_cluster_dict
 
@@ -1567,7 +1564,9 @@ def _scfoundation_get_expression_embeddings(
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_3d=cluster_embeddings,
+        embeddings_4d=cluster_embeddings.unsqueeze(
+            1
+        ),  # (n_clusters, 1, n_genes, embed_dim)
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -2036,7 +2035,7 @@ def _scgpt_get_expression_embeddings(
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_3d=cluster_embeddings,
+        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -2056,92 +2055,51 @@ def _scgpt_get_gene_embedding_by_cell_type(
     device: Optional[Union[torch.device, str]] = None,
     min_cluster_cells: Optional[int] = None,
 ) -> Tuple[torch.Tensor, List[str], Dict[str, str]]:
-    """Get the gene embeddings for each cell type in an AnnData object.
+    """Get layer-wise residual stream embeddings for each cell type.
 
-    Parameters
-    ----------
-    model : scprint.model.model.scPrint
-        The scPRINT model
-    adata : anndata.AnnData
-        The AnnData object containing the cells to embed
-    gene_annotations : List[str]
-        The common genes to use for the embeddings
-    vocab : GeneVocab
-        The vocabulary
-    device : Optional[Union[torch.device, str]]
-        The device to use for the embeddings
-    min_cluster_cells: Optional[int] = None,
-
-    Returns
-    -------
-    Tuple[torch.Tensor, Dict[str, str]]
-        Tuple of (cluster_embeddings, cell_cluster_dict)
-        - cluster_embeddings : torch.Tensor
-            The gene embeddings for each cell type
-        - selected_genes : List[str]
-            The selected genes (ensembl gene ids)
-        - cell_cluster_dict : Dict[str, str]
-            A dictionary mapping cell type indices to cell type names
+    Returns a 4D tensor (n_clusters, n_layers, n_genes, embed_dim) where
+    layer index L is the residual stream entering transformer block L.
     """
-
     device = ensure_device(device, allow_autoselect=True)
 
-    # 1. Get indices into model vocabulary
-    # Get common genes between model and data
-    common_genes_df = gene_annotations.query(
-        f"{ONTOLOGIES.ENSEMBL_GENE} in @adata.var_names"
-    ).assign(index=lambda x: x["vocab_name"].apply(lambda v: vocab[v]))
-    gene_indices = common_genes_df["index"].values
-
-    # 2. Track cell types to setup creating cell-type masks
-    # Use adata.obs here; adata_subset created below has same cells, subset of genes
+    # 1. Track cell types before preprocessing (obs is unchanged by HVG selection)
     cell_clusters, cell_cluster_dict = _get_cell_clusters_and_category_dict(
         adata.obs, min_cluster_cells=min_cluster_cells
     )
 
-    # filter to highly variable genes and bin expression values (as per the training data)
+    # 2. Preprocess: HVG selection, normalization, binning
     adata_subset, selected_genes, gene_indices = _scgpt_preprocess_dataset(
         adata, model, vocab, gene_annotations
     )
 
-    # static embeddings
-    d_gene_indices = gene_indices.to(device)
-    gene_embeddings = model.encoder(d_gene_indices)
-    del d_gene_indices
+    n_clusters = len(cell_clusters)
+    n_layers = len(model.transformer_encoder.layers)
+    n_genes = len(selected_genes)
 
-    # Allocate output
-    cluster_embeddings = torch.zeros(
-        len(cell_clusters),
-        len(selected_genes),
-        model.d_model,
-    )
+    # 4D output: (n_clusters, n_layers, n_genes, embed_dim)
+    cluster_embeddings = torch.zeros(n_clusters, n_layers, n_genes, model.d_model)
 
-    # 3. Embed each cell type
     model.eval()
-    with torch.no_grad():
-        for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-            cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
-            cluster_adata = adata_subset[cluster_mask]
+    for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
+        cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
+        cluster_adata = adata_subset[cluster_mask]
 
-            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+        logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
 
-            if model.input_emb_style == "continuous":
-                cluster_expr = torch.tensor(cluster_adata.X, dtype=torch.float32)
-            else:
-                cluster_expr = torch.tensor(cluster_adata.X)
+        if model.input_emb_style == "continuous":
+            cluster_expr = torch.tensor(cluster_adata.X, dtype=torch.float32)
+        else:
+            cluster_expr = torch.tensor(cluster_adata.X)
 
-            # Use batched processing
-            cluster_embeddings[i] = _embed_expression_batch(
-                model=model,
-                model_type=FOUNDATION_MODEL_NAMES.SCGPT,
-                expression=cluster_expr,
-                gene_emb=gene_embeddings,
-                gene_indices=gene_indices,
-                batch_size=64,
-                device=device,
-            )
+        # Returns (n_layers, n_genes, embed_dim)
+        cluster_embeddings[i] = _scgpt_capture_residual_streams_per_cluster(
+            model=model,
+            expression=cluster_expr,
+            gene_indices=gene_indices,
+            device=device,
+        )
 
-            logger.info(f"  ✓ Completed cluster {i}")
+        logger.info(f"  ✓ Completed cluster {i}")
 
     return cluster_embeddings, selected_genes, cell_cluster_dict
 
@@ -2664,7 +2622,9 @@ def _scprint_get_expression_embeddings(
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_3d=cluster_embeddings,
+        embeddings_4d=cluster_embeddings.unsqueeze(
+            1
+        ),  # (n_clusters, 1, n_genes, embed_dim),
         ordered_genes=common_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,

@@ -343,7 +343,9 @@ class GeneEmbeddings(BaseModel):
             ),
             model_name=self.model_name,
             model_variant=self.model_variant,
+            layer_idx=self.layer_idx,
             dataset_name=self.dataset_name,
+            dataset_uri=self.dataset_uri,
             category=self.category,
         )
 
@@ -3903,7 +3905,9 @@ def _align_gene_embeddings(
             ),
             model_name=emb.model_name,
             model_variant=emb.model_variant,
+            layer_idx=emb.layer_idx,
             dataset_name=emb.dataset_name,
+            dataset_uri=emb.dataset_uri,
             category=emb.category,
         )
         aligned.append(aligned_emb)
@@ -4581,6 +4585,7 @@ def _gene_embeddings_from_save_dict(
         gene_annotations=pd.DataFrame(ge_annotations),
         model_name=model_name,
         model_variant=model_variant,
+        layer_idx=metadata.get(FM_DEFS.LAYER_IDX),
         dataset_name=metadata.get(FM_DEFS.DATASET_NAME),
         dataset_uri=metadata.get(FM_DEFS.DATASET_URI),
         category=metadata.get(FM_DEFS.CATEGORY),
@@ -4609,6 +4614,7 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
         FM_DEFS.GENE_ANNOTATIONS: ge.gene_annotations.to_dict("records"),
         FM_DEFS.MODEL_NAME: ge.model_name,
         FM_DEFS.MODEL_VARIANT: ge.model_variant,
+        FM_DEFS.LAYER_IDX: ge.layer_idx,
         FM_DEFS.DATASET_NAME: ge.dataset_name,
         FM_DEFS.DATASET_URI: ge.dataset_uri,
         FM_DEFS.CATEGORY: ge.category,
