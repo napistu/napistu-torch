@@ -282,6 +282,7 @@ CELLXGENE_DEFS = SimpleNamespace(
 
 FM_DEFAULTS = SimpleNamespace(
     MIN_CLUSTER_CELLS=10,
+    CELLS_PER_CLUSTER=100,
 )
 
 EMBEDDING_METADATA_FIELDS = SimpleNamespace(
