@@ -1214,10 +1214,10 @@ def _expression_tensor_to_gene_embeddings_set(
                 gene_annotations=aligned_annotations.copy(),
                 model_name=model_name,
                 model_variant=model_variant,
+                layer_idx=layer_idx,
                 dataset_name=dataset_name,
                 dataset_uri=dataset_uri,
                 category=str(category_name),
-                layer_idx=layer_idx,
             )
             result.append(ge)
 
