@@ -1194,6 +1194,34 @@ def _make_layer_grid_dge(
     return DatasetGeneEmbeddings({"ds1": ges})
 
 
+def _make_all_layer_idx_none_dge(
+    *,
+    gene_ids: List[str],
+    n_embeddings: int = 2,
+    embed_dim: int = 8,
+    dataset_key: str = "ds1",
+) -> DatasetGeneEmbeddings:
+    """Legacy-style expression embeddings with no per-layer residual metadata."""
+    annotations = make_gene_annotations(gene_ids)
+    rng = np.random.default_rng(0)
+    mats: List[GeneEmbeddings] = []
+    for i in range(n_embeddings):
+        emb_mx = rng.standard_normal((len(gene_ids), embed_dim)).astype(np.float32)
+        mats.append(
+            GeneEmbeddings(
+                embedding=emb_mx,
+                ordered_gene_ids=list(gene_ids),
+                gene_annotations=annotations,
+                model_name="TestModel",
+                layer_idx=None,
+                dataset_name=dataset_key,
+                category=f"cluster_{i}",
+            )
+        )
+    ges = GeneEmbeddingsSet.from_gene_embeddings(mats)
+    return DatasetGeneEmbeddings({dataset_key: ges})
+
+
 def test_foundation_model_validate_dataset_gene_embeddings_passes_for_full_layer_grid():
     """Verification succeeds when every layer index 0..n_layers-1 appears across embeddings."""
     gene_ids = make_gene_ids(6)
@@ -1218,6 +1246,23 @@ def test_foundation_model_validate_dataset_gene_embeddings_fails_without_dataset
     report = fm.validate_dataset_gene_embeddings()
     assert not report["ok"]
     assert "dataset_gene_embeddings is None" in report["datasets"][0]["errors"][0]
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_fails_when_all_layer_idx_none():
+    """Legacy exports without layer_idx must fail (layer-wise residual stream required)."""
+    gene_ids = make_gene_ids(5)
+    dge = _make_all_layer_idx_none_dge(gene_ids=gene_ids, n_embeddings=3)
+    template = make_foundation_model(
+        n_genes=5,
+        embed_dim=8,
+        n_layers=12,
+        gene_ids=gene_ids,
+    )
+    fm = _clone_fm_with_dge(template, dge)
+    report = fm.validate_dataset_gene_embeddings(verbose=False)
+    assert not report["ok"]
+    errs = report["datasets"][0]["errors"]
+    assert any("layer_idx=None" in e and "residual" in e for e in errs)
 
 
 def test_foundation_model_validate_dataset_gene_embeddings_raise_on_fail():

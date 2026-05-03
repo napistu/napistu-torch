@@ -890,11 +890,11 @@ class GeneEmbeddingsSet:
             return errors, distinct_sorted
 
         if all(li is None for li in layer_vals):
-            if verbose:
-                logger.info(
-                    "  [%s] Skipping layer coverage checks (all layer_idx are None).",
-                    dataset_name,
-                )
+            errors.append(
+                "No layer-wise residual stream: all embeddings have layer_idx=None. "
+                "Per-layer exports must set layer_idx to an integer in "
+                f"range({expected_n_layers}) for each embedding tensor."
+            )
             return errors, distinct_sorted
 
         layers_seen = {li for li in layer_vals if li is not None}
@@ -1955,9 +1955,11 @@ class FoundationModel(BaseModel):
         When every embedding sets ``layer_idx``, checks that distinct indices match
         ``range(expected_n_layers)`` (default: ``self.n_layers``), that
         ``source_label`` contains ``layer_{idx}``, and that each matrix has
-        ``std > std_tol``. With ``verbose=True``, logs notebook-style summaries.
+        ``std > std_tol``. If **any** embedding omits ``layer_idx`` while others set it,
+        validation fails (mixed mode). If **all** omit ``layer_idx``, validation fails:
+        layer-wise residual exports are required.
 
-        If all embeddings omit ``layer_idx``, layer coverage checks are skipped.
+        With ``verbose=True``, logs notebook-style summaries.
 
         Parameters
         ----------
