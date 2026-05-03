@@ -491,6 +491,19 @@ class GeneEmbeddingsSet:
     items()
         Return (scoped_key, GeneEmbeddings) pairs.
 
+    Private Methods (expression validation)
+    ---------------------------------------
+    _log_expression_validation_detail(...)
+        Log detailed validation information.
+    _validate_expression_embeddings(...)
+        Bundle used by ``FoundationModel.validate_dataset_gene_embeddings``; calls layered helpers below.
+    _validate_expression_layers(...)
+        ``layer_idx`` coverage and ``source_label`` checks.
+    _validate_expression_spot_means(...)
+        Optional informational comparison of mean activation between two layers.
+    _validate_expression_variance(...)
+        Fail embeddings whose pooled standard deviation is at or below ``std_tol``.
+
     Examples
     --------
     >>> # Cross-model alignment — keys are model names
@@ -792,6 +805,174 @@ class GeneEmbeddingsSet:
         """Return (scoped_key, GeneEmbeddings) pairs."""
         return self.data.items()
 
+    def _log_expression_validation_detail(
+        self,
+        *,
+        dataset_name: str,
+        distinct_sorted: Optional[Tuple[int, ...]],
+    ) -> None:
+        logger.info("Dataset: %s", dataset_name)
+        logger.info("  n_embeddings: %s", self.n_embeddings)
+        logger.info("  n_common_genes: %s", self.n_common_genes)
+        logger.info("--- Per-embedding check ---")
+        for key, ge in self.items():
+            logger.info(
+                "  key=%r layer_idx=%s source_label=%r embedding.shape=%s",
+                key,
+                ge.layer_idx,
+                ge.source_label,
+                getattr(ge.embedding, "shape", None),
+            )
+        if distinct_sorted is not None:
+            logger.info("Unique layer_idx values: %s", list(distinct_sorted))
+
+    def _validate_expression_embeddings(
+        self,
+        *,
+        dataset_name: str,
+        expected_n_layers: int,
+        std_tol: float,
+        spot_check_layers: Optional[Tuple[int, int]],
+        verbose: bool,
+    ) -> Dict[str, Any]:
+        """Run layer, variance, and spot checks (used by ``FoundationModel.validate_dataset_gene_embeddings``)."""
+        layer_errors, distinct_sorted = self._validate_expression_layers(
+            dataset_name=dataset_name,
+            expected_n_layers=expected_n_layers,
+            verbose=verbose,
+        )
+        errors = list(layer_errors)
+        errors.extend(self._validate_expression_variance(std_tol=std_tol))
+
+        if verbose:
+            self._log_expression_validation_detail(
+                dataset_name=dataset_name,
+                distinct_sorted=distinct_sorted,
+            )
+
+        spot_note = self._validate_expression_spot_means(
+            expected_n_layers=expected_n_layers,
+            spot_check_layers=spot_check_layers,
+            errors=errors,
+            verbose=verbose,
+        )
+
+        if verbose and len(errors) == 0:
+            logger.info("✓ Validation passed for dataset %r", dataset_name)
+
+        return {
+            "dataset_name": dataset_name,
+            "ok": len(errors) == 0,
+            "errors": errors,
+            "n_embeddings": self.n_embeddings,
+            "n_common_genes": self.n_common_genes,
+            "distinct_layer_indices": distinct_sorted,
+            "spot_check_note": spot_note,
+        }
+
+    def _validate_expression_layers(
+        self,
+        *,
+        dataset_name: str,
+        expected_n_layers: int,
+        verbose: bool,
+    ) -> Tuple[List[str], Optional[Tuple[int, ...]]]:
+        """Check ``layer_idx`` coverage and ``source_label`` layer segments."""
+        errors: List[str] = []
+        distinct_sorted: Optional[Tuple[int, ...]] = None
+        layer_vals = [ge.layer_idx for ge in self.values()]
+        if any(li is None for li in layer_vals) and any(
+            li is not None for li in layer_vals
+        ):
+            errors.append(
+                "Mixed layer_idx: some embeddings set layer_idx and others leave it None."
+            )
+            return errors, distinct_sorted
+
+        if all(li is None for li in layer_vals):
+            if verbose:
+                logger.info(
+                    "  [%s] Skipping layer coverage checks (all layer_idx are None).",
+                    dataset_name,
+                )
+            return errors, distinct_sorted
+
+        layers_seen = {li for li in layer_vals if li is not None}
+        distinct_sorted = tuple(sorted(layers_seen))
+        expected = set(range(expected_n_layers))
+        if layers_seen != expected:
+            missing = sorted(expected - layers_seen)
+            extra = sorted(layers_seen - expected)
+            msg_parts = []
+            if missing:
+                msg_parts.append(f"missing layers {missing}")
+            if extra:
+                msg_parts.append(f"unexpected layers {extra}")
+            errors.append(
+                f"layer_idx coverage mismatch ({'; '.join(msg_parts)}); "
+                f"expected {{0..{expected_n_layers - 1}}}"
+            )
+
+        for key, ge in self.items():
+            if ge.layer_idx is None:
+                errors.append(
+                    f"embedding key={key!r}: layer_idx is None inside layered set"
+                )
+            elif f"layer_{ge.layer_idx}" not in ge.source_label:
+                errors.append(
+                    f"key={key!r}: source_label {ge.source_label!r} does not contain "
+                    f"'layer_{ge.layer_idx}'"
+                )
+        return errors, distinct_sorted
+
+    def _validate_expression_spot_means(
+        self,
+        *,
+        expected_n_layers: int,
+        spot_check_layers: Optional[Tuple[int, int]],
+        errors: List[str],
+        verbose: bool,
+    ) -> Optional[str]:
+        """Optional informational comparison of mean activation between two layers."""
+        resolved_spot = spot_check_layers
+        if resolved_spot is None and expected_n_layers > 1:
+            resolved_spot = (0, expected_n_layers - 1)
+
+        if resolved_spot is None or errors:
+            return None
+
+        li_a, li_b = resolved_spot
+        try:
+            key_a = next(k for k, ge in self.items() if ge.layer_idx == li_a)
+            key_b = next(k for k, ge in self.items() if ge.layer_idx == li_b)
+        except StopIteration:
+            note = f"spot-check skipped (no embeddings found for layers {li_a} and/or {li_b})"
+            if verbose:
+                logger.info("%s", note)
+            return note
+
+        mean_a = float(np.asarray(self[key_a].embedding).mean())
+        mean_b = float(np.asarray(self[key_b].embedding).mean())
+        note = (
+            f"Spot-check means — layer {li_a}: {mean_a:.4f}, "
+            f"layer {li_b}: {mean_b:.4f} "
+            f"(ordering depends on cell type)"
+        )
+        if verbose:
+            logger.info("%s", note)
+        return note
+
+    def _validate_expression_variance(self, *, std_tol: float) -> List[str]:
+        """Fail embeddings whose pooled standard deviation is at or below ``std_tol``."""
+        errors: List[str] = []
+        for key, ge in self.items():
+            std = float(np.asarray(ge.embedding).std())
+            if std <= std_tol:
+                errors.append(
+                    f"key={key!r}: embedding.std()={std} is not above std_tol ({std_tol!r})"
+                )
+        return errors
+
     # --- Dunder methods ---
 
     def __repr__(self) -> str:
@@ -840,6 +1021,13 @@ class DatasetGeneEmbeddings:
         Return (dataset_name, GeneEmbeddingsSet) pairs.
     all_gene_embeddings()
         Return a flat list of all GeneEmbeddings across all datasets.
+
+    Private Methods
+    ---------------
+    _validate_dataset_gene_embeddings_present(dge)
+        Classmethod: if ``dge`` is ``None``, return a synthetic validation failure row.
+    _validate_resolve_dataset_slice(dataset_name)
+        Resolve which ``(dataset_name, GeneEmbeddingsSet)`` pairs to validate.
 
     Examples
     --------
@@ -984,6 +1172,35 @@ class DatasetGeneEmbeddings:
     def items(self):
         """Return (dataset_name, GeneEmbeddingsSet) pairs."""
         return self._data.items()
+
+    # --- Private methods ---
+
+    @classmethod
+    def _validate_dataset_gene_embeddings_present(
+        cls,
+        dge: Optional["DatasetGeneEmbeddings"],
+    ) -> Optional[Dict[str, Any]]:
+        """If embeddings are missing, return a synthetic failure row; else ``None``."""
+        if dge is None:
+            return {
+                "dataset_name": "__missing__",
+                "ok": False,
+                "errors": ["dataset_gene_embeddings is None"],
+                "n_embeddings": 0,
+                "n_common_genes": 0,
+                "distinct_layer_indices": None,
+                "spot_check_note": None,
+            }
+        return None
+
+    def _validate_resolve_dataset_slice(
+        self,
+        dataset_name: Optional[str],
+    ) -> List[Tuple[str, GeneEmbeddingsSet]]:
+        """Resolve which (dataset_name, GeneEmbeddingsSet) pairs to validate."""
+        if dataset_name is not None:
+            return [(dataset_name, self[dataset_name])]
+        return list(self.items())
 
     # --- Dunder methods ---
 
@@ -1387,6 +1604,10 @@ class FoundationModel(BaseModel):
         Load foundation model from saved files (classmethod).
     save(output_dir, prefix)
         Save foundation model to files.
+    validate_dataset_gene_embeddings(...)
+        Post-load checks on dataset gene embeddings from ETL (layer coverage,
+        variance, labels). Distinct from :meth:`validate_dataset_gene_embeddings_field`,
+        which validates the field type at model construction.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
@@ -1483,49 +1704,6 @@ class FoundationModel(BaseModel):
             **metadata_dict,
         )
 
-    @field_validator(FM_DEFS.GENE_ANNOTATIONS)
-    def validate_gene_annotations(cls, v):
-        if not isinstance(v, pd.DataFrame):
-            raise ValueError("gene_annotations must be a pandas DataFrame")
-
-        required_columns = [FM_DEFS.VOCAB_NAME, ONTOLOGIES.ENSEMBL_GENE]
-        for col in required_columns:
-            if col not in v.columns:
-                raise ValueError(f"DataFrame missing required column: {col}")
-
-        return v
-
-    @field_validator(FM_DEFS.DATASET_GENE_EMBEDDINGS)
-    def validate_dataset_gene_embeddings(cls, v):
-        if v is not None and not isinstance(v, DatasetGeneEmbeddings):
-            raise ValueError(
-                "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
-                f"got {type(v)}"
-            )
-        return v
-
-    @field_validator(
-        FM_DEFS.N_GENES,
-        FM_DEFS.N_VOCAB,
-        FM_DEFS.EMBED_DIM,
-        FM_DEFS.N_LAYERS,
-        FM_DEFS.N_HEADS,
-    )
-    def validate_positive_integers(cls, v):
-        if not isinstance(v, int) or v <= 0:
-            raise ValueError(f"Value must be a positive integer, got: {v}")
-        return v
-
-    @field_validator(FM_DEFS.ORDERED_VOCABULARY)
-    def validate_ordered_vocabulary(cls, v):
-        if not isinstance(v, list):
-            raise ValueError("ordered_vocabulary must be a list")
-        if not all(isinstance(item, str) for item in v):
-            raise ValueError("ordered_vocabulary must contain only strings")
-        return v
-
-    # properties
-
     @property
     def disk_name(self) -> str:
         """Get a version of the model label which can be used for a filename."""
@@ -1535,8 +1713,6 @@ class FoundationModel(BaseModel):
     def full_name(self) -> str:
         """Get full unique identifier."""
         return _get_model_label(self.model_name, self.model_variant)
-
-    # methods
 
     @classmethod
     def load(
@@ -1757,6 +1933,135 @@ class FoundationModel(BaseModel):
             json.dump(combined_metadata, f, indent=2)
 
         logger.info("Successfully saved all results")
+
+    def validate_dataset_gene_embeddings(
+        self,
+        *,
+        dataset_name: Optional[str] = None,
+        expected_n_layers: Optional[int] = None,
+        std_tol: float = 0.0,
+        spot_check_layers: Optional[Tuple[int, int]] = None,
+        verbose: bool = False,
+        raise_on_fail: bool = False,
+    ) -> Dict[str, Any]:
+        """Validate dataset gene embeddings produced by ETL (layer exports).
+
+        Distinct from :meth:`validate_dataset_gene_embeddings_field`, which only
+        checks that ``dataset_gene_embeddings`` is ``None`` or a
+        ``DatasetGeneEmbeddings`` instance.
+
+        Delegates per dataset to ``GeneEmbeddingsSet._validate_expression_embeddings``.
+
+        When every embedding sets ``layer_idx``, checks that distinct indices match
+        ``range(expected_n_layers)`` (default: ``self.n_layers``), that
+        ``source_label`` contains ``layer_{idx}``, and that each matrix has
+        ``std > std_tol``. With ``verbose=True``, logs notebook-style summaries.
+
+        If all embeddings omit ``layer_idx``, layer coverage checks are skipped.
+
+        Parameters
+        ----------
+        dataset_name : str, optional
+            Single dataset to check. When ``None``, checks every dataset.
+        expected_n_layers : int, optional
+            Expected number of transformer layers (default: ``self.n_layers``).
+        std_tol : float
+            Minimum acceptable ``embedding.std()`` per embedding (default: ``0``).
+        spot_check_layers : tuple of int, optional
+            Layers ``(i, j)`` for an informational mean comparison. Default picks
+            ``(0, expected_n_layers - 1)`` when ``expected_n_layers > 1``.
+        verbose : bool
+            Log per-embedding details (default: ``False``).
+        raise_on_fail : bool
+            If True, raise ``ValueError`` when any check fails (default: ``False``).
+
+        Returns
+        -------
+        dict
+            ``{"ok": bool, "datasets": [ {...}, ... ]}`` where each dataset row has
+            ``dataset_name``, ``ok``, ``errors`` (list of str), counts,
+            ``distinct_layer_indices``, and ``spot_check_note``.
+
+        Raises
+        ------
+        KeyError
+            If ``dataset_name`` is not present.
+        ValueError
+            If ``raise_on_fail`` is True and a check fails.
+        """
+        exp_n = _validate_expected_layer_count(expected_n_layers, self.n_layers)
+
+        missing_row = DatasetGeneEmbeddings._validate_dataset_gene_embeddings_present(
+            self.dataset_gene_embeddings
+        )
+        if missing_row is not None:
+            out: Dict[str, Any] = {"ok": False, "datasets": [missing_row]}
+            if raise_on_fail:
+                _raise_validation_failures(out["datasets"])
+            return out
+
+        pairs = self.dataset_gene_embeddings._validate_resolve_dataset_slice(
+            dataset_name
+        )
+        datasets = [
+            ge_set._validate_expression_embeddings(
+                dataset_name=nm,
+                expected_n_layers=exp_n,
+                std_tol=std_tol,
+                spot_check_layers=spot_check_layers,
+                verbose=verbose,
+            )
+            for nm, ge_set in pairs
+        ]
+        result = {"ok": all(d["ok"] for d in datasets), "datasets": datasets}
+        if raise_on_fail and not result["ok"]:
+            _raise_validation_failures(datasets)
+        return result
+
+    # pydantic validation
+
+    @field_validator(FM_DEFS.DATASET_GENE_EMBEDDINGS)
+    def validate_dataset_gene_embeddings_field(cls, v):
+        if v is not None and not isinstance(v, DatasetGeneEmbeddings):
+            raise ValueError(
+                "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
+                f"got {type(v)}"
+            )
+        return v
+
+    @field_validator(FM_DEFS.GENE_ANNOTATIONS)
+    def validate_gene_annotations(cls, v):
+        if not isinstance(v, pd.DataFrame):
+            raise ValueError("gene_annotations must be a pandas DataFrame")
+
+        required_columns = [FM_DEFS.VOCAB_NAME, ONTOLOGIES.ENSEMBL_GENE]
+        for col in required_columns:
+            if col not in v.columns:
+                raise ValueError(f"DataFrame missing required column: {col}")
+
+        return v
+
+    @field_validator(FM_DEFS.ORDERED_VOCABULARY)
+    def validate_ordered_vocabulary(cls, v):
+        if not isinstance(v, list):
+            raise ValueError("ordered_vocabulary must be a list")
+        if not all(isinstance(item, str) for item in v):
+            raise ValueError("ordered_vocabulary must contain only strings")
+        return v
+
+    @field_validator(
+        FM_DEFS.N_GENES,
+        FM_DEFS.N_VOCAB,
+        FM_DEFS.EMBED_DIM,
+        FM_DEFS.N_LAYERS,
+        FM_DEFS.N_HEADS,
+    )
+    def validate_positive_integers(cls, v):
+        if not isinstance(v, int) or v <= 0:
+            raise ValueError(f"Value must be a positive integer, got: {v}")
+        return v
+
+    # dunder methods
 
     def __repr__(self) -> str:
         """String representation of the FoundationModel instance."""
@@ -4758,3 +5063,25 @@ def _load_results(
         static_gene_embedding_metadata,
         dataset_gene_embeddings_metadata,
     )
+
+
+def _raise_validation_failures(dataset_reports: List[Dict[str, Any]]) -> None:
+    """Raise ``ValueError`` summarizing failed dataset validation rows."""
+    parts: List[str] = []
+    for row in dataset_reports:
+        ds_nm = row["dataset_name"]
+        for err in row["errors"]:
+            parts.append(f"[{ds_nm}] {err}")
+    raise ValueError("Validation failed:\n" + "\n".join(parts))
+
+
+def _validate_expected_layer_count(
+    expected_n_layers: Optional[int], fallback: int
+) -> int:
+    """Resolve and sanity-check the transformer depth used for layer coverage."""
+    exp_n = fallback if expected_n_layers is None else expected_n_layers
+    if not isinstance(exp_n, int) or exp_n <= 0:
+        raise ValueError(
+            f"expected_n_layers must be a positive int, got {expected_n_layers!r}"
+        )
+    return exp_n

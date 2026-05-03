@@ -1134,3 +1134,178 @@ def test_scoping_with_layer_idx():
 
     assert len(set(scoped.values())) == 3
     assert constant == "scGPT / ds1 / adipocyte"
+
+
+def _metadata_dict_from_model(fm: FoundationModel) -> dict:
+    """Rebuild metadata dict for cloning a FoundationModel in tests."""
+    return {
+        FM_DEFS.MODEL_NAME: fm.model_name,
+        FM_DEFS.MODEL_VARIANT: fm.model_variant,
+        FM_DEFS.N_GENES: fm.n_genes,
+        FM_DEFS.N_VOCAB: fm.n_vocab,
+        FM_DEFS.ORDERED_VOCABULARY: fm.ordered_vocabulary,
+        FM_DEFS.EMBED_DIM: fm.embed_dim,
+        FM_DEFS.N_LAYERS: fm.n_layers,
+        FM_DEFS.N_HEADS: fm.n_heads,
+    }
+
+
+def _clone_fm_with_dge(
+    fm: FoundationModel, dge: DatasetGeneEmbeddings
+) -> FoundationModel:
+    return FoundationModel(
+        weights=fm.weights,
+        gene_annotations=fm.gene_annotations,
+        model_metadata=_metadata_dict_from_model(fm),
+        dataset_gene_embeddings=dge,
+    )
+
+
+def _make_layer_grid_dge(
+    *,
+    n_layers: int,
+    n_categories: int,
+    gene_ids: List[str],
+    embed_dim: int = 8,
+    layers_per_emb: Optional[List[int]] = None,
+) -> DatasetGeneEmbeddings:
+    """Expression embeddings: each category repeats one matrix per listed layer."""
+    annotations = make_gene_annotations(gene_ids)
+    rng = np.random.default_rng(42)
+    mats: List[GeneEmbeddings] = []
+    layers_cycle = (
+        layers_per_emb if layers_per_emb is not None else list(range(n_layers))
+    )
+    for ci in range(n_categories):
+        for layer in layers_cycle:
+            emb_mx = rng.standard_normal((len(gene_ids), embed_dim)).astype(np.float32)
+            mats.append(
+                GeneEmbeddings(
+                    embedding=emb_mx,
+                    ordered_gene_ids=list(gene_ids),
+                    gene_annotations=annotations,
+                    model_name="TestModel",
+                    layer_idx=layer,
+                    dataset_name="ds1",
+                    category=f"cluster_{ci}",
+                )
+            )
+    ges = GeneEmbeddingsSet.from_gene_embeddings(mats)
+    return DatasetGeneEmbeddings({"ds1": ges})
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_passes_for_full_layer_grid():
+    """Verification succeeds when every layer index 0..n_layers-1 appears across embeddings."""
+    gene_ids = make_gene_ids(6)
+    dge = _make_layer_grid_dge(n_layers=3, n_categories=2, gene_ids=gene_ids)
+    template = make_foundation_model(
+        n_genes=6,
+        embed_dim=8,
+        n_layers=3,
+        gene_ids=gene_ids,
+    )
+    fm = _clone_fm_with_dge(template, dge)
+    report = fm.validate_dataset_gene_embeddings(verbose=False)
+    assert report["ok"]
+    assert len(report["datasets"]) == 1
+    assert report["datasets"][0]["distinct_layer_indices"] == (0, 1, 2)
+    assert report["datasets"][0]["spot_check_note"] is not None
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_fails_without_dataset_embeddings():
+    """Verification reports failure when dataset_gene_embeddings was never attached."""
+    fm = make_foundation_model()
+    report = fm.validate_dataset_gene_embeddings()
+    assert not report["ok"]
+    assert "dataset_gene_embeddings is None" in report["datasets"][0]["errors"][0]
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_raise_on_fail():
+    """raise_on_fail surfaces dataset embedding absence."""
+    fm = make_foundation_model()
+    with pytest.raises(ValueError, match="Validation failed"):
+        fm.validate_dataset_gene_embeddings(raise_on_fail=True)
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_missing_layer_indices():
+    """Verification fails when union of layer_idx omits a layer."""
+    gene_ids = make_gene_ids(5)
+    dge = _make_layer_grid_dge(
+        n_layers=3,
+        n_categories=2,
+        gene_ids=gene_ids,
+        layers_per_emb=[0, 2],
+    )
+    template = make_foundation_model(
+        n_genes=5,
+        embed_dim=8,
+        n_layers=3,
+        gene_ids=gene_ids,
+    )
+    fm = _clone_fm_with_dge(template, dge)
+    report = fm.validate_dataset_gene_embeddings(verbose=False)
+    assert not report["ok"]
+    assert any("missing layers [1]" in err for err in report["datasets"][0]["errors"])
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_detects_zero_variance_embedding():
+    """Verification fails when an embedding matrix is constant (std == 0)."""
+    gene_ids = make_gene_ids(4)
+    annotations = make_gene_annotations(gene_ids)
+    zero_mat = np.zeros((4, 8), dtype=np.float32)
+    mats = [
+        GeneEmbeddings(
+            embedding=zero_mat,
+            ordered_gene_ids=list(gene_ids),
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=0,
+            dataset_name="ds1",
+            category="c0",
+        ),
+        GeneEmbeddings(
+            embedding=np.ones((4, 8), dtype=np.float32),
+            ordered_gene_ids=list(gene_ids),
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=1,
+            dataset_name="ds1",
+            category="c0",
+        ),
+        GeneEmbeddings(
+            embedding=np.ones((4, 8), dtype=np.float32) * 2,
+            ordered_gene_ids=list(gene_ids),
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=2,
+            dataset_name="ds1",
+            category="c0",
+        ),
+    ]
+    ges = GeneEmbeddingsSet.from_gene_embeddings(mats)
+    dge = DatasetGeneEmbeddings({"ds1": ges})
+    template = make_foundation_model(
+        n_genes=4,
+        embed_dim=8,
+        n_layers=3,
+        gene_ids=gene_ids,
+    )
+    fm = _clone_fm_with_dge(template, dge)
+    report = fm.validate_dataset_gene_embeddings(verbose=False)
+    assert not report["ok"]
+    assert any("embedding.std()" in err for err in report["datasets"][0]["errors"])
+
+
+def test_foundation_model_validate_dataset_gene_embeddings_unknown_dataset_key_raises():
+    """validate_dataset_gene_embeddings(dataset_name=...) raises KeyError for missing dataset."""
+    gene_ids = make_gene_ids(4)
+    dge = _make_layer_grid_dge(n_layers=2, n_categories=1, gene_ids=gene_ids)
+    template = make_foundation_model(
+        n_genes=4,
+        embed_dim=8,
+        n_layers=2,
+        gene_ids=gene_ids,
+    )
+    fm = _clone_fm_with_dge(template, dge)
+    with pytest.raises(KeyError):
+        fm.validate_dataset_gene_embeddings(dataset_name="missing_dataset")
