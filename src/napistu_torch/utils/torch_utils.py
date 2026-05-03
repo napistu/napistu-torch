@@ -18,6 +18,7 @@ select_device(mps_valid=True)
 """
 
 import gc
+import logging
 from contextlib import contextmanager
 from typing import Optional, Union
 
@@ -25,6 +26,8 @@ from torch import backends, cuda, mps
 from torch import device as torch_device
 
 from napistu_torch.ml.constants import DEVICE
+
+logger = logging.getLogger(__name__)
 
 
 def cleanup_tensors(*tensors) -> None:
@@ -135,6 +138,36 @@ def ensure_device(
         raise ValueError(
             f"Invalid device: {device} value, must be a string or torch.device"
         )
+
+
+def log_memory_usage(
+    label: str, device: Optional[Union[str, torch_device]] = None
+) -> None:
+    """
+    Log the memory usage of the device.
+
+    Parameters
+    ----------
+    label : str
+        The label to log the memory usage for
+    device : Optional[Union[str, torch_device]]
+        The device to log the memory usage for
+    """
+    device = ensure_device(device, allow_autoselect=True)
+    if device.type == DEVICE.MPS:
+        allocated = mps.current_allocated_memory() / 1e9
+        driver = mps.driver_allocated_memory() / 1e9
+        logger.info(
+            f"[MPS memory] {label}: allocated={allocated:.2f}GB, driver={driver:.2f}GB"
+        )
+    elif device.type == DEVICE.GPU:
+        allocated = cuda.current_allocated_memory() / 1e9
+        driver = cuda.driver_allocated_memory() / 1e9
+        logger.info(
+            f"[CUDA memory] {label}: allocated={allocated:.2f}GB, driver={driver:.2f}GB"
+        )
+    else:
+        logger.info(f"[CPU memory] {label}: allocated=0.00GB, driver=0.00GB")
 
 
 @contextmanager

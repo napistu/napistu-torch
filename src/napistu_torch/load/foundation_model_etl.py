@@ -133,6 +133,8 @@ def process_aidocell(
     output_dir: str,
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> None:
     """Process a given AIDOCell model class and save the results.
 
@@ -143,6 +145,12 @@ def process_aidocell(
         If string, uses AIDOCELL_CLASSES to look up the backbone.
     output_dir : str
         Output directory to save the results
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster for expression embedding. ``None``
+        uses all cells. Default from FM_DEFAULTS.CELLS_PER_CLUSTER.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
@@ -185,6 +193,8 @@ def process_aidocell(
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
 
     dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
@@ -210,6 +220,8 @@ def process_scfoundation(
     cache_dir: Optional[str] = None,
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> None:
     """Process scFoundation checkpoint and save to disk.
 
@@ -228,6 +240,13 @@ def process_scfoundation(
     min_cluster_cells : int, optional
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. Default from FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per cluster for expression embedding. If ``None``, use all
+        cells in each cluster. Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE (conservative
+        for GPU memory).
 
     Returns
     -------
@@ -307,6 +326,8 @@ def process_scfoundation(
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
 
     dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
@@ -335,6 +356,8 @@ def process_scgpt(
     annotations_path: Optional[str] = None,
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT,
 ) -> None:
     """Process the scGPT model and save the results to the output directory.
 
@@ -351,6 +374,12 @@ def process_scgpt(
     min_cluster_cells : int, optional
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. Default from FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per cluster for expression embedding. ``None`` (default) uses all
+        cells.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT.
 
     Returns
     -------
@@ -410,6 +439,8 @@ def process_scgpt(
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
 
     dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
@@ -434,6 +465,7 @@ def process_scprint(
     model_path: Optional[str] = None,
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
 ) -> None:
     """Process a given scPRINT model version and save the results to the output directory.
 
@@ -450,6 +482,9 @@ def process_scprint(
     min_cluster_cells : int, optional
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. Default from FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per cluster for expression embedding. ``None`` uses all
+        cells. Default from FM_DEFAULTS.CELLS_PER_CLUSTER.
 
     Returns
     -------
@@ -491,6 +526,7 @@ def process_scprint(
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
         )
 
     dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
@@ -506,6 +542,86 @@ def process_scprint(
     )
 
     return None
+
+
+@require_modelgenerator
+def _aidocell_capture_residual_streams_per_cluster(
+    model: Any,
+    expression: torch.Tensor,
+    gene_positions: torch.Tensor,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Capture layer-wise residual streams for a cluster of cells, averaged across cells.
+
+    Uses output_hidden_states=True on the CellFoundation encoder, which natively
+    collects hidden states before each layer. No hooks needed.
+
+    Pre-layer numbering: index L is the activation entering block L.
+    The encoder returns n_layers+1 hidden states; the first n_layers are the
+    residual streams; the last (post-final-norm) is skipped.
+
+    Parameters
+    ----------
+    model : Any
+        Loaded AIDOCell model in eval mode with flash attention swapped out.
+    expression : torch.Tensor
+        Raw count expression matrix (n_cells, n_genes) as float tensor.
+    gene_positions : torch.Tensor
+        Gene position indices into the model vocabulary, shape (n_genes,).
+    batch_size : int, optional
+        Cells per forward pass (default: FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE).
+    device : torch.device, optional
+        Device for computation (default: auto-select).
+
+    Returns
+    -------
+    torch.Tensor
+        Residual streams of shape (n_layers, n_genes, embed_dim), averaged
+        across cells. Index L is the activation entering block L.
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    t_expression = expression.to(device)
+    t_gene_positions = gene_positions.to(device)
+    t_model = model.to(device)
+
+    n_cells, n_genes = t_expression.shape
+    n_layers = t_model.get_num_layer()
+    embed_dim = t_model.get_embedding_size()
+
+    residual_sums = torch.zeros(
+        (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
+    )
+
+    with memory_manager(device), torch.no_grad():
+        for start in range(0, n_cells, batch_size):
+            batch_expr = t_expression[start : start + batch_size]
+            bsz = batch_expr.shape[0]
+
+            attention_mask = torch.ones(bsz, n_genes, dtype=torch.long, device=device)
+            position_ids = t_gene_positions.unsqueeze(0).expand(bsz, -1)
+
+            outputs = t_model.encoder(
+                input_ids=batch_expr.float(),
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                output_hidden_states=True,
+                return_dict=True,
+            )
+
+            # hidden_states: tuple of n_layers+1 tensors, each (batch, n_genes, embed_dim)
+            # First n_layers are pre-layer residual streams; last is post-final-norm (skip)
+            for layer_idx in range(n_layers):
+                residual_sums[layer_idx] += outputs.hidden_states[layer_idx].sum(dim=0)
+
+            del batch_expr, attention_mask, position_ids, outputs
+            empty_cache(device)
+
+    residual_means = (residual_sums / n_cells).cpu()
+    del residual_sums, t_expression, t_gene_positions
+
+    return residual_means
 
 
 @require_modelgenerator
@@ -668,6 +784,8 @@ def _aidocell_get_expression_embeddings(
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: int = None,
+    cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> GeneEmbeddingsSet:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -686,6 +804,10 @@ def _aidocell_get_expression_embeddings(
     min_cluster_cells : int, optional
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. If None, then all clusters are included.
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
 
     Returns
     -------
@@ -695,14 +817,17 @@ def _aidocell_get_expression_embeddings(
 
     cluster_embeddings, selected_genes, cell_cluster_dict = (
         _aidocell_get_gene_embedding_by_cell_type(
-            model, adata, gene_annotations, min_cluster_cells=min_cluster_cells
+            model,
+            adata,
+            gene_annotations,
+            min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings.unsqueeze(
-            1
-        ),  # (n_clusters, 1, n_genes, embed_dim)
+        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -719,6 +844,8 @@ def _aidocell_get_gene_embedding_by_cell_type(
     adata: AnnData,
     gene_annotations: pd.DataFrame,
     min_cluster_cells: Optional[int] = None,
+    cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> Tuple[torch.Tensor, List[str], Dict[int, str]]:
     """Get the gene embeddings for each cell type in an AnnData object.
 
@@ -733,6 +860,10 @@ def _aidocell_get_gene_embedding_by_cell_type(
     min_cluster_cells : int, optional
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. If None, then all clusters are included.
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
 
     Returns
     -------
@@ -756,10 +887,9 @@ def _aidocell_get_gene_embedding_by_cell_type(
     annotations_name_to_index = annotations_w_index.set_index(ONTOLOGIES.ENSEMBL_GENE)[
         "position"
     ].to_dict()
-
-    with torch.no_grad():
-        gene_positions = [annotations_name_to_index[g] for g in selected_genes]
-        pos_embedding = model.encoder.position_embedding(torch.tensor(gene_positions))
+    gene_positions = torch.tensor(
+        [annotations_name_to_index[g] for g in selected_genes], dtype=torch.long
+    )
 
     # 3. Track cell types to setup creating cell-type masks
     cell_clusters, cell_cluster_dict = _get_cell_clusters_and_category_dict(
@@ -767,8 +897,12 @@ def _aidocell_get_gene_embedding_by_cell_type(
     )
 
     # Allocate output
+    n_layers = model.get_num_layer()
+
+    # 4D output: (n_clusters, n_layers, n_genes, embed_dim)
     cluster_embeddings = torch.zeros(
         len(cell_clusters),
+        n_layers,
         len(selected_genes),
         model.get_embedding_size(),
     )
@@ -776,23 +910,18 @@ def _aidocell_get_gene_embedding_by_cell_type(
     # 4. Embed each cell type
     with torch.no_grad():
         for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-            cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
-            cluster_adata = adata_subset[cluster_mask]
+            cluster_adata = _leiden_cluster_masked_adata(
+                adata_subset, cluster, cells_per_cluster, cluster_idx=i
+            )
 
-            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+            cluster_expr = _cluster_adata_X_to_torch_expression(cluster_adata)
 
-            if issparse(cluster_adata.X):
-                cluster_expr = torch.from_numpy(cluster_adata.X.toarray())
-            else:
-                cluster_expr = torch.from_numpy(cluster_adata.X)
-
-            # Use batched processing
-            cluster_embeddings[i] = _embed_expression_batch(
+            # Returns (n_layers, n_genes, embed_dim)
+            cluster_embeddings[i] = _aidocell_capture_residual_streams_per_cluster(
                 model=model,
-                model_type=FOUNDATION_MODEL_NAMES.AIDOCELL,
                 expression=cluster_expr,
-                gene_emb=pos_embedding,  # Position embeddings serve as "static" gene identity
-                batch_size=64,
+                gene_positions=gene_positions,
+                batch_size=batch_size,
             )
 
             logger.info(f"  ✓ Completed cluster {i}")
@@ -854,6 +983,30 @@ def _aidocell_load_model(model_class: Any) -> Any:
         legacy_adapter_type=None, default_config=None, from_scratch=False
     )
     model.eval()
+
+    if not torch.cuda.is_available():
+        from modelgenerator.huggingface_models.cellfoundation.modeling_cellfoundation import (
+            BertSelfFlashAttention,
+            CellFoundationSelfAttention,
+        )
+
+        config = model.encoder.config
+        n_swapped = 0
+        for layer in model.encoder.encoder.layer:
+            if isinstance(layer.attention.self, BertSelfFlashAttention):
+                old = layer.attention.self
+                new = CellFoundationSelfAttention(config)
+                new.load_state_dict(old.state_dict())
+                new.eval()
+                layer.attention.self = new
+                n_swapped += 1
+
+        if n_swapped > 0:
+            logger.info(
+                f"Swapped {n_swapped} flash attention layers to standard attention "
+                f"(flash_attn requires CUDA, not available on this device)"
+            )
+
     return model
 
 
@@ -921,6 +1074,25 @@ def _aidocell_preprocess_dataset(
     adata_subset = adata_subset[:, selected_genes]
 
     return adata_subset, selected_genes
+
+
+def _cluster_adata_X_to_torch_expression(
+    cluster_adata: AnnData,
+    *,
+    scgpt_input_emb_style: Optional[str] = None,
+) -> torch.Tensor:
+    """Convert ``cluster_adata.X`` to a dense expression tensor.
+
+    Uses sparse-aware ``torch.from_numpy`` for AIDOCell/scFoundation-style matrices and
+    ``torch.tensor`` for scGPT (matches prior per-model behavior).
+    """
+    if scgpt_input_emb_style is not None:
+        if scgpt_input_emb_style == "continuous":
+            return torch.tensor(cluster_adata.X, dtype=torch.float32)
+        return torch.tensor(cluster_adata.X)
+    if issparse(cluster_adata.X):
+        return torch.from_numpy(cluster_adata.X.toarray())
+    return torch.from_numpy(cluster_adata.X)
 
 
 def _create_and_save_foundation_model(
@@ -1367,6 +1539,176 @@ def _get_cell_clusters_and_category_dict(
     return cell_clusters, cell_cluster_dict
 
 
+def _leiden_cluster_masked_adata(
+    adata: AnnData,
+    cluster,
+    cells_per_cluster: Optional[int],
+    *,
+    cluster_idx: int,
+    random_state: Optional[int] = None,
+) -> AnnData:
+    """Slice ``adata`` to one ``leiden_scVI`` cluster and apply ``cells_per_cluster`` cap.
+
+    Parameters
+    ----------
+    cluster_idx : int
+        Index of this cluster in the embedding loop (for logging only).
+
+    Returns
+    -------
+    AnnData
+        Observations in ``cluster``, optionally subsampled.
+    """
+    cluster_mask = adata.obs[CELLXGENE_DEFS.LEIDEN_SCVI] == cluster
+    n_before = int(cluster_mask.sum())
+    cluster_adata = _limit_cluster_adata_cells(
+        adata[cluster_mask],
+        cells_per_cluster,
+        random_state=random_state,
+    )
+    logger.info(
+        f"Cluster {cluster_idx}: {n_before} cells -> {cluster_adata.n_obs} cells"
+    )
+    return cluster_adata
+
+
+def _limit_cluster_adata_cells(
+    cluster_adata: AnnData,
+    max_cells: Optional[int],
+    *,
+    random_state: Optional[int] = None,
+) -> AnnData:
+    """Subsample ``cluster_adata`` when a per-cluster cap is set and the cluster is larger.
+
+    If ``max_cells`` is ``None``, or the cluster has at most ``max_cells`` observations,
+    returns ``cluster_adata`` unchanged. Otherwise returns a random subset of size
+    ``max_cells`` (copy).
+
+    Parameters
+    ----------
+    cluster_adata : AnnData
+        Slice of an AnnData object containing one leiden cluster.
+    max_cells : int, optional
+        Maximum observations to keep. ``None`` keeps all cells in the slice.
+    random_state : int, optional
+        RNG seed for subsampling.
+
+    Returns
+    -------
+    AnnData
+        Unchanged slice or a copied subset.
+    """
+    if max_cells is None:
+        return cluster_adata
+    if max_cells <= 0:
+        raise ValueError("max_cells must be positive when not None")
+    n_obs = cluster_adata.n_obs
+    if n_obs <= max_cells:
+        return cluster_adata
+    rng = np.random.default_rng(random_state)
+    positions = np.sort(rng.choice(n_obs, size=max_cells, replace=False))
+    obs_names = cluster_adata.obs_names[positions]
+    return cluster_adata[obs_names].copy()
+
+
+@require_modelgenerator
+def _scfoundation_capture_residual_streams_per_cluster(
+    model: "MaeAutobin",
+    expression: torch.Tensor,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Capture layer-wise residual streams for a cluster of cells, averaged across cells.
+
+    Uses pre-layer numbering: residual stream at layer L is the activation
+    entering block L. For a 12-block scFoundation, returns 12 residual streams
+    indexed 0 through 11.
+
+    Parameters
+    ----------
+    model : MaeAutobin
+        Loaded scFoundation model in eval mode.
+    expression : torch.Tensor
+        Expression matrix (n_cells, n_genes), normalized, on CPU or device.
+    batch_size : int, optional
+        Cells per forward pass (default: FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE).
+    device : torch.device, optional
+        Device for computation (default: auto-select).
+
+    Returns
+    -------
+    torch.Tensor
+        Residual streams of shape (n_layers, n_genes, embed_dim), averaged
+        across cells.
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    t_expression = expression.to(device)
+    t_model = model.to(device)
+
+    n_cells, n_genes = t_expression.shape
+    transformer = t_model.encoder.transformer_encoder
+    n_layers = len(transformer)
+    embed_dim = transformer[0].self_attn.embed_dim
+
+    residual_sums = torch.zeros(
+        (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
+    )
+
+    def make_pre_hook(layer_idx, sums):
+        def hook(module, inputs):
+            sums[layer_idx] += inputs[0].sum(dim=0)
+
+        return hook
+
+    def make_forward_hook(layer_idx, sums):
+        def hook(module, inputs, output):
+            # TransformerEncoderLayer returns a single tensor
+            sums[layer_idx] += output.sum(dim=0)
+
+        return hook
+
+    handles = []
+    handles.append(
+        transformer[0].register_forward_pre_hook(make_pre_hook(0, residual_sums))
+    )
+    for i in range(n_layers - 1):
+        handles.append(
+            transformer[i].register_forward_hook(
+                make_forward_hook(i + 1, residual_sums)
+            )
+        )
+
+    try:
+        with memory_manager(device), torch.no_grad():
+            for start in range(0, n_cells, batch_size):
+                batch_expr = t_expression[start : start + batch_size]
+                bsz = batch_expr.shape[0]
+
+                # token_emb: (bsz, n_genes, embed_dim)
+                batch_input = batch_expr.unsqueeze(-1).float()
+                x = t_model.token_emb(batch_input, output_weight=0)
+
+                # padding_mask: all False (no padding)
+                padding_mask = torch.zeros(
+                    bsz, n_genes, dtype=torch.bool, device=device
+                )
+
+                # hooks fire during encoder.forward
+                t_model.encoder(x, padding_mask)
+
+                del x, padding_mask
+                empty_cache(device)
+    finally:
+        for h in handles:
+            h.remove()
+
+    residual_means = (residual_sums / n_cells).cpu()
+    del residual_sums, t_expression
+
+    return residual_means
+
+
 @require_modelgenerator
 def _scfoundation_extract_attention_weights(
     model: "MaeAutobin",
@@ -1533,6 +1875,8 @@ def _scfoundation_get_expression_embeddings(
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> GeneEmbeddingsSet:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -1550,6 +1894,14 @@ def _scfoundation_get_expression_embeddings(
         The name of the dataset
     dataset_uri : Optional[str] = None
         The URI of the dataset
+    min_cluster_cells : int, optional
+        Minimum number of cells per cluster to include. Clusters smaller than this
+        are excluded. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells. Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
@@ -1559,14 +1911,17 @@ def _scfoundation_get_expression_embeddings(
 
     cluster_embeddings, selected_genes, cell_cluster_dict = (
         _scfoundation_get_gene_embedding_by_cell_type(
-            model, adata, gene_annotations, min_cluster_cells=min_cluster_cells
+            model,
+            adata,
+            gene_annotations,
+            min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings.unsqueeze(
-            1
-        ),  # (n_clusters, 1, n_genes, embed_dim)
+        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -1582,7 +1937,9 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     model: MaeAutobin,
     adata: AnnData,
     gene_annotations: pd.DataFrame,
-    min_cluster_cells: Optional[int] = None,
+    min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> Tuple[torch.Tensor, List[str], Dict[int, str]]:
     """Get the gene embeddings for each cell type in an AnnData object.
 
@@ -1596,7 +1953,13 @@ def _scfoundation_get_gene_embedding_by_cell_type(
         The common genes to use for the embeddings
     min_cluster_cells : Optional[int], optional
         Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. If None, then all clusters are included.
+        are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
+        Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
@@ -1633,8 +1996,11 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     )
 
     # Allocate output
+    n_layers = len(model.encoder.transformer_encoder)
+
     cluster_embeddings = torch.zeros(
         len(cell_clusters),
+        n_layers,
         len(selected_genes),
         pos_embedding.shape[1],
     )
@@ -1642,23 +2008,17 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     # 4. Embed each cell type
     with torch.no_grad():
         for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-            cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
-            cluster_adata = adata_subset[cluster_mask]
+            cluster_adata = _leiden_cluster_masked_adata(
+                adata_subset, cluster, cells_per_cluster, cluster_idx=i
+            )
 
-            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
-
-            if issparse(cluster_adata.X):
-                cluster_expr = torch.from_numpy(cluster_adata.X.toarray())
-            else:
-                cluster_expr = torch.from_numpy(cluster_adata.X)
+            cluster_expr = _cluster_adata_X_to_torch_expression(cluster_adata)
 
             # Use batched processing
-            cluster_embeddings[i] = _embed_expression_batch(
+            cluster_embeddings[i] = _scfoundation_capture_residual_streams_per_cluster(
                 model=model,
-                model_type=FOUNDATION_MODEL_NAMES.SCFOUNDATION,
                 expression=cluster_expr,
-                gene_emb=pos_embedding,  # Position embeddings serve as "static" gene identity
-                batch_size=64,
+                batch_size=batch_size,
             )
 
             logger.info(f"  ✓ Completed cluster {i}")
@@ -1712,7 +2072,7 @@ def _scgpt_capture_residual_streams_per_cluster(
     model: "TransformerModel",
     expression: torch.Tensor,
     gene_indices: torch.Tensor,
-    batch_size: int = 64,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT,
     device: Optional[torch.device] = None,
     verbose: bool = False,
 ) -> torch.Tensor:
@@ -1736,7 +2096,7 @@ def _scgpt_capture_residual_streams_per_cluster(
     gene_indices : torch.Tensor
         Gene vocabulary indices, shape (n_genes,).
     batch_size : int, optional
-        Cells per forward pass (default: 64).
+        Cells per forward pass (default: FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT).
     device : torch.device, optional
         Device for computation (default: auto-select).
     verbose : bool, optional
@@ -2003,7 +2363,9 @@ def _scgpt_get_expression_embeddings(
     vocab: GeneVocab,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
-    min_cluster_cells: Optional[int] = None,
+    min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT,
 ) -> GeneEmbeddingsSet:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -2021,6 +2383,14 @@ def _scgpt_get_expression_embeddings(
         The name of the dataset
     dataset_uri : Optional[str] = None
         The URI of the dataset
+    min_cluster_cells : int, optional
+        Minimum number of cells per cluster to include. Clusters smaller than this
+        are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` (default) uses all cells.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT.
 
     Returns
     -------
@@ -2030,7 +2400,13 @@ def _scgpt_get_expression_embeddings(
 
     cluster_embeddings, selected_genes, cell_cluster_dict = (
         _scgpt_get_gene_embedding_by_cell_type(
-            model, adata, gene_annotations, vocab, min_cluster_cells=min_cluster_cells
+            model,
+            adata,
+            gene_annotations,
+            vocab,
+            min_cluster_cells=min_cluster_cells,
+            cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
     )
 
@@ -2053,12 +2429,15 @@ def _scgpt_get_gene_embedding_by_cell_type(
     gene_annotations: pd.DataFrame,
     vocab: GeneVocab,
     device: Optional[Union[torch.device, str]] = None,
-    min_cluster_cells: Optional[int] = None,
+    min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT,
 ) -> Tuple[torch.Tensor, List[str], Dict[str, str]]:
     """Get layer-wise residual stream embeddings for each cell type.
 
     Returns a 4D tensor (n_clusters, n_layers, n_genes, embed_dim) where
     layer index L is the residual stream entering transformer block L.
+    ``batch_size`` controls cells per forward pass in residual capture.
     """
     device = ensure_device(device, allow_autoselect=True)
 
@@ -2081,21 +2460,20 @@ def _scgpt_get_gene_embedding_by_cell_type(
 
     model.eval()
     for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-        cluster_mask = adata_subset.obs["leiden_scVI"] == cluster
-        cluster_adata = adata_subset[cluster_mask]
+        cluster_adata = _leiden_cluster_masked_adata(
+            adata_subset, cluster, cells_per_cluster, cluster_idx=i
+        )
 
-        logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
-
-        if model.input_emb_style == "continuous":
-            cluster_expr = torch.tensor(cluster_adata.X, dtype=torch.float32)
-        else:
-            cluster_expr = torch.tensor(cluster_adata.X)
+        cluster_expr = _cluster_adata_X_to_torch_expression(
+            cluster_adata, scgpt_input_emb_style=model.input_emb_style
+        )
 
         # Returns (n_layers, n_genes, embed_dim)
         cluster_embeddings[i] = _scgpt_capture_residual_streams_per_cluster(
             model=model,
             expression=cluster_expr,
             gene_indices=gene_indices,
+            batch_size=batch_size,
             device=device,
         )
 
@@ -2588,7 +2966,8 @@ def _scprint_get_expression_embeddings(
     gene_annotations: pd.DataFrame,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
-    min_cluster_cells: Optional[int] = None,
+    min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
+    cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
 ) -> Tuple[torch.Tensor, Dict[str, str], List[str]]:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -2606,7 +2985,9 @@ def _scprint_get_expression_embeddings(
         The URI of the dataset
     min_cluster_cells: Optional[int] = None
         Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. If None, then all clusters are included.
+        are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells. Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
 
     Returns
     -------
@@ -2618,7 +2999,11 @@ def _scprint_get_expression_embeddings(
     common_genes = [g for g in model_genes if g in adata.var_names]
 
     cluster_embeddings, cell_cluster_dict = _scprint_get_gene_embedding_by_cell_type(
-        model, adata, common_genes, min_cluster_cells=min_cluster_cells
+        model,
+        adata,
+        common_genes,
+        min_cluster_cells=min_cluster_cells,
+        cells_per_cluster=cells_per_cluster,
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
@@ -2641,6 +3026,7 @@ def _scprint_get_gene_embedding_by_cell_type(
     adata: AnnData,
     common_genes: List[str],
     min_cluster_cells: Optional[int] = None,
+    cells_per_cluster: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Dict[str, str]]:
     """Get the gene embeddings for each cell type in an AnnData object.
 
@@ -2653,6 +3039,8 @@ def _scprint_get_gene_embedding_by_cell_type(
     min_cluster_cells: Optional[int] = None,
         Minimum number of cells per cluster to include. Clusters smaller than this
         are excluded. If None, then all clusters are included.
+    cells_per_cluster : int, optional
+        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
 
     Returns
     -------
@@ -2684,10 +3072,9 @@ def _scprint_get_gene_embedding_by_cell_type(
     # 3. Embed each cell type
     with torch.no_grad():
         for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-            cluster_mask = adata.obs["leiden_scVI"] == cluster
-            cluster_adata = adata[cluster_mask]
-
-            logger.info(f"Cluster {i}: {cluster_adata.shape[0]} cells")
+            cluster_adata = _leiden_cluster_masked_adata(
+                adata, cluster, cells_per_cluster, cluster_idx=i
+            )
 
             cluster_expr = _scprint_normalize_expression(cluster_adata, common_genes)
 

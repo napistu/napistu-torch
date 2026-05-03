@@ -282,6 +282,12 @@ CELLXGENE_DEFS = SimpleNamespace(
 
 FM_DEFAULTS = SimpleNamespace(
     MIN_CLUSTER_CELLS=10,
+    CELLS_PER_CLUSTER=100,
+    # Residual-stream capture defaults differ by model family:
+    # Memory-heavy encoders (AIDOCell, scFoundation, similar): one cell per forward pass.
+    RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE=1,
+    # scGPT residual capture default.
+    RESIDUAL_STREAM_BATCH_SIZE_SCGPT=64,
 )
 
 EMBEDDING_METADATA_FIELDS = SimpleNamespace(
