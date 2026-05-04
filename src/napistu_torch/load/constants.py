@@ -368,11 +368,11 @@ SCFOUNDATION_DEFS = SimpleNamespace(
 )
 
 # scPRINT constants
-SCPRINT_CHECKPOINTS = SimpleNamespace(
-    SMALL="small-v1.ckpt",
-    MEDIUM="medium-v1.5.ckpt",
-    LARGE="large-v1.ckpt",
-)
+SCPRINT_CHECKPOINTS = {
+    SCPRINT_VERSIONS.SMALL: "small-v1.ckpt",
+    SCPRINT_VERSIONS.MEDIUM: "medium-v1.5.ckpt",
+    SCPRINT_VERSIONS.LARGE: "large-v1.ckpt",
+}
 
 SCPRINT_DEFS = SimpleNamespace(
     MODEL_NAME=FOUNDATION_MODEL_NAMES.SCPRINT,
