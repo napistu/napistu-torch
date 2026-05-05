@@ -466,13 +466,15 @@ def process_scprint(
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> None:
     """Process a given scPRINT model version and save the results to the output directory.
 
     Parameters
     ----------
     version_key : str
-        scPRINT version key (e.g., "SMALL", "MEDIUM", "LARGE")
+        scPRINT variant: canonical id (``small``, ``medium``, ``large``) or
+        uppercase names matching ``SCPRINT_VERSIONS`` (e.g. ``SMALL``).
     output_dir : str
         Output directory to save the results
     model_path : str, optional
@@ -485,23 +487,25 @@ def process_scprint(
     cells_per_cluster : int, optional
         Maximum cells sampled per cluster for expression embedding. ``None`` uses all
         cells. Default from FM_DEFAULTS.CELLS_PER_CLUSTER.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
     None
     """
 
-    # Get version ID and checkpoint filename from the version key
-    version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
-    file_prefix = f"{SCPRINT_DEFS.MODEL_NAME}_{version_id}"
+    variant_id = _scprint_resolve_variant_id(version_key)
+    file_prefix = f"{SCPRINT_DEFS.MODEL_NAME}_{variant_id}"
 
     # 1. Download and load model
-    logger.info(f"Extracting: scPRINT {version_id} ({version_key})")
-    checkpoint_file = _scprint_get_checkpoint(version_key, model_path)
+    logger.info(f"Extracting: scPRINT {variant_id} (requested {version_key!r})")
+    checkpoint_file = _scprint_get_checkpoint(variant_id, model_path)
 
     logger.info("Loading scPRINT model")
     model, gene_annotations, model_metadata = _scprint_load_model(
-        checkpoint_file, version=version_id
+        checkpoint_file, version=variant_id
     )
     logger.info(
         f"   {len(gene_annotations)} genes, {model_metadata[FM_DEFS.N_LAYERS]} layers"
@@ -527,6 +531,7 @@ def process_scprint(
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
+            batch_size=batch_size,
         )
 
     dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
@@ -2813,6 +2818,109 @@ def _scgpt_remap_checkpoint_keys(checkpoint: dict) -> dict:
 
 
 @require_scprint
+def _scprint_capture_residual_streams_per_cluster(
+    model: "scPrint",
+    expression: torch.Tensor,
+    gene_pos: torch.Tensor,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    device: Optional[torch.device] = None,
+) -> torch.Tensor:
+    """Capture layer-wise residual streams for a cluster of cells, averaged across cells.
+
+    Uses pre-hooks on each transformer block to capture the hidden_states tensor
+    entering each block. In scPRINT's prenorm architecture this is LayerNorm(residual),
+    which is what each block's attention reads from.
+
+    Cell embedding tokens are stripped using the actual prepended token count, which
+    may differ from model.cell_embs_count when depth_atinput or use_metacell_token
+    reduces the number of class encoder tokens.
+
+    Pre-layer numbering: index L is the activation entering block L.
+
+    Parameters
+    ----------
+    model : scPrint
+        Loaded scPRINT model in eval mode.
+    expression : torch.Tensor
+        Normalized expression matrix (n_cells, n_genes).
+    gene_pos : torch.Tensor
+        Gene position indices into the model vocabulary, shape (n_genes,).
+    batch_size : int, optional
+        Cells per forward pass (default:
+        FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE).
+    device : torch.device, optional
+        Device for computation (default: auto-select).
+
+    Returns
+    -------
+    torch.Tensor
+        Residual streams of shape (n_layers, n_genes, embed_dim), averaged
+        across cells. Index L is the activation entering block L.
+    """
+    device = ensure_device(device, allow_autoselect=True)
+
+    t_expression = expression.to(device)
+    t_gene_pos = gene_pos.to(device)
+    t_model = model.to(device)
+
+    n_cells, n_genes = t_expression.shape
+    n_layers = t_model.nlayers
+    embed_dim = t_model.d_model
+
+    # Actual number of cell embedding tokens prepended by _encoder.
+    # cell_embs_count is the nominal count but depth_atinput and use_metacell_token
+    # each subtract one from the class_encoder call, so the true prepended count
+    # may be smaller. Using the wrong offset would silently drop or include gene tokens.
+    actual_cell_tokens = (
+        t_model.cell_embs_count
+        - (1 if t_model.depth_atinput else 0)
+        - (1 if t_model.use_metacell_token else 0)
+    )
+
+    residual_sums = torch.zeros(
+        (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
+    )
+
+    def make_pre_hook(layer_idx, sums):
+        def hook(module, inputs):
+            # inputs[0]: (batch, actual_cell_tokens + n_genes, embed_dim)
+            # strip cell embedding tokens, keep gene tokens only
+            gene_hidden = inputs[0][:, actual_cell_tokens:, :]
+            sums[layer_idx] += gene_hidden.sum(dim=0)
+
+        return hook
+
+    handles = []
+    for i, block in enumerate(t_model.transformer.blocks):
+        handles.append(block.register_forward_pre_hook(make_pre_hook(i, residual_sums)))
+
+    try:
+        with memory_manager(device), torch.no_grad():
+            for start in range(0, n_cells, batch_size):
+                batch_expr = t_expression[start : start + batch_size]
+                bsz = batch_expr.shape[0]
+
+                batch_gene_pos = t_gene_pos.unsqueeze(0).expand(bsz, -1)
+
+                # _encoder returns (batch, actual_cell_tokens + n_genes, embed_dim)
+                encoding = t_model._encoder(batch_gene_pos, batch_expr)
+
+                # hooks fire during transformer forward
+                t_model.transformer(encoding)
+
+                del batch_expr, batch_gene_pos, encoding
+                empty_cache(device)
+    finally:
+        for h in handles:
+            h.remove()
+
+    residual_means = (residual_sums / n_cells).cpu()
+    del residual_sums, t_expression, t_gene_pos
+
+    return residual_means
+
+
+@require_scprint
 def _scprint_extract_attention_weights(model: scPrint) -> List[AttentionLayer]:
     """Extract attention weights (Q, K, V, O) from all layers.
 
@@ -2930,15 +3038,16 @@ def _scprint_format_metadata(model: scPrint, version: Optional[str] = None) -> D
 
 
 @require_scprint
-def _scprint_get_checkpoint(version_key: str, model_path: str) -> str:
-    """Get the checkpoint file for a given version key.
+def _scprint_get_checkpoint(variant_id: str, model_path: str) -> str:
+    """Download or resolve the Hugging Face checkpoint path for a scPRINT variant.
 
     Parameters
     ----------
-    version_key : str
-        Version key
+    variant_id : str
+        Canonical variant id (``small``, ``medium``, ``large``) or equivalent
+        accepted by :func:`_scprint_resolve_variant_id`.
     model_path : str
-        Model path
+        Hugging Face cache directory.
 
     Returns
     -------
@@ -2947,12 +3056,12 @@ def _scprint_get_checkpoint(version_key: str, model_path: str) -> str:
     """
     from huggingface_hub import hf_hub_download
 
-    # Get version ID and checkpoint filename from the version key
-    version_id = getattr(SCPRINT_DEFS.VERSIONS, version_key)
-    checkpoint_filename = getattr(SCPRINT_DEFS.CHECKPOINTS, version_key)
+    cid = _scprint_resolve_variant_id(variant_id)
+    checkpoint_filename = SCPRINT_DEFS.CHECKPOINTS[cid]
 
     logger.info(
-        f"\n1. Loading {version_id} ({version_key}) model from {checkpoint_filename} and downloading if needed..."
+        f"\n1. Loading {cid} ({variant_id!r}) model from {checkpoint_filename} "
+        "and downloading if needed..."
     )
     return hf_hub_download(
         repo_id=SCPRINT_DEFS.REPO_ID, filename=checkpoint_filename, cache_dir=model_path
@@ -2968,6 +3077,7 @@ def _scprint_get_expression_embeddings(
     dataset_uri: Optional[str] = None,
     min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> Tuple[torch.Tensor, Dict[str, str], List[str]]:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
@@ -2988,6 +3098,9 @@ def _scprint_get_expression_embeddings(
         are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
     cells_per_cluster : int, optional
         Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells. Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
@@ -3004,12 +3117,11 @@ def _scprint_get_expression_embeddings(
         common_genes,
         min_cluster_cells=min_cluster_cells,
         cells_per_cluster=cells_per_cluster,
+        batch_size=batch_size,
     )
 
     expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings.unsqueeze(
-            1
-        ),  # (n_clusters, 1, n_genes, embed_dim),
+        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim),
         ordered_genes=common_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
@@ -3027,6 +3139,7 @@ def _scprint_get_gene_embedding_by_cell_type(
     common_genes: List[str],
     min_cluster_cells: Optional[int] = None,
     cells_per_cluster: Optional[int] = None,
+    batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> Tuple[torch.Tensor, Dict[str, str]]:
     """Get the gene embeddings for each cell type in an AnnData object.
 
@@ -3041,6 +3154,9 @@ def _scprint_get_gene_embedding_by_cell_type(
         are excluded. If None, then all clusters are included.
     cells_per_cluster : int, optional
         Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
+    batch_size : int, optional
+        Cells per forward pass when capturing residual streams per cluster.
+        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
@@ -3052,24 +3168,27 @@ def _scprint_get_gene_embedding_by_cell_type(
             A dictionary mapping cell type indices to cell type names
     """
 
-    # 1. Get indices into model vocabulary
+    # 1. Gene position indices into model vocabulary
     gene_indices = [model.genes.index(g) for g in common_genes]
-    gene_emb_full = model.gene_encoder.embeddings.weight.data  # (44756, 256)
-    gene_emb = gene_emb_full[gene_indices]  # (n_common, 256)
+    gene_pos = torch.tensor(gene_indices, dtype=torch.long)
 
-    # 2. Track cell types to setup creating cell-type masks
+    # 2. Cell clusters
     cell_clusters, cell_cluster_dict = _get_cell_clusters_and_category_dict(
         adata.obs, min_cluster_cells=min_cluster_cells
     )
 
-    # Allocate output
+    n_layers = model.nlayers
+    n_genes = len(common_genes)
+
+    # 4D output: (n_clusters, n_layers, n_genes, embed_dim)
     cluster_embeddings = torch.zeros(
         len(cell_clusters),
-        len(common_genes),
+        n_layers,
+        n_genes,
         model.d_model,
     )
 
-    # 3. Embed each cell type
+    # 3. Embed each cluster
     with torch.no_grad():
         for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
             cluster_adata = _leiden_cluster_masked_adata(
@@ -3078,13 +3197,12 @@ def _scprint_get_gene_embedding_by_cell_type(
 
             cluster_expr = _scprint_normalize_expression(cluster_adata, common_genes)
 
-            # Use batched processing
-            cluster_embeddings[i] = _embed_expression_batch(
-                model,
-                FOUNDATION_MODEL_NAMES.SCPRINT,
-                cluster_expr,
-                gene_emb,
-                batch_size=64,
+            # Returns (n_layers, n_genes, embed_dim)
+            cluster_embeddings[i] = _scprint_capture_residual_streams_per_cluster(
+                model=model,
+                expression=cluster_expr,
+                gene_pos=gene_pos,
+                batch_size=batch_size,
             )
 
             logger.info(f"  ✓ Completed cluster {i}")
@@ -3234,6 +3352,27 @@ def _scprint_normalize_expression(
 
     # 3. Normalize (sum method)
     return expression / expression.sum(1, keepdim=True)  # Per-cell normalization
+
+
+def _scprint_resolve_variant_id(version_key: str) -> str:
+    """Map ``SMALL`` / ``small`` → key in ``SCPRINT_DEFS.CHECKPOINTS``.
+
+    Notebooks typically iterate ``SCPRINT_VERSIONS_LIST`` (``small``, …).
+    """
+    vk = version_key.strip()
+    checkpoints = SCPRINT_DEFS.CHECKPOINTS
+    upper = vk.upper()
+    if hasattr(SCPRINT_DEFS.VERSIONS, upper):
+        cid = getattr(SCPRINT_DEFS.VERSIONS, upper)
+        if cid in checkpoints:
+            return cid
+    lowered = vk.lower()
+    if lowered in checkpoints:
+        return lowered
+    raise ValueError(
+        f"Unknown scPRINT version {version_key!r}. "
+        f"Expected one of {sorted(checkpoints)!r} or SMALL/MEDIUM/LARGE."
+    )
 
 
 def _split_qkv_weights(
