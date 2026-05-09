@@ -7,6 +7,13 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from foundation_model_factories import (
+    _clone_fm_with_dge,
+    _make_layer_grid_dge,
+    make_attended_embeddings,
+    make_foundation_model,
+    make_foundation_models,
+)
 from napistu import consensus, indices
 from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
@@ -42,14 +49,6 @@ from napistu_torch.load.napistu_graphs import (
     napistu_graph_to_napistu_data,
 )
 from napistu_torch.load.stratification import create_composite_edge_strata
-
-from .foundation_model_factories import (
-    _clone_fm_with_dge,
-    _make_layer_grid_dge,
-    make_attended_embeddings,
-    make_foundation_model,
-    make_foundation_models,
-)
 
 # Suppress napistu logging during tests to reduce noise
 logging.getLogger("napistu").setLevel(logging.ERROR)

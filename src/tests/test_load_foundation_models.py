@@ -3,6 +3,18 @@
 import numpy as np
 import pandas as pd
 import pytest
+from foundation_model_factories import (
+    SCOPING_TEST_GENES,
+    _clone_fm_with_dge,
+    _make_all_layer_idx_none_dge,
+    _make_gene_annotations,
+    _make_gene_emb,
+    _make_layer_grid_dge,
+    make_foundation_model,
+    make_foundation_model_pair,
+    make_gene_annotations,
+    make_gene_ids,
+)
 from napistu.ontologies.constants import ONTOLOGIES
 
 from napistu_torch.load.constants import FM_DEFS
@@ -15,19 +27,6 @@ from napistu_torch.load.foundation_models import (
     _compute_scoped_keys,
     _get_model_label,
     _group_embeddings_by_model_and_category,
-)
-
-from .foundation_model_factories import (
-    SCOPING_TEST_GENES,
-    _clone_fm_with_dge,
-    _make_all_layer_idx_none_dge,
-    _make_gene_annotations,
-    _make_gene_emb,
-    _make_layer_grid_dge,
-    make_foundation_model,
-    make_foundation_model_pair,
-    make_gene_annotations,
-    make_gene_ids,
 )
 
 # ---------------------------------------------------------------------------
