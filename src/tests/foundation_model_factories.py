@@ -8,7 +8,6 @@ from napistu.ontologies.constants import ONTOLOGIES
 
 from napistu_torch.load.constants import FM_DEFS
 from napistu_torch.load.foundation_models import (
-    AttendedEmbeddings,
     AttendedEmbeddingsSet,
     AttentionLayer,
     DatasetGeneEmbeddings,
@@ -17,6 +16,7 @@ from napistu_torch.load.foundation_models import (
     FoundationModelWeights,
     GeneEmbeddings,
     GeneEmbeddingsSet,
+    LayerwiseAttentionInputs,
     ModelMetadata,
 )
 
@@ -94,9 +94,9 @@ def _make_layer_grid_dge(
     n_layers: int,
     n_categories: int,
     gene_ids: List[str],
+    model_name: str,
     embed_dim: int = 8,
     layers_per_emb: Optional[List[int]] = None,
-    model_name: str = "TestModel",
     model_variant: Optional[str] = None,
     dataset_name: str = "ds1",
     gene_annotations: Optional[pd.DataFrame] = None,
@@ -347,7 +347,7 @@ def make_foundation_models(
 
 
 # ---------------------------------------------------------------------------
-# AttendedEmbeddings factories  (depend on FoundationModel factories)
+# LayerwiseAttentionInputs factories  (depend on FoundationModel factories)
 # ---------------------------------------------------------------------------
 
 
@@ -360,7 +360,7 @@ def make_attended_embeddings(
     category: str = "cluster_0",
     dataset_name: str = "ds1",
     seed: int = 42,
-) -> AttendedEmbeddings:
+) -> LayerwiseAttentionInputs:
     gene_ids = make_gene_ids(n_genes)
     model = make_foundation_model(
         n_genes=n_genes,
@@ -384,7 +384,7 @@ def make_attended_embeddings(
     residual_map = {
         ge.layer_idx: ge for ge in ge_set.values() if ge.category == category
     }
-    return AttendedEmbeddings(
+    return LayerwiseAttentionInputs(
         residual_stream_embeddings=residual_map,
         foundation_model=model,
     )

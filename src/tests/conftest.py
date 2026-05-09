@@ -409,9 +409,6 @@ def foundation_models_with_dge(foundation_models):
     return FoundationModels(models=models_with_dge)
 
 
-# --- AttendedEmbeddings fixtures ---
-
-
 @pytest.fixture
 def attended_embeddings():
     return make_attended_embeddings(n_genes=10, n_layers=2)

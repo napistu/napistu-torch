@@ -213,7 +213,9 @@ def test_scoping_varying_layer():
 
 def test_validate_dge_passes_full_layer_grid():
     gene_ids = make_gene_ids(6)
-    dge = _make_layer_grid_dge(n_layers=3, n_categories=2, gene_ids=gene_ids)
+    dge = _make_layer_grid_dge(
+        n_layers=3, n_categories=2, gene_ids=gene_ids, model_name="TestModel"
+    )
     fm = _clone_fm_with_dge(
         make_foundation_model(n_genes=6, embed_dim=8, n_layers=3, gene_ids=gene_ids),
         dge,
@@ -248,7 +250,11 @@ def test_validate_dge_fails_all_layer_idx_none():
 def test_validate_dge_fails_missing_layer():
     gene_ids = make_gene_ids(5)
     dge = _make_layer_grid_dge(
-        n_layers=3, n_categories=2, gene_ids=gene_ids, layers_per_emb=[0, 2]
+        n_layers=3,
+        n_categories=2,
+        gene_ids=gene_ids,
+        layers_per_emb=[0, 2],
+        model_name="TestModel",
     )
     fm = _clone_fm_with_dge(
         make_foundation_model(n_genes=5, embed_dim=8, n_layers=3, gene_ids=gene_ids),
@@ -261,7 +267,9 @@ def test_validate_dge_fails_missing_layer():
 
 def test_validate_dge_raises_on_missing_dataset_key():
     gene_ids = make_gene_ids(4)
-    dge = _make_layer_grid_dge(n_layers=2, n_categories=1, gene_ids=gene_ids)
+    dge = _make_layer_grid_dge(
+        n_layers=2, n_categories=1, gene_ids=gene_ids, model_name="TestModel"
+    )
     fm = _clone_fm_with_dge(
         make_foundation_model(n_genes=4, embed_dim=8, n_layers=2, gene_ids=gene_ids),
         dge,
@@ -271,7 +279,7 @@ def test_validate_dge_raises_on_missing_dataset_key():
 
 
 # ---------------------------------------------------------------------------
-# AttendedEmbeddings
+# LayerwiseAttentionInputs
 # ---------------------------------------------------------------------------
 
 

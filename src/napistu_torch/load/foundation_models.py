@@ -23,7 +23,9 @@ ModelMetadata
 FoundationModel
     Complete foundation model including weights, annotations, and metadata.
 FoundationModels
-    Container for multiple foundation models with cross-model analysis capabilities.
+    Container for one or more foundation models; supports cross-model analysis when len ≥ 2.
+LayerwiseAttentionInputs
+    Per-layer residual stream embeddings paired with a foundation model for attention.
 
 Class Relationships
 -------------------
@@ -40,7 +42,7 @@ FoundationModels
         ModelMetadata
 
 AttendedEmbeddingsSet
-    AttendedEmbeddings
+    LayerwiseAttentionInputs
         Dict[int, GeneEmbeddings] (per-layer residual stream embeddings)
         FoundationModels (the models containing the attention weights for these embeddings)
 """
@@ -2079,15 +2081,15 @@ class FoundationModel(BaseModel):
 
 
 class FoundationModels(BaseModel):
-    """Container for multiple foundation models with cross-model analysis capabilities.
+    """Container for one or more foundation models with cross-model analysis when applicable.
 
-    This class manages multiple FoundationModel instances and provides methods for
-    cross-model comparisons and alignment operations.
+    This class manages ``FoundationModel`` instances and provides methods for
+    comparisons and alignment operations across models (when multiple are present).
 
     Attributes
     ----------
     models : List[FoundationModel]
-        List of foundation model instances (minimum 2 required)
+        Non-empty list of foundation model instances
 
     Properties
     ----------
@@ -2121,8 +2123,8 @@ class FoundationModels(BaseModel):
     def validate_models_list(cls, v):
         if not isinstance(v, list):
             raise ValueError("models must be a list")
-        if len(v) < 2:
-            raise ValueError("At least 2 models are required for cross-model analysis")
+        if len(v) < 1:
+            raise ValueError("models must contain at least one FoundationModel")
         if not all(isinstance(model, FoundationModel) for model in v):
             raise ValueError("All elements must be FoundationModel instances")
         return v
@@ -2417,7 +2419,7 @@ class FoundationModels(BaseModel):
         return f"FoundationModels(models=[{model_full_names_str}])"
 
 
-class AttendedEmbeddings:
+class LayerwiseAttentionInputs:
     """Per-layer residual stream embeddings paired with a model's attention machinery.
 
     Maps each transformer layer index to a :class:`GeneEmbeddings` for that
@@ -2452,7 +2454,7 @@ class AttendedEmbeddings:
 
     Examples
     --------
-    >>> ae = AttendedEmbeddings(residual_stream_embeddings=per_layer, foundation_model=model)
+    >>> ae = LayerwiseAttentionInputs(residual_stream_embeddings=per_layer, foundation_model=model)
     >>> attn = ae.compute_attention(layer_idx=0)
     >>> consensus = ae.compute_consensus_attention()
     """
@@ -2994,7 +2996,7 @@ class AttendedEmbeddings:
     def __repr__(self) -> str:
         layers = sorted(self.residual_stream_embeddings.keys())
         return (
-            f"AttendedEmbeddings("
+            f"LayerwiseAttentionInputs("
             f"model={self.model_name}, "
             f"layers={layers}, "
             f"n_genes={self.n_genes}, "
@@ -3004,60 +3006,65 @@ class AttendedEmbeddings:
 
 
 class AttendedEmbeddingsSet:
-    """Aligned gene embeddings paired with attention machinery for cross-embedding analysis.
+    """Per-layer residual stream embeddings paired with attention machinery for cross-model analysis.
 
-    Bundles a GeneEmbeddingsSet (aligned embeddings from one or more models/datasets)
-    with references to the FoundationModel instances that produced them. This enables
-    computing attention patterns from any embedding using its model's attention weights,
-    and comparing those patterns across embeddings.
+    Takes a :class:`GeneEmbeddingsSet` whose entries are residual-stream
+    :class:`GeneEmbeddings` (one matrix per transformer layer, per model and category),
+    aligned to common genes. Constructor arguments are validated against a
+    :class:`FoundationModels` container; each group is wrapped as a
+    :class:`LayerwiseAttentionInputs` (per-layer dict plus that group's
+    :class:`FoundationModel` for attention weights).
 
-    The key insight is that attention computation requires:
-    1. An embedding matrix (from GeneEmbeddings — could be static or expression-contextualized)
-    2. Attention weight matrices (W_q, W_k, W_v, W_o from AttentionLayer)
-    3. n_heads (from the model metadata)
+    Attention computation needs:
+    1. Residual stream embeddings per layer (here, as ``GeneEmbeddings`` in ``embeddings_set``)
+    2. Attention weight matrices (W_q, W_k, W_v, W_o from :class:`AttentionLayer`)
+    3. ``n_heads`` (from model metadata)
 
-    Items 2 and 3 are always model-level properties, while item 1 varies per embedding.
-    This class manages the mapping from each embedding to its corresponding model.
+    Attention weights and head counts (items 2 and 3) are fixed per foundation model;
+    the per-layer residual streams (item 1) vary by context (e.g. expression category).
+    This class groups per-layer residual streams into ``(model, category)`` units and
+    exposes them keyed by ``"{full_name}/{category}"``.
 
     Parameters
     ----------
     embeddings_set : GeneEmbeddingsSet
-        Aligned gene embeddings. All embeddings must share the same common genes
-        in the same row order.
+        Aligned residual-stream embeddings. All entries must share the same common genes
+        in the same row order; layer indices and model metadata must allow grouping
+        by model and category.
     foundation_models : FoundationModels
-        Container of FoundationModel instances. Each embedding in embeddings_set
-        must map to exactly one model (via model_name + model_variant -> full_name).
+        Container of :class:`FoundationModel` instances. Each embedding in ``embeddings_set``
+        must map to exactly one model (via ``model_name`` + ``model_variant`` → ``full_name``).
 
     Attributes
     ----------
     embeddings_set : GeneEmbeddingsSet
-        The aligned embeddings.
-    foundation_models : FoundationModels
-        The source foundation models (held by reference).
-    common_gene_ids : List[str]
-        Gene IDs shared across all embeddings (delegates to embeddings_set).
-    embedding_to_model_map : Dict[str, str]
-        Mapping from embedding key (source_label) to model full_name.
+        The aligned per-layer embeddings backing this set.
+    attended_embeddings : Dict[str, LayerwiseAttentionInputs]
+        One :class:`LayerwiseAttentionInputs` per ``(model, category)`` group, keyed by
+        ``"{full_name}/{category}"``.
 
     Properties
     ----------
     n_embeddings : int
-        Number of embeddings in the set.
+        Number of ``(model × category)`` groups (length of ``attended_embeddings``),
+        not the count of individual layer tensors.
     n_common_genes : int
-        Number of common genes.
+        Number of common genes (delegates to ``embeddings_set``).
+    common_gene_ids : List[str]
+        Gene IDs shared across all embeddings (delegates to ``embeddings_set``).
     embedding_keys : List[str]
-        Labels for each embedding.
+        Keys for each group (same as ``attended_embeddings`` keys).
     model_names : List[str]
-        Unique model names referenced by embeddings.
+        Unique model names referenced by groups (order preserved).
 
     Public Methods
     --------------
     from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
-        Create AttendedEmbeddings from expression-contextualized embeddings.
+        Build expression-contextualized per-layer residual streams for a single category.
     get_consensus_attention(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
-        Compute consensus attention across all layers for each embedding.
+        Compute consensus attention across all layers for each ``(model × category)`` group.
     get_consensus_top_attentions(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
-        Extract top-k consensus attention edges across embeddings.
+        Extract top-k consensus attention edges across groups.
     get_specific_attentions(edges: pd.DataFrame, target_ids: Optional[List[str]] = None, apply_softmax: bool = False, compute_ranks: bool = False, by_absolute_value: bool = True, verbose: bool = False) -> pd.DataFrame:
         Extract specific attention edges across layers.
     get_top_attentions(k: int, layer_indices: Optional[List[int]] = None, target_ids: Optional[List[str]] = None, apply_softmax: bool = False, by_absolute_value: bool = True, compute_ranks: bool = False, ignore_self_attention: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> pd.DataFrame:
@@ -3065,12 +3072,12 @@ class AttendedEmbeddingsSet:
 
     Examples
     --------
-    >>> # From expression-contextualized embeddings
+    >>> # One (model × category) group per model from expression residual streams
     >>> attended = AttendedEmbeddingsSet.from_expression(
     ...     foundation_models, dataset_name="efthymiou2025", category="adipocyte (0)"
     ... )
 
-    >>> # From a pre-built GeneEmbeddingsSet
+    >>> # From a pre-built GeneEmbeddingsSet (per-layer residual streams already aligned)
     >>> attended = AttendedEmbeddingsSet(embeddings_set, foundation_models)
     """
 
@@ -3122,19 +3129,19 @@ class AttendedEmbeddingsSet:
             if len(model.weights.attention_layers) == 0:
                 raise ValueError(
                     f"Model '{model_name}' has no attention layers. "
-                    f"AttendedEmbeddings requires models with attention weights."
+                    f"LayerwiseAttentionInputs requires models with attention weights."
                 )
 
-        # Build AttendedEmbeddings instances
+        # Build LayerwiseAttentionInputs instances
         groups = _group_embeddings_by_model_and_category(
             embeddings_set, embedding_to_model
         )
 
-        attended: Dict[str, AttendedEmbeddings] = {}
+        attended: Dict[str, LayerwiseAttentionInputs] = {}
         for group_key, layer_embeddings in groups.items():
             full_name, category = group_key
             model = foundation_models.get_model(full_name)
-            attended[f"{full_name}/{category}"] = AttendedEmbeddings(
+            attended[f"{full_name}/{category}"] = LayerwiseAttentionInputs(
                 residual_stream_embeddings=layer_embeddings,
                 foundation_model=model,
             )
@@ -3149,7 +3156,7 @@ class AttendedEmbeddingsSet:
 
     @property
     def n_embeddings(self) -> int:
-        """Number of embeddings."""
+        """Number of (model × category) groups in ``attended_embeddings`` (not per-layer count)."""
         return len(self.attended_embeddings)
 
     @property
@@ -3159,12 +3166,12 @@ class AttendedEmbeddingsSet:
 
     @property
     def embedding_keys(self) -> List[str]:
-        """Labels for each embedding (scoped keys)."""
+        """Keys for each ``(model × category)`` group (``attended_embeddings`` keys)."""
         return list(self.attended_embeddings.keys())
 
     @property
     def model_names(self) -> List[str]:
-        """Unique model names referenced by embeddings (preserves order)."""
+        """Unique model names referenced by groups (preserves order)."""
         seen = set()
         result = []
         for ae in self.attended_embeddings.values():
@@ -3336,16 +3343,16 @@ class AttendedEmbeddingsSet:
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
         verbose: bool = True,
     ) -> "AttendedEmbeddingsSet":
-        """Create AttendedEmbeddings from expression-contextualized embeddings.
+        """Build an :class:`AttendedEmbeddingsSet` from expression-contextualized per-layer residual streams.
 
-        For each model, retrieves the GeneEmbeddings for the specified
-        dataset and category, aligns them to common genes, and wires up
-        the attention references.
+        For each model, collects per-layer :class:`GeneEmbeddings` for the specified
+        dataset and category, aligns them to common genes, and constructs
+        :class:`LayerwiseAttentionInputs` grouped by model and category.
 
         Parameters
         ----------
         foundation_models : FoundationModels
-            Container with 2+ loaded foundation models. Each model must have
+            Container with one or more loaded foundation models. Each model must have
             dataset_gene_embeddings containing the specified dataset and category.
         dataset_name : str
             Name of the expression dataset (e.g., 'efthymiou2025').
@@ -3359,7 +3366,8 @@ class AttendedEmbeddingsSet:
         Returns
         -------
         AttendedEmbeddingsSet
-            Ready for analysis with aligned expression embeddings.
+            Container with one ``(model × category)`` group per model, each holding
+            aligned residual streams and attention machinery.
 
         Raises
         ------
@@ -3823,7 +3831,7 @@ class AttendedEmbeddingsSet:
 
         return model_layer_correlations, model_layer_rank_agreement
 
-    def __getitem__(self, key: str) -> AttendedEmbeddings:
+    def __getitem__(self, key: str) -> LayerwiseAttentionInputs:
         if key not in self.attended_embeddings:
             raise KeyError(
                 f"Embedding '{key}' not found. "
