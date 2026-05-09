@@ -26,6 +26,8 @@ FoundationModels
     Container for one or more foundation models; supports cross-model analysis when len ≥ 2.
 LayerwiseAttentionInputs
     Per-layer residual stream embeddings paired with a foundation model for attention.
+AttentionPatternsInputs
+    Groups ``LayerwiseAttentionInputs`` by model and category for attention-pattern analysis.
 
 Class Relationships
 -------------------
@@ -41,10 +43,10 @@ FoundationModels
                     GeneAnnotations
         ModelMetadata
 
-AttendedEmbeddingsSet
+AttentionPatternsInputs
     LayerwiseAttentionInputs
         Dict[int, GeneEmbeddings] (per-layer residual stream embeddings)
-        FoundationModels (the models containing the attention weights for these embeddings)
+        FoundationModel (per group; supplies attention weights for that group's layers)
 """
 
 import json
@@ -2426,7 +2428,7 @@ class LayerwiseAttentionInputs:
     layer's residual (e.g. static or expression-contextualized activations)
     and references the :class:`FoundationModel` that supplies attention weights.
 
-    Typically created by :class:`AttendedEmbeddingsSet` rather than directly.
+    Typically created by :class:`AttentionPatternsInputs` rather than directly.
 
     Attributes
     ----------
@@ -3005,7 +3007,7 @@ class LayerwiseAttentionInputs:
         )
 
 
-class AttendedEmbeddingsSet:
+class AttentionPatternsInputs:
     """Per-layer residual stream embeddings paired with attention machinery for cross-model analysis.
 
     Takes a :class:`GeneEmbeddingsSet` whose entries are residual-stream
@@ -3059,7 +3061,7 @@ class AttendedEmbeddingsSet:
 
     Public Methods
     --------------
-    from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttendedEmbeddingsSet":
+    from_expression(foundation_models: FoundationModels, dataset_name: str, category: str, align_on: str = ONTOLOGIES.ENSEMBL_GENE, verbose: bool = True) -> "AttentionPatternsInputs":
         Build expression-contextualized per-layer residual streams for a single category.
     get_consensus_attention(k: int = 10000, target_ids: Optional[List[str]] = None, consensus_method: str = FM_LAYER_CONSENSUS_METHODS.ABSOLUTE_ARGMAX, by_absolute_value: bool = True, reextract_union: bool = False, apply_softmax: bool = False, compute_ranks: bool = False, ignore_self_attention: bool = False, return_original_and_reextracted: bool = False, device: Optional[Union[str, torch.device]] = None, verbose: bool = False) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
         Compute consensus attention across all layers for each ``(model × category)`` group.
@@ -3073,12 +3075,12 @@ class AttendedEmbeddingsSet:
     Examples
     --------
     >>> # One (model × category) group per model from expression residual streams
-    >>> attended = AttendedEmbeddingsSet.from_expression(
+    >>> attended = AttentionPatternsInputs.from_expression(
     ...     foundation_models, dataset_name="efthymiou2025", category="adipocyte (0)"
     ... )
 
     >>> # From a pre-built GeneEmbeddingsSet (per-layer residual streams already aligned)
-    >>> attended = AttendedEmbeddingsSet(embeddings_set, foundation_models)
+    >>> attended = AttentionPatternsInputs(embeddings_set, foundation_models)
     """
 
     def __init__(
@@ -3342,8 +3344,8 @@ class AttendedEmbeddingsSet:
         category: str,
         align_on: str = ONTOLOGIES.ENSEMBL_GENE,
         verbose: bool = True,
-    ) -> "AttendedEmbeddingsSet":
-        """Build an :class:`AttendedEmbeddingsSet` from expression-contextualized per-layer residual streams.
+    ) -> "AttentionPatternsInputs":
+        """Build an :class:`AttentionPatternsInputs` from expression-contextualized per-layer residual streams.
 
         For each model, collects per-layer :class:`GeneEmbeddings` for the specified
         dataset and category, aligns them to common genes, and constructs
@@ -3365,7 +3367,7 @@ class AttendedEmbeddingsSet:
 
         Returns
         -------
-        AttendedEmbeddingsSet
+        AttentionPatternsInputs
             Container with one ``(model × category)`` group per model, each holding
             aligned residual streams and attention machinery.
 
@@ -3379,7 +3381,7 @@ class AttendedEmbeddingsSet:
         Examples
         --------
         >>> models = FoundationModels.load_multiple(dir, ['scGPT', 'scPRINT'])
-        >>> attended = AttendedEmbeddingsSet.from_expression(
+        >>> attended = AttentionPatternsInputs.from_expression(
         ...     models, dataset_name="efthymiou2025", category="adipocyte (0)"
         ... )
         >>> attended.n_embeddings
@@ -3844,7 +3846,7 @@ class AttendedEmbeddingsSet:
 
     def __repr__(self) -> str:
         return (
-            f"AttendedEmbeddingsSet("
+            f"AttentionPatternsInputs("
             f"n_embeddings={self.n_embeddings}, "
             f"n_common_genes={self.n_common_genes}, "
             f"models={self.model_names}, "
@@ -3870,7 +3872,7 @@ def aggregate_embedding_comparisons_over_categories(
     Parameters
     ----------
     embedding_comparisons : dict
-        A dictionary of embedding comparison dicts (e.g. from AttendedEmbeddingsSet.compare() per category).
+        A dictionary of embedding comparison dicts (e.g. from AttentionPatternsInputs.compare() per category).
 
     Returns
     -------
@@ -3974,7 +3976,7 @@ def validate_embedding_comparisons_settings(
     Parameters
     ----------
     embedding_comparisons : Dict[str, Any]
-        The comparisons to validate. Created by AttendedEmbeddingsSet.compare().
+        The comparisons to validate. Created by AttentionPatternsInputs.compare().
     top_k : int
         The number of top-k attention pairs to summarize.
     consensus_method : str
@@ -5046,7 +5048,7 @@ def _group_embeddings_by_model_and_category(
         if emb.layer_idx is None:
             raise ValueError(
                 f"Embedding '{key}' has layer_idx=None. "
-                f"AttendedEmbeddingsSet requires per-layer residual streams."
+                f"AttentionPatternsInputs requires per-layer residual streams."
             )
 
         # Verify the embedding's own model_name matches the group it's being

@@ -39,7 +39,7 @@ from napistu_torch.load.constants import (
     STRATIFY_BY,
 )
 from napistu_torch.load.foundation_models import (
-    AttendedEmbeddingsSet,
+    AttentionPatternsInputs,
     FoundationModels,
 )
 from napistu_torch.load.napistu_graphs import (
@@ -416,7 +416,7 @@ def attended_embeddings():
 
 @pytest.fixture
 def attended_embeddings_set(foundation_models_with_dge):
-    return AttendedEmbeddingsSet.from_expression(
+    return AttentionPatternsInputs.from_expression(
         foundation_models_with_dge,
         dataset_name="ds1",
         category="cluster_0",

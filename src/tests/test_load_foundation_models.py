@@ -19,7 +19,7 @@ from napistu.ontologies.constants import ONTOLOGIES
 
 from napistu_torch.load.constants import FM_DEFS
 from napistu_torch.load.foundation_models import (
-    AttendedEmbeddingsSet,
+    AttentionPatternsInputs,
     FoundationModels,
     GeneEmbeddings,
     GeneEmbeddingsSet,
@@ -331,7 +331,7 @@ def test_get_specific_attentions_match_direct(attended_embeddings):
 
 
 # ---------------------------------------------------------------------------
-# AttendedEmbeddingsSet
+# AttentionPatternsInputs
 # ---------------------------------------------------------------------------
 
 
@@ -392,7 +392,7 @@ def test_different_vocab_alignment_no_nans():
         )
         models_with_dge.append(_clone_fm_with_dge(m, dge))
     fm = FoundationModels(models=models_with_dge)
-    attended_set = AttendedEmbeddingsSet.from_expression(
+    attended_set = AttentionPatternsInputs.from_expression(
         fm,
         dataset_name="ds1",
         category="cluster_0",

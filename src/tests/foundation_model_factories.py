@@ -8,8 +8,8 @@ from napistu.ontologies.constants import ONTOLOGIES
 
 from napistu_torch.load.constants import FM_DEFS
 from napistu_torch.load.foundation_models import (
-    AttendedEmbeddingsSet,
     AttentionLayer,
+    AttentionPatternsInputs,
     DatasetGeneEmbeddings,
     FoundationModel,
     FoundationModels,
@@ -398,7 +398,7 @@ def make_attended_embeddings_set(
     n_layers: int = 2,
     n_heads: int = 2,
     seed: int = 42,
-) -> Tuple[AttendedEmbeddingsSet, List[str]]:
+) -> Tuple[AttentionPatternsInputs, List[str]]:
     fm, shared_ids = make_foundation_models(
         n_models=n_models,
         n_shared=n_shared,
@@ -422,7 +422,7 @@ def make_attended_embeddings_set(
         )
         models_with_dge.append(_clone_fm_with_dge(model, dge))
     fm_with_dge = FoundationModels(models=models_with_dge)
-    attended_set = AttendedEmbeddingsSet.from_expression(
+    attended_set = AttentionPatternsInputs.from_expression(
         fm_with_dge,
         dataset_name="ds1",
         category="cluster_0",
