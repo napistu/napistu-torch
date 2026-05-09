@@ -330,7 +330,7 @@ FM_LAYER_CONSENSUS_METHODS = SimpleNamespace(
 VALID_FM_LAYER_CONSENSUS_METHODS = list(FM_LAYER_CONSENSUS_METHODS.__dict__.values())
 
 COMPARE_EMBEDDINGS_COMPARISONS = SimpleNamespace(
-    GENE_EMBEDDING_CORRELATIONS="gene_embedding_correlations",
+    RESIDUAL_STREAM_CORRELATIONS="residual_stream_correlations",
     MODEL_LAYER_CORRELATIONS="model_layer_correlations",
     MODEL_LAYER_RANK_AGREEMENT="model_layer_rank_agreement",
     CROSS_MODEL_X_LAYER_TOP_ATTENTIONS="cross_model_x_layer_top_attentions",
