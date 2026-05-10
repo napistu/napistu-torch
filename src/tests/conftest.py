@@ -7,12 +7,20 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from foundation_model_factories import (
+    _clone_fm_with_dge,
+    _make_layer_grid_dge,
+    make_attended_embeddings,
+    make_foundation_model,
+    make_foundation_models,
+)
 from napistu import consensus, indices
 from napistu.network.constants import (
     NAPISTU_GRAPH_VERTICES,
     NAPISTU_WEIGHTING_STRATEGIES,
 )
 from napistu.network.net_create import process_napistu_graph
+from napistu.ontologies.constants import ONTOLOGIES
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from napistu_torch.configs import (
@@ -29,6 +37,10 @@ from napistu_torch.load.constants import (
     ENCODINGS,
     SPLITTING_STRATEGIES,
     STRATIFY_BY,
+)
+from napistu_torch.load.foundation_models import (
+    AttentionPatternsInputs,
+    FoundationModels,
 )
 from napistu_torch.load.napistu_graphs import (
     augment_napistu_graph,
@@ -364,3 +376,49 @@ def experiment_dict(temp_data_config_with_store):
     experiment_dict = prepare_experiment(experiment_config)
 
     return experiment_dict
+
+
+# --- FoundationModel fixtures ---
+
+
+@pytest.fixture
+def foundation_model():
+    return make_foundation_model()
+
+
+@pytest.fixture
+def foundation_models():
+    fm, _ = make_foundation_models(n_models=3, n_shared=15)
+    return fm
+
+
+@pytest.fixture
+def foundation_models_with_dge(foundation_models):
+    models_with_dge = []
+    for model in foundation_models.models:
+        gene_ids = model.gene_annotations[ONTOLOGIES.ENSEMBL_GENE].tolist()
+        dge = _make_layer_grid_dge(
+            n_layers=model.n_layers,
+            n_categories=2,
+            gene_ids=gene_ids,
+            embed_dim=model.embed_dim,
+            model_name=model.model_name,
+            model_variant=model.model_variant,
+        )
+        models_with_dge.append(_clone_fm_with_dge(model, dge))
+    return FoundationModels(models=models_with_dge)
+
+
+@pytest.fixture
+def attended_embeddings():
+    return make_attended_embeddings(n_genes=10, n_layers=2)
+
+
+@pytest.fixture
+def attended_embeddings_set(foundation_models_with_dge):
+    return AttentionPatternsInputs.from_expression(
+        foundation_models_with_dge,
+        dataset_name="ds1",
+        category="cluster_0",
+        verbose=False,
+    )
