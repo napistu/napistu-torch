@@ -6,18 +6,22 @@ import numpy as np
 import pandas as pd
 from napistu.ontologies.constants import ONTOLOGIES
 
-from napistu_torch.load.constants import FM_DEFS
-from napistu_torch.load.foundation_models import (
-    AttentionLayer,
+from napistu_torch.foundation_models.attention_patterns import (
     AttentionPatternsInputs,
-    DatasetGeneEmbeddings,
+    LayerwiseAttentionInputs,
+)
+from napistu_torch.foundation_models.constants import FM_DEFS
+from napistu_torch.foundation_models.foundation_models import (
+    AttentionLayer,
     FoundationModel,
     FoundationModels,
     FoundationModelWeights,
+    ModelMetadata,
+)
+from napistu_torch.foundation_models.gene_embeddings import (
+    DatasetGeneEmbeddings,
     GeneEmbeddings,
     GeneEmbeddingsSet,
-    LayerwiseAttentionInputs,
-    ModelMetadata,
 )
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@ from napistu.ontologies.constants import ONTOLOGIES
 from napistu.utils.io_utils import download_wget
 from scipy.sparse import issparse
 
-from napistu_torch.load.constants import (
+from napistu_torch.foundation_models.constants import (
     AIDOCELL_CLASSES,
     AIDOCELL_DEFS,
     CELLXGENE_DEFS,
@@ -53,7 +53,7 @@ from napistu_torch.load.constants import (
     SCPRINT_DEFS,
     VALID_FOUNDATION_MODEL_NAMES,
 )
-from napistu_torch.load.foundation_models import (
+from napistu_torch.foundation_models.foundation_models import (
     AttentionLayer,
     DatasetGeneEmbeddings,
     FoundationModel,
