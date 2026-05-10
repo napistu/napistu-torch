@@ -1026,28 +1026,17 @@ class AttentionPatternsInputs:
         expression_embeddings: List[GeneEmbeddings] = []
 
         for model in foundation_models.models:
-            if model.dataset_gene_embeddings is None:
-                raise ValueError(
-                    f"Model '{model.full_name}' has no dataset_gene_embeddings. "
-                    f"Cannot extract expression embeddings."
-                )
-            if dataset_name not in model.dataset_gene_embeddings:
-                raise ValueError(
-                    f"Dataset '{dataset_name}' not found in model "
-                    f"'{model.full_name}'. Available datasets: "
-                    f"{model.dataset_gene_embeddings.dataset_names}"
-                )
-
             if model.dataset_gene_embeddings is not None:
                 ge_set = model.dataset_gene_embeddings[dataset_name]
                 layer_embeddings = _get_category_layer_embeddings(
                     ge_set, category, model, dataset_name
                 )
             else:
-                # Lazy load from store
-                layer_embeddings = model.load_category_residuals(dataset_name, category)
+                layer_embeddings = model.load_category_residuals(
+                    dataset_name, category
+                ).values()
 
-            expression_embeddings.extend(layer_embeddings)
+        expression_embeddings.extend(layer_embeddings)
 
         embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
             expression_embeddings, align_on=align_on, verbose=verbose

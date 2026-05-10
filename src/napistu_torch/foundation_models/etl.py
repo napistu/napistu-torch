@@ -58,6 +58,8 @@ from napistu_torch.foundation_models.foundation_models import (
     FoundationModel,
     FoundationModelStore,
     FoundationModelWeights,
+)
+from napistu_torch.foundation_models.gene_embeddings import (
     GeneEmbeddings,
     GeneEmbeddingsSet,
 )
