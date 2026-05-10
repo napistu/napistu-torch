@@ -30,6 +30,8 @@ from napistu_torch.configs import (
     WandBConfig,
 )
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
+from napistu_torch.foundation_models.attention_patterns import AttentionPatternsInputs
+from napistu_torch.foundation_models.foundation_models import FoundationModels
 from napistu_torch.lightning.workflows import prepare_experiment
 from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
@@ -37,10 +39,6 @@ from napistu_torch.load.constants import (
     ENCODINGS,
     SPLITTING_STRATEGIES,
     STRATIFY_BY,
-)
-from napistu_torch.load.foundation_models import (
-    AttentionPatternsInputs,
-    FoundationModels,
 )
 from napistu_torch.load.napistu_graphs import (
     augment_napistu_graph,
