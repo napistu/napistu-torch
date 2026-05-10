@@ -263,8 +263,12 @@ FM_DEFS = SimpleNamespace(
     N_LAYERS="n_layers",
     N_HEADS="n_heads",
     # filename/variable name templates
-    WEIGHTS_TEMPLATE="{prefix}_weights.npz",
-    METADATA_TEMPLATE="{prefix}_metadata.json",
+    WEIGHTS_TEMPLATE="{prefix}_weights.npz", # to do - remove after updating loader
+    METADATA_TEMPLATE="{prefix}_metadata.json", # to do - remove after updating loader
+    WEIGHTS_FILENAME = "weights.npz"
+    METADATA_FILENAME = "metadata.json"
+    RESIDUALS_INDEX_FILENAME = "residuals_index.yaml"
+    RESIDUALS_SUBDIR = "residuals"
     # gene embeddings
     EMBEDDINGS="embeddings",
     ORDERED_GENES="ordered_genes",
