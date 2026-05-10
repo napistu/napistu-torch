@@ -14,7 +14,10 @@ from foundation_model_factories import (
 )
 
 from napistu_torch.foundation_models.constants import FM_DEFS
-from napistu_torch.foundation_models.foundation_models import FoundationModelStore
+from napistu_torch.foundation_models.foundation_models import (
+    FoundationModel,
+    FoundationModelStore,
+)
 
 
 def test_validate_dge_passes_full_layer_grid():
@@ -154,6 +157,94 @@ def test_foundation_model_save_category_residuals(tmp_path):
 
     with pytest.raises(ValueError, match="not found in dataset"):
         fm.save_category_residuals(store, "ds1", "nonexistent_category")
+
+
+def test_foundation_model_save_load_roundtrip(tmp_path):
+    """save() and load() roundtrip: weights, metadata, and store reference."""
+    fm = make_foundation_model(
+        n_genes=10, embed_dim=8, n_layers=2, model_name="TestModel"
+    )
+    fm.save(tmp_path / fm.disk_name)
+    loaded = FoundationModel.load(tmp_path / fm.disk_name)
+
+    # Metadata
+    assert loaded.model_name == fm.model_name
+    assert loaded.n_genes == fm.n_genes
+    assert loaded.n_layers == fm.n_layers
+    assert loaded.embed_dim == fm.embed_dim
+    assert loaded.ordered_vocabulary == fm.ordered_vocabulary
+
+    # Static embedding
+    np.testing.assert_array_equal(
+        loaded.weights.static_gene_embeddings.embedding,
+        fm.weights.static_gene_embeddings.embedding,
+    )
+
+    # Attention weights
+    for orig, loaded_layer in zip(
+        fm.weights.attention_layers, loaded.weights.attention_layers
+    ):
+        assert orig.layer_idx == loaded_layer.layer_idx
+        np.testing.assert_array_equal(orig.W_q, loaded_layer.W_q)
+        np.testing.assert_array_equal(orig.W_k, loaded_layer.W_k)
+
+    # Load semantics
+    assert loaded.dataset_gene_embeddings is None
+    assert loaded.store.model_dir == tmp_path / fm.disk_name
+
+
+def test_foundation_model_load_validates(tmp_path):
+    """load() raises on missing core files."""
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(ValueError, match="weights.npz missing"):
+        FoundationModel.load(tmp_path / "empty")
+
+
+def test_foundation_model_residuals_roundtrip(tmp_path):
+    """save_all_residuals() / load_category_residuals() roundtrip and error cases."""
+    gene_ids = make_gene_ids(10)
+    fm_base = make_foundation_model(
+        n_genes=10, embed_dim=8, n_layers=2, gene_ids=gene_ids
+    )
+    dge = _make_layer_grid_dge(
+        n_layers=2,
+        n_categories=2,
+        gene_ids=gene_ids,
+        embed_dim=8,
+        model_name=fm_base.model_name,
+    )
+    fm = _clone_fm_with_dge(fm_base, dge)
+
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
+    fm.save_all_residuals(store)
+    loaded = FoundationModel.load(store)
+
+    # Shapes, metadata, and array values for one category
+    layer_embeddings = loaded.load_category_residuals("ds1", "cluster_0")
+    assert set(layer_embeddings.keys()) == {0, 1}
+    for layer_idx, ge in layer_embeddings.items():
+        assert ge.layer_idx == layer_idx
+        assert ge.embedding.shape == (10, 8)
+        assert ge.model_name == fm.model_name
+        assert ge.category == "cluster_0"
+        assert ge.dataset_name == "ds1"
+
+    # Arrays match originals
+    original = {
+        ge.layer_idx: ge.embedding
+        for ge in fm.dataset_gene_embeddings["ds1"].values()
+        if ge.category == "cluster_0"
+    }
+    for layer_idx, ge in layer_embeddings.items():
+        np.testing.assert_array_equal(ge.embedding, original[layer_idx])
+
+    # Error cases
+    with pytest.raises(ValueError, match="no store attached"):
+        fm.load_category_residuals("ds1", "cluster_0")
+
+    with pytest.raises(KeyError, match="not found"):
+        loaded.load_category_residuals("ds1", "nonexistent_category")
 
 
 def test_store_lifecycle_and_index(tmp_path):

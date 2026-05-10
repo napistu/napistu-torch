@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -55,6 +56,7 @@ from napistu_torch.foundation_models.foundation_models import (
     AttentionLayer,
     DatasetGeneEmbeddings,
     FoundationModel,
+    FoundationModelStore,
     FoundationModelWeights,
     GeneEmbeddings,
     GeneEmbeddingsSet,
@@ -1106,34 +1108,6 @@ def _create_and_save_foundation_model(
     output_dir: str,
     file_prefix: str,
 ) -> FoundationModel:
-    """Create FoundationModel instance and save weights and residuals to disk.
-
-    Parameters
-    ----------
-    weights : FoundationModelWeights
-        Model weights.
-    gene_annotations : pd.DataFrame
-        Gene annotations DataFrame.
-    model_metadata : Dict
-        Model metadata dictionary.
-    dataset_gene_embeddings : DatasetGeneEmbeddings, optional
-        Contextualized gene embeddings for 0+ datasets.
-    output_dir : str
-        Parent output directory. A subdirectory named file_prefix is
-        created inside it.
-    file_prefix : str
-        Model prefix — becomes the model subdirectory name
-        (e.g., 'scGPT', 'scPRINT_small').
-
-    Returns
-    -------
-    FoundationModel
-        Created FoundationModel instance.
-    """
-    from pathlib import Path
-
-    from napistu_torch.foundation_models.foundation_models import FoundationModelStore
-
     logger.info("Creating FoundationModel and saving...")
 
     foundation_model = FoundationModel(
@@ -1145,19 +1119,7 @@ def _create_and_save_foundation_model(
 
     store = FoundationModelStore(Path(output_dir) / file_prefix)
     foundation_model.save(store)
-
-    if dataset_gene_embeddings is not None:
-        for dataset_name in dataset_gene_embeddings.dataset_names:
-            ge_set = dataset_gene_embeddings[dataset_name]
-            categories = sorted(
-                {ge.category for ge in ge_set.values() if ge.category is not None}
-            )
-            logger.info(
-                f"Saving residuals for dataset '{dataset_name}': "
-                f"{len(categories)} categories"
-            )
-            for category in categories:
-                foundation_model.save_category_residuals(store, dataset_name, category)
+    foundation_model.save_all_residuals(store)
 
     logger.info("Successfully saved all results!")
     return foundation_model

@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -23,7 +22,6 @@ from napistu_torch.foundation_models.constants import FM_DEFS
 from napistu_torch.foundation_models.gene_embeddings import (
     DatasetGeneEmbeddings,
     GeneEmbeddings,
-    GeneEmbeddingsSet,
     _get_model_label,
 )
 from napistu_torch.utils.torch_utils import cleanup_tensors, ensure_device
@@ -417,8 +415,14 @@ class FoundationModel(BaseModel):
     --------------
     load(output_dir, prefix)
         Load foundation model from saved files (classmethod).
+    load_category_residuals(dataset_name, category)
+        Load residual streams and metadata for a (dataset, category) pair.
     save(output_dir, prefix)
         Save foundation model to files.
+    save_all_residuals(output_dir, prefix)
+        Save all per-category residual streams to disk.
+    save_category_residuals(output_dir, prefix, dataset_name, category)
+        Save a single per-category residual stream to disk.
     validate_dataset_gene_embeddings(...)
         Post-load checks on dataset gene embeddings from ETL (layer coverage,
         variance, labels). Distinct from :meth:`validate_dataset_gene_embeddings_field`,
@@ -431,6 +435,7 @@ class FoundationModel(BaseModel):
     dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None
     gene_annotations: pd.DataFrame
     weights: FoundationModelWeights
+    store: Optional[FoundationModelStore] = None
 
     # Metadata as direct attributes
     model_name: str
@@ -448,6 +453,7 @@ class FoundationModel(BaseModel):
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
         dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None,
+        store: Optional[FoundationModelStore] = None,
         **kwargs,
     ):
         """
@@ -516,6 +522,7 @@ class FoundationModel(BaseModel):
             weights=weights,
             gene_annotations=gene_annotations_df,
             dataset_gene_embeddings=dataset_gene_embeddings,
+            store=store,
             **metadata_dict,
         )
 
@@ -532,52 +539,62 @@ class FoundationModel(BaseModel):
     @classmethod
     def load(
         cls,
-        output_dir: str,
-        prefix: str,
+        store_or_dir: Union["FoundationModelStore", str, Path],
         verbose: bool = True,
     ) -> "FoundationModel":
-        """
-        Load foundation model from saved files.
+        """Load foundation model weights and metadata from a model directory.
+
+        Residual streams are not loaded — dataset_gene_embeddings will be None.
+        Use load_category_residuals() or AttentionPatternsInputs.from_expression()
+        to access residuals on demand.
 
         Parameters
         ----------
-        output_dir : str
-            Directory path containing the saved files
-        prefix : str
-            Prefix used for the saved files
+        store_or_dir : FoundationModelStore, str, or Path
+            Path to the model directory, or an existing FoundationModelStore.
         verbose : bool
-            Extra reporting (default: True)
+            Extra reporting (default: True).
 
         Returns
         -------
         FoundationModel
-            Loaded foundation model instance
-
-        Examples
-        --------
-        >>> model = FoundationModel.load('/path/to/output', 'scGPT')
+            Loaded instance with dataset_gene_embeddings=None and store attached.
         """
+        store = FoundationModelStore.ensure(store_or_dir, validate=True)
 
-        (
-            weights_dict,
-            gene_annotations,
-            model_metadata,
-            static_gene_embedding_metadata,
-            dataset_gene_embeddings_metadata,
-        ) = _load_results(output_dir, prefix, verbose=verbose)
+        if verbose:
+            logger.info(f"Loading weights from {store.weights_path}")
+            logger.info(f"Loading metadata from {store.metadata_path}")
 
-        # Infer model_variant from prefix if not in metadata
-        if (
-            FM_DEFS.MODEL_VARIANT not in model_metadata
-            or model_metadata[FM_DEFS.MODEL_VARIANT] is None
-        ):
-            model_name = model_metadata[FM_DEFS.MODEL_NAME]
-            if prefix.startswith(f"{model_name}_"):
-                model_metadata[FM_DEFS.MODEL_VARIANT] = prefix[len(model_name) + 1 :]
-            else:
-                model_metadata[FM_DEFS.MODEL_VARIANT] = None
+        # Load weights npz
+        weights_data = np.load(store.weights_path, allow_pickle=True)
+        weights_dict = {
+            key: (
+                weights_data[key].item()
+                if isinstance(weights_data[key], np.ndarray)
+                and weights_data[key].dtype == object
+                else weights_data[key]
+            )
+            for key in weights_data.keys()
+        }
 
-        # Build AttentionLayer instances from weights_dict
+        # Load metadata json
+        with open(store.metadata_path) as f:
+            combined_metadata = json.load(f)
+
+        model_metadata = combined_metadata[FM_DEFS.MODEL_METADATA]
+        gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
+        static_gene_embedding_metadata = combined_metadata.get(
+            FM_DEFS.STATIC_GENE_EMBEDDINGS
+        )
+
+        if static_gene_embedding_metadata is None:
+            raise ValueError(
+                "Static gene embedding metadata not found. "
+                "Re-run the ETL pipeline to regenerate model outputs."
+            )
+
+        # Reconstruct attention layers
         attention_layers = [
             AttentionLayer(
                 layer_idx=int(layer_name.split("_")[1]),
@@ -591,15 +608,7 @@ class FoundationModel(BaseModel):
             )
         ]
 
-        # Reconstruct static gene embedding as GeneEmbeddings
-        if static_gene_embedding_metadata is None:
-            raise ValueError(
-                "Static gene embedding metadata not found in saved files. "
-                "This file was saved with an older format that is no longer "
-                "supported. Re-run the ETL pipeline to regenerate model outputs."
-            )
-
-        # Support both new and legacy keys for backward compatibility
+        # Reconstruct static gene embedding
         static_emb_array = weights_dict.get(FM_DEFS.STATIC_GENE_EMBEDDINGS)
         static_gene_embedding = _gene_embeddings_from_save_dict(
             embedding=static_emb_array,
@@ -612,51 +621,89 @@ class FoundationModel(BaseModel):
             attention_layers=attention_layers,
         )
 
-        # Reconstruct dataset gene embeddings
-        dataset_gene_embeddings = None
-        if dataset_gene_embeddings_metadata:
-            if verbose:
-                logger.info(
-                    f"Loading {len(dataset_gene_embeddings_metadata)} dataset gene embeddings"
-                )
-
-            dataset_gene_embeddings_lists: Dict[str, List[GeneEmbeddings]] = {}
-
-            for i, ge_emb_meta in enumerate(dataset_gene_embeddings_metadata):
-                embeddings_key = f"dataset_gene_embeddings_{i}"
-                if embeddings_key not in weights_dict:
-                    logger.warning(
-                        f"Expression embeddings metadata found but embeddings tensor "
-                        f"'{embeddings_key}' not found in weights file"
-                    )
-                    continue
-
-                ge = _gene_embeddings_from_save_dict(
-                    embedding=weights_dict[embeddings_key],
-                    metadata=ge_emb_meta,
-                    fallback_metadata=model_metadata,
-                )
-
-                ds_name = ge.dataset_name or "unknown"
-                if ds_name not in dataset_gene_embeddings_lists:
-                    dataset_gene_embeddings_lists[ds_name] = []
-                dataset_gene_embeddings_lists[ds_name].append(ge)
-
-            # Build GeneEmbeddingsSet per dataset, then wrap in DatasetGeneEmbeddings
-            if dataset_gene_embeddings_lists:
-                dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
-                for ds_name, ge_list in dataset_gene_embeddings_lists.items():
-                    dataset_sets[ds_name] = GeneEmbeddingsSet.from_gene_embeddings(
-                        ge_list, verbose=verbose
-                    )
-                dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
+        if verbose:
+            logger.info("Successfully loaded weights and metadata")
 
         return cls(
             weights=weights,
             gene_annotations=gene_annotations,
             model_metadata=model_metadata,
-            dataset_gene_embeddings=dataset_gene_embeddings,
+            dataset_gene_embeddings=None,
+            store=store,
         )
+
+    def load_category_residuals(
+        self,
+        dataset_name: str,
+        category: str,
+        store_or_dir: Optional[Union["FoundationModelStore", str, Path]] = None,
+    ) -> Dict[int, GeneEmbeddings]:
+        """Load per-layer residual stream embeddings for one category.
+
+        Parameters
+        ----------
+        dataset_name : str
+            Dataset name.
+        category : str
+            Category name.
+        store_or_dir : FoundationModelStore, str, or Path, optional
+            Store to load from. If None, uses self.store. Raises if both
+            are None.
+
+        Returns
+        -------
+        Dict[int, GeneEmbeddings]
+            Mapping from layer index to GeneEmbeddings, ready to pass to
+            LayerwiseAttentionInputs.
+
+        Raises
+        ------
+        ValueError
+            If no store is available.
+        KeyError
+            If (dataset_name, category) is not registered in the index.
+        """
+        if store_or_dir is not None:
+            store = FoundationModelStore.ensure(store_or_dir, validate=True)
+        elif self.store is not None:
+            store = self.store
+        else:
+            raise ValueError(
+                f"Model '{self.full_name}' has no store attached. "
+                f"Pass store_or_dir explicitly or load the model via "
+                f"FoundationModel.load()."
+            )
+
+        arrays, metadata_records = store.load_category_residuals(dataset_name, category)
+
+        # Reconstruct GeneEmbeddings per layer using the sidecar metadata
+        model_metadata = {
+            FM_DEFS.MODEL_NAME: self.model_name,
+            FM_DEFS.MODEL_VARIANT: self.model_variant,
+        }
+
+        result: Dict[int, GeneEmbeddings] = {}
+        for meta in metadata_records:
+            layer_idx = meta.get(FM_DEFS.LAYER_IDX)
+            if layer_idx is None:
+                raise ValueError(
+                    f"Sidecar metadata missing layer_idx for category '{category}'. "
+                    f"The file may be corrupt or from an older format."
+                )
+            array_key = f"layer_{layer_idx}"
+            if array_key not in arrays:
+                raise ValueError(
+                    f"Expected array key '{array_key}' not found in npz. "
+                    f"Available: {list(arrays.keys())}"
+                )
+            ge = _gene_embeddings_from_save_dict(
+                embedding=arrays[array_key],
+                metadata=meta,
+                fallback_metadata=model_metadata,
+            )
+            result[layer_idx] = ge
+
+        return result
 
     def save(self, store_or_dir: Union["FoundationModelStore", str, Path]) -> None:
         """Save model weights and metadata to a model directory.
@@ -673,7 +720,10 @@ class FoundationModel(BaseModel):
             Either an existing FoundationModelStore or a path to the model
             directory (created if it does not exist).
         """
-        store = FoundationModelStore.ensure(store_or_dir)
+        store = FoundationModelStore.ensure(store_or_dir, validate=False)
+        # If the model directory already exists, validate before overwriting
+        if store.is_initialized():
+            store.validate()
         store.initialize()
 
         logger.info(f"Saving weights to {store.weights_path}")
@@ -721,6 +771,44 @@ class FoundationModel(BaseModel):
             json.dump(combined_metadata, f, indent=2)
 
         logger.info("Successfully saved weights and metadata")
+
+    def save_all_residuals(
+        self,
+        store_or_dir: Union["FoundationModelStore", str, Path],
+    ) -> None:
+        """Save all per-category residual streams to disk.
+
+        Iterates over all datasets and categories in dataset_gene_embeddings,
+        calling save_category_residuals for each. No-op if dataset_gene_embeddings
+        is None.
+
+        Parameters
+        ----------
+        store_or_dir : FoundationModelStore, str, or Path
+            Either an existing FoundationModelStore or a path to the model
+            directory. The store should already be initialized via save().
+        """
+        if self.dataset_gene_embeddings is None:
+            logger.info("No dataset_gene_embeddings to save — skipping residuals.")
+            return
+
+        store = FoundationModelStore.ensure(store_or_dir, validate=False)
+        # Validate consistency if some residuals have already been written
+        if store.index_path.exists():
+            store.validate()
+
+        for dataset_name in self.dataset_gene_embeddings.dataset_names:
+            ge_set = self.dataset_gene_embeddings[dataset_name]
+            categories = sorted(
+                {ge.category for ge in ge_set.values() if ge.category is not None}
+            )
+            logger.info(
+                f"Saving residuals for dataset '{dataset_name}': "
+                f"{len(categories)} categories"
+            )
+            for category in categories:
+                self.save_category_residuals(store, dataset_name, category)
+                logger.info(f"  Saved: {category}")
 
     def save_category_residuals(
         self,
@@ -788,7 +876,7 @@ class FoundationModel(BaseModel):
             _gene_embeddings_to_save_dict(ge) for ge in category_embeddings
         ]
 
-        store = FoundationModelStore.ensure(store_or_dir)
+        store = FoundationModelStore.ensure(store_or_dir, validate=True)
         store.save_residual_arrays(stem, arrays, metadata_records)
         store.register_category(dataset_name, category, stem)
 
@@ -1104,45 +1192,41 @@ class FoundationModels(BaseModel):
 
     @classmethod
     def load_multiple(
-        cls, output_dir: str, prefixes: List[str], verbose: bool = True
+        cls,
+        output_dir: Union[str, Path],
+        model_names: List[str],
+        verbose: bool = True,
     ) -> "FoundationModels":
-        """
-        Load multiple foundation models from saved files.
+        """Load multiple foundation models from a shared output directory.
 
         Parameters
         ----------
-        output_dir : str
-            Directory path containing the saved model files
-        prefixes : List[str]
-            List of prefixes for the models to load
+        output_dir : str or Path
+            Parent directory containing one subdirectory per model.
+        model_names : List[str]
+            Subdirectory names to load (e.g., ['scGPT', 'scPRINT_small']).
         verbose : bool
-            Extra reporting (default: True)
+            Extra reporting (default: True).
 
         Returns
         -------
         FoundationModels
-            Container with all loaded models
 
         Examples
         --------
         >>> models = FoundationModels.load_multiple(
-        ...     '/path/to/output',
-        ...     ['scGPT', 'AIDOCell_aido_cell_100m', 'scPRINT']
+        ...     '/path/to/model_outputs',
+        ...     ['scGPT', 'scPRINT_small', 'scPRINT_large'],
         ... )
-        >>> common_ids = models.get_common_identifiers()
         """
+        output_dir = Path(output_dir)
         loaded_models = [
-            FoundationModel.load(output_dir, prefix, verbose=verbose)
-            for prefix in prefixes
+            FoundationModel.load(output_dir / name, verbose=verbose)
+            for name in model_names
         ]
-
-        # Create instance and sort by parameters
         instance = cls(models=loaded_models)
         instance._sort_models_by_parameters()
-
         return instance
-
-    # private methods
 
     def _align_embeddings(
         self,
@@ -1316,8 +1400,8 @@ class FoundationModelStore:
 
     Public Methods
     --------------
-    ensure(store_or_dir)
-        Classmethod. Return a store, constructing one from a path if needed.
+    ensure(store_or_dir, validate=False)
+        Classmethod. Return a store, constructing one from a path if needed and validating it if needed.
     get_stem(dataset_name, category)
         Look up the filename stem for a (dataset, category) pair.
     has_category(dataset_name, category)
@@ -1330,6 +1414,8 @@ class FoundationModelStore:
         Return all categories registered for a dataset.
     list_datasets()
         Return all datasets present in the index.
+    load_category_residuals(dataset_name, category)
+        Load residual arrays and metadata for a (dataset, category) pair.
     load_residual_arrays(stem)
         Load residual arrays and sidecar metadata from disk.
     register_category(dataset_name, category, stem)
@@ -1340,6 +1426,8 @@ class FoundationModelStore:
         Return the path to the residual npz for a given stem.
     save_residual_arrays(stem, arrays, metadata_records)
         Write residual arrays and sidecar metadata to disk.
+    validate(raise_on_fail=True)
+        Validate that the store's index is consistent with files on disk.
 
     Examples
     --------
@@ -1349,7 +1437,7 @@ class FoundationModelStore:
     >>> fm.save_category_residuals(store, "ds1", "cluster_0")
 
     >>> store = FoundationModelStore.ensure(existing_store)   # no-op
-    >>> store = FoundationModelStore.ensure("/path/to/scGPT") # constructs
+    >>> store = FoundationModelStore.ensure("/path/to/scGPT", validate=True) # constructs and validates
     """
 
     def __init__(self, model_dir: Union[str, Path]):
@@ -1360,6 +1448,7 @@ class FoundationModelStore:
     def ensure(
         cls,
         store_or_dir: Union["FoundationModelStore", str, Path],
+        validate: bool = False,
     ) -> "FoundationModelStore":
         """Return a FoundationModelStore, constructing one if needed.
 
@@ -1368,6 +1457,8 @@ class FoundationModelStore:
         store_or_dir : FoundationModelStore, str, or Path
             Either an existing store (returned as-is) or a directory path
             from which a new store is constructed.
+        validate : bool, default=False
+            If True, validate the store after construction.
 
         Returns
         -------
@@ -1375,7 +1466,12 @@ class FoundationModelStore:
         """
         if isinstance(store_or_dir, cls):
             return store_or_dir
-        return cls(model_dir=store_or_dir)
+
+        fm_store = cls(model_dir=store_or_dir)
+        if validate:
+            fm_store.validate()
+
+        return fm_store
 
     @property
     def index_path(self) -> Path:
@@ -1423,6 +1519,43 @@ class FoundationModelStore:
     def list_datasets(self) -> List[str]:
         """Return all datasets present in the index."""
         return list(self.index.get("datasets", {}).keys())
+
+    def load_category_residuals(
+        self,
+        dataset_name: str,
+        category: str,
+    ) -> Tuple[Dict[str, np.ndarray], List[dict]]:
+        """Load residual arrays and metadata for a (dataset, category) pair.
+
+        Parameters
+        ----------
+        dataset_name : str
+            Dataset name.
+        category : str
+            Category name, exactly as registered.
+
+        Returns
+        -------
+        arrays : Dict[str, np.ndarray]
+            Mapping from layer key (e.g., 'layer_0') to embedding array.
+        metadata_records : List[dict]
+            Per-layer metadata dicts in layer order.
+
+        Raises
+        ------
+        KeyError
+            If (dataset_name, category) is not in the index.
+        FileNotFoundError
+            If the npz or sidecar file is missing.
+        """
+        stem = self.get_stem(dataset_name, category)
+        if stem is None:
+            available = self.list_categories(dataset_name)
+            raise KeyError(
+                f"Category '{category}' not found for dataset '{dataset_name}'. "
+                f"Available: {available}"
+            )
+        return self.load_residual_arrays(stem)
 
     def load_residual_arrays(
         self,
@@ -1510,6 +1643,73 @@ class FoundationModelStore:
         with open(self.residuals_metadata_path(stem), "w") as f:
             json.dump(metadata_records, f, indent=2)
         logger.info(f"Saved residual arrays to {self.residuals_path(stem).name}")
+
+    def validate(self, raise_on_fail: bool = True) -> Dict[str, Any]:
+        """Validate that the store's index is consistent with files on disk.
+
+        Checks that weights.npz and metadata.json exist, that every index
+        entry has corresponding files, and warns about orphaned files with
+        no index entry.
+
+        Parameters
+        ----------
+        raise_on_fail : bool
+            If True (default), raise ValueError on any errors. Warnings
+            (orphaned files) never raise.
+
+        Returns
+        -------
+        Dict with keys:
+            ok : bool
+            errors : List[str]
+            warnings : List[str]
+
+        Raises
+        ------
+        ValueError
+            If raise_on_fail is True and any errors are found.
+        """
+        errors = []
+        warnings = []
+
+        # Core files
+        if not self.weights_path.exists():
+            errors.append(f"weights.npz missing: {self.weights_path}")
+        if not self.metadata_path.exists():
+            errors.append(f"metadata.json missing: {self.metadata_path}")
+
+        # Index entries without files
+        for dataset in self.list_datasets():
+            for category in self.list_categories(dataset):
+                stem = self.get_stem(dataset, category)
+                if not self.residuals_path(stem).exists():
+                    errors.append(f"npz missing for '{dataset}/{category}': {stem}.npz")
+                if not self.residuals_metadata_path(stem).exists():
+                    errors.append(
+                        f"sidecar missing for '{dataset}/{category}': "
+                        f"{stem}_metadata.json"
+                    )
+
+        # Orphaned files not referenced by index
+        if self.residuals_dir.exists():
+            registered_stems = {
+                self.get_stem(ds, cat)
+                for ds in self.list_datasets()
+                for cat in self.list_categories(ds)
+            }
+            for npz in self.residuals_dir.glob("*.npz"):
+                if npz.stem not in registered_stems:
+                    warnings.append(f"Orphaned file not in index: {npz.name}")
+
+        report = {"ok": len(errors) == 0, "errors": errors, "warnings": warnings}
+
+        if raise_on_fail and errors:
+            raise ValueError(
+                f"FoundationModelStore validation failed for {self.model_dir}:\n"
+                + "\n".join(f"  - {e}" for e in errors)
+            )
+
+        return report
 
     @property
     def index(self) -> Dict:
@@ -1632,86 +1832,6 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
         FM_DEFS.DATASET_URI: ge.dataset_uri,
         FM_DEFS.CATEGORY: ge.category,
     }
-
-
-def _load_results(
-    output_dir: str,
-    prefix: str,
-    verbose: bool = True,
-) -> Tuple[dict, pd.DataFrame, dict, Optional[dict], List[dict]]:
-    """
-    Load foundation model results from files.
-
-    Parameters
-    ----------
-    output_dir : str
-        Directory path containing the saved files
-    prefix : str
-        Prefix used for the saved files
-    verbose : bool
-        Extra reporting (default: True)
-
-    Returns
-    -------
-    weights_dict : dict
-        Dictionary containing static_gene_embeddings and attention_weights numpy arrays
-    gene_annotations : pandas.DataFrame
-        DataFrame with gene annotations
-    model_metadata : dict
-        Dictionary with model metadata
-    static_gene_embeddings_metadata : dict
-        Metadata for static gene embeddings
-    dataset_gene_embeddings_metadata : List[dict]
-        List of dictionaries containing dataset gene embeddings metadata
-    """
-    weights_filename = FM_DEFS.WEIGHTS_TEMPLATE.format(prefix=prefix)
-    metadata_filename = FM_DEFS.METADATA_TEMPLATE.format(prefix=prefix)
-    weights_path = os.path.join(output_dir, weights_filename)
-    metadata_path = os.path.join(output_dir, metadata_filename)
-
-    if verbose:
-        logger.info(
-            f"Loading weights ({weights_filename}) and metadata (  {metadata_filename}) from output_dir ({output_dir})"
-        )
-
-    # Load weights from npz
-    weights_data = np.load(weights_path, allow_pickle=True)
-    weights_dict = {}
-    for key in weights_data.keys():
-        value = weights_data[key]
-        # Handle numpy arrays containing objects (like dictionaries)
-        if isinstance(value, np.ndarray) and value.dtype == object:
-            weights_dict[key] = value.item()
-        else:
-            weights_dict[key] = value
-
-    # Load metadata from JSON
-    with open(metadata_path, "r") as f:
-        combined_metadata = json.load(f)
-
-    model_metadata = combined_metadata[FM_DEFS.MODEL_METADATA]
-    gene_annotations = pd.DataFrame(combined_metadata[FM_DEFS.GENE_ANNOTATIONS])
-
-    # Load static gene embeddings metadata
-    static_gene_embedding_metadata = combined_metadata.get(
-        FM_DEFS.STATIC_GENE_EMBEDDINGS
-    )
-
-    # Load expression embeddings metadata (if present)
-    dataset_gene_embeddings_metadata = combined_metadata.get(
-        FM_DEFS.DATASET_GENE_EMBEDDINGS, []
-    )
-
-    if verbose:
-        logger.info("Successfully loaded all results")
-
-    return (
-        weights_dict,
-        gene_annotations,
-        model_metadata,
-        static_gene_embedding_metadata,
-        dataset_gene_embeddings_metadata,
-    )
 
 
 def _sanitize_filename(s: str) -> str:
