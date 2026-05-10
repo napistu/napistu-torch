@@ -47,11 +47,9 @@ from napistu_torch.foundation_models.constants import (
     CELLXGENE_DEFS,
     FM_DEFAULTS,
     FM_DEFS,
-    FOUNDATION_MODEL_NAMES,
     SCFOUNDATION_DEFS,
     SCGPT_DEFS,
     SCPRINT_DEFS,
-    VALID_FOUNDATION_MODEL_NAMES,
 )
 from napistu_torch.foundation_models.foundation_models import (
     AttentionLayer,
@@ -1108,170 +1106,61 @@ def _create_and_save_foundation_model(
     output_dir: str,
     file_prefix: str,
 ) -> FoundationModel:
-    """Create FoundationModel instance and save to disk.
+    """Create FoundationModel instance and save weights and residuals to disk.
 
     Parameters
     ----------
     weights : FoundationModelWeights
-        Model weights
+        Model weights.
     gene_annotations : pd.DataFrame
-        Gene annotations DataFrame
+        Gene annotations DataFrame.
     model_metadata : Dict
-        Model metadata dictionary
-    dataset_gene_embeddings : DatasetGeneEmbeddings
-        Contexutalized gene embeddings for 0+ datasets
+        Model metadata dictionary.
+    dataset_gene_embeddings : DatasetGeneEmbeddings, optional
+        Contextualized gene embeddings for 0+ datasets.
     output_dir : str
-        Output directory for saving
+        Parent output directory. A subdirectory named file_prefix is
+        created inside it.
     file_prefix : str
-        Prefix for output files
+        Model prefix — becomes the model subdirectory name
+        (e.g., 'scGPT', 'scPRINT_small').
 
     Returns
     -------
     FoundationModel
-        Created FoundationModel instance
-
-    Examples
-    --------
-    >>> model = _create_and_save_foundation_model(
-    ...     weights, annotations, metadata, "./output", "scGPT"
-    ... )
+        Created FoundationModel instance.
     """
+    from pathlib import Path
+
+    from napistu_torch.foundation_models.foundation_models import FoundationModelStore
+
     logger.info("Creating FoundationModel and saving...")
+
     foundation_model = FoundationModel(
         weights=weights,
         gene_annotations=gene_annotations,
         model_metadata=model_metadata,
         dataset_gene_embeddings=dataset_gene_embeddings,
     )
-    foundation_model.save(output_dir, file_prefix)
+
+    store = FoundationModelStore(Path(output_dir) / file_prefix)
+    foundation_model.save(store)
+
+    if dataset_gene_embeddings is not None:
+        for dataset_name in dataset_gene_embeddings.dataset_names:
+            ge_set = dataset_gene_embeddings[dataset_name]
+            categories = sorted(
+                {ge.category for ge in ge_set.values() if ge.category is not None}
+            )
+            logger.info(
+                f"Saving residuals for dataset '{dataset_name}': "
+                f"{len(categories)} categories"
+            )
+            for category in categories:
+                foundation_model.save_category_residuals(store, dataset_name, category)
+
     logger.info("Successfully saved all results!")
     return foundation_model
-
-
-def _embed_expression_batch(
-    model: Any,
-    model_type: str,
-    expression: torch.Tensor,
-    gene_emb: torch.Tensor,
-    gene_indices: Optional[torch.Tensor] = None,  # For scGPT
-    batch_size: int = 64,
-    device: Optional[torch.device] = None,
-    verbose: bool = False,
-) -> torch.Tensor:
-    """Create expression-aware embeddings by processing cells in batches.
-
-    Universal pattern for all models:
-    1. Batch cells through model-specific encoder
-    2. Accumulate expression embeddings across cells
-    3. Average and add to static gene embeddings
-
-    Parameters
-    ----------
-    model : Any
-        The foundation model
-    model_type : str
-        One of: "scPRINT", "scGPT", "AIDOCell", "scFoundation"
-    expression : torch.Tensor
-        Expression matrix (n_cells, n_genes)
-    gene_emb : torch.Tensor
-        Static gene embeddings (n_genes, embed_dim)
-    gene_indices : torch.Tensor, optional
-        Gene vocabulary indices (required for scGPT)
-    batch_size : int
-        Number of cells to process at once
-    device : torch.device, optional
-        Device for computation
-    verbose : bool, optional
-        Whether to print progress
-
-    Returns
-    -------
-    torch.Tensor
-        Contextualized gene embeddings (n_genes, embed_dim)
-    """
-    device = ensure_device(device, allow_autoselect=True)
-
-    _validate_embed_expression_inputs(expression, gene_emb, model_type, gene_indices)
-
-    t_expression = expression.to(device)
-    t_gene_emb = gene_emb.to(device)
-    t_model = model.to(device)
-    t_gene_indices = None
-    if gene_indices is not None:
-        t_gene_indices = gene_indices.to(device)
-
-    n_cells = t_expression.shape[0]
-    n_genes = t_gene_emb.shape[0]
-    embed_dim = t_gene_emb.shape[1]
-
-    # Accumulate expression embeddings
-    expr_emb_sum = torch.zeros(n_genes, embed_dim, device=device)
-
-    with memory_manager(device):
-        for i in range(0, n_cells, batch_size):
-            if verbose:
-                logger.info(
-                    f"Processing batch {i // batch_size + 1} of {n_cells // batch_size}"
-                )
-
-            batch_expr = t_expression[i : i + batch_size]
-            batch_size_actual = batch_expr.shape[0]
-
-            # Model-specific encoding
-            if model_type == FOUNDATION_MODEL_NAMES.SCPRINT:
-                batch_input = batch_expr.unsqueeze(-1)  # (batch, n_genes, 1)
-                batch_expr_emb = t_model.expr_encoder(
-                    batch_input
-                )  # (batch, n_genes, 1, 256)
-                batch_expr_emb = batch_expr_emb.squeeze(2)  # (batch, n_genes, 256)
-
-                del batch_input
-            elif model_type == FOUNDATION_MODEL_NAMES.SCGPT:
-                # Prepare inputs for scGPT
-                src = t_gene_indices.unsqueeze(0).expand(batch_size_actual, -1)
-                src_key_padding_mask = torch.zeros(
-                    batch_size_actual, n_genes, dtype=torch.bool, device=device
-                )
-
-                # Get contextualized embeddings from transformer
-                batch_expr_emb = t_model._encode(
-                    src, batch_expr, src_key_padding_mask, batch_labels=None
-                )
-
-                del src, src_key_padding_mask
-
-            elif model_type == FOUNDATION_MODEL_NAMES.AIDOCELL:
-                # batch_expr: (batch_size, n_genes) with raw counts
-                batch_input = batch_expr.unsqueeze(-1)  # (batch_size, n_genes, 1)
-                # Auto-discretization (expression component)
-                batch_expr_emb = t_model.encoder.gene_embedding(batch_input)
-                del batch_input
-
-            elif model_type == FOUNDATION_MODEL_NAMES.SCFOUNDATION:
-                batch_input = batch_expr.unsqueeze(-1).float()
-                batch_expr_emb = t_model.token_emb(batch_input, output_weight=0)
-                del batch_input
-            else:
-                raise ValueError(
-                    f"Unknown model_type: {model_type}. Defined types: {VALID_FOUNDATION_MODEL_NAMES}"
-                )
-
-            # Accumulate
-            expr_emb_sum += batch_expr_emb.sum(dim=0)
-
-            # Cleanup
-            del batch_expr_emb
-            empty_cache(device)
-
-    # Average expression embeddings across cells
-    mean_expr_emb = expr_emb_sum / n_cells
-
-    # Combine with static gene embeddings (universal pattern)
-    contextual_gene_emb = t_gene_emb + mean_expr_emb
-
-    del t_expression, t_gene_emb, t_model, t_gene_indices, mean_expr_emb, expr_emb_sum
-
-    return contextual_gene_emb.cpu()
 
 
 def _expression_tensor_to_gene_embeddings_set(
@@ -3409,107 +3298,3 @@ def _split_qkv_weights(
     w_v = qkv_weight[2 * embed_dim :, :]
 
     return w_q, w_k, w_v
-
-
-def _validate_embed_expression_inputs(
-    expression: torch.Tensor,
-    gene_emb: torch.Tensor,
-    model_type: str,
-    gene_indices: Optional[torch.Tensor] = None,
-) -> None:
-    """Validate inputs for _embed_expression_batch.
-
-    Checks:
-    - Tensor dimensions are correct
-    - Gene counts match across inputs
-    - Model-specific requirements are met
-
-    Parameters
-    ----------
-    expression : torch.Tensor
-        Expression matrix (n_cells, n_genes)
-    gene_emb : torch.Tensor
-        Static gene embeddings (n_genes, embed_dim)
-    model_type : str
-        One of: "scPRINT", "scGPT", "AIDOCell", "scFoundation"
-    gene_indices : torch.Tensor, optional
-        Gene vocabulary indices (required for scGPT), shape (n_genes,)
-
-    Raises
-    ------
-    ValueError
-        If any dimension checks fail
-    """
-    # Check expression tensor
-    if expression.ndim != 2:
-        raise ValueError(
-            f"expression must be 2D (n_cells, n_genes), got {expression.ndim}D "
-            f"with shape {expression.shape}"
-        )
-
-    n_cells, n_genes_expr = expression.shape
-
-    # Check gene_emb tensor
-    if gene_emb.ndim != 2:
-        raise ValueError(
-            f"gene_emb must be 2D (n_genes, embed_dim), got {gene_emb.ndim}D "
-            f"with shape {gene_emb.shape}"
-        )
-
-    n_genes_emb, embed_dim = gene_emb.shape
-
-    # Check gene dimension compatibility
-    if n_genes_expr != n_genes_emb:
-        raise ValueError(
-            f"Gene count mismatch:\n"
-            f"  expression: {n_genes_expr} genes (shape {expression.shape})\n"
-            f"  gene_emb:   {n_genes_emb} genes (shape {gene_emb.shape})\n"
-            f"These must match!"
-        )
-
-    n_genes = n_genes_emb
-
-    # Model-specific validation
-    if model_type == FOUNDATION_MODEL_NAMES.SCGPT:
-        if gene_indices is None:
-            raise ValueError(
-                "scGPT requires gene_indices parameter. "
-                "Pass the vocabulary indices for the genes."
-            )
-
-        if gene_indices.ndim != 1:
-            raise ValueError(
-                f"gene_indices must be 1D (n_genes,), got {gene_indices.ndim}D "
-                f"with shape {gene_indices.shape}"
-            )
-
-        n_genes_indices = len(gene_indices)
-        if n_genes_indices != n_genes:
-            raise ValueError(
-                f"Gene count mismatch:\n"
-                f"  expression:    {n_genes_expr} genes\n"
-                f"  gene_emb:      {n_genes_emb} genes\n"
-                f"  gene_indices:  {n_genes_indices} genes\n"
-                f"All must match!"
-            )
-
-    elif model_type in [
-        FOUNDATION_MODEL_NAMES.SCPRINT,
-        FOUNDATION_MODEL_NAMES.AIDOCELL,
-        FOUNDATION_MODEL_NAMES.SCFOUNDATION,
-    ]:
-        # These models don't need gene_indices
-        pass
-
-    else:
-        raise ValueError(
-            f"Unknown model_type: {model_type}. "
-            f"Must be one of: {VALID_FOUNDATION_MODEL_NAMES}"
-        )
-
-    # Success message with summary
-    logger.debug(
-        f"Input validation passed for {model_type}:\n"
-        f"  {n_cells} cells x {n_genes} genes\n"
-        f"  Embedding dimension: {embed_dim}"
-    )
