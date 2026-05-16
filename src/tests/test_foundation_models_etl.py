@@ -17,6 +17,10 @@ class _FakeAdata:
     X: Union[np.ndarray, csr_matrix]
     var_names: List[str]
 
+    @property
+    def n_obs(self) -> int:
+        return self.X.shape[0]
+
 
 def _make_cluster_adata(
     expression_matrix: np.ndarray,

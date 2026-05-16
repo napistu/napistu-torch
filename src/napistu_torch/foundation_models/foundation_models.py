@@ -1424,10 +1424,6 @@ class FoundationModelStore:
         embeddings
             Flat list of GeneEmbeddings, one per (dataset, category, layer).
 
-        Raises
-        ------
-        ValueError
-            If any embedding is missing dataset_name, category, or layer_idx.
         """
         from collections import defaultdict
 
@@ -1448,6 +1444,28 @@ class FoundationModelStore:
         groups: Dict[Tuple[str, str], List[GeneEmbeddings]] = defaultdict(list)
         for ge in embeddings:
             groups[(ge.dataset_name, ge.category)].append(ge)
+
+        # Check for stem collisions before writing anything
+        stem_to_key: Dict[str, Tuple[str, str]] = {}
+        for dataset_name, category in groups:
+            stem = (
+                f"{sanitize_filename(dataset_name)}" f"_{sanitize_filename(category)}"
+            )
+            if stem in stem_to_key:
+                existing_ds, existing_cat = stem_to_key[stem]
+                if existing_ds == dataset_name:
+                    raise ValueError(
+                        f"Categories '{category}' and '{existing_cat}' in dataset "
+                        f"'{dataset_name}' both sanitize to stem '{stem}'. "
+                        f"Rename one category to avoid filename collision."
+                    )
+                raise ValueError(
+                    f"Stem '{stem}' would be shared by "
+                    f"({existing_ds!r}, {existing_cat!r}) and "
+                    f"({dataset_name!r}, {category!r}). "
+                    f"Rename a dataset or category to avoid filename collision."
+                )
+            stem_to_key[stem] = (dataset_name, category)
 
         for (dataset_name, category), group_embeddings in groups.items():
             sorted_embeddings = sorted(group_embeddings, key=lambda ge: ge.layer_idx)
