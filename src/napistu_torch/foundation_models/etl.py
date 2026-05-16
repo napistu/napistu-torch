@@ -20,7 +20,7 @@ Each model has its own public process function and a similar set of private func
 *_extract_weights:
     Extract the weights from the model returning a FoundationModelWeights instance.
 *_get_expression_embeddings:
-    Extract the expression embeddings from the model returning a GeneEmbeddingsSet instance.
+    Extract the expression embeddings from the model returning a List[GeneEmbeddings].
 *_get_gene_embedding_by_cell_type:
     Extract the gene embedding by cell type from the model returning a GeneEmbeddings instance. Called by *_get_expression_embeddings.
 """
@@ -57,10 +57,11 @@ from napistu_torch.foundation_models.foundation_models import (
     FoundationModel,
     FoundationModelStore,
     FoundationModelWeights,
+    GeneAnnotations,
+    ModelMetadata,
 )
 from napistu_torch.foundation_models.gene_embeddings import (
     GeneEmbeddings,
-    GeneEmbeddingsSet,
 )
 from napistu_torch.ml.constants import DEVICE
 from napistu_torch.utils.optional import (
@@ -185,27 +186,27 @@ def process_aidocell(
 
     # 3. Extract dataset expression embeddings
     logger.info("3. Extracting dataset expression embeddings...")
-    dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+    all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        dataset_sets[config.name] = _aidocell_get_expression_embeddings(
+        all_gene_embeddings.extend(_aidocell_get_expression_embeddings(
             model,
             config.load_h5ad(),
             gene_annotations,
+            model_metadata[FM_DEFS.MODEL_NAME],
+            model_metadata[FM_DEFS.MODEL_VARIANT],
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
             batch_size=batch_size,
-        )
-
-    dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
+        ))
 
     # 4. Create FoundationModel and save
     _create_and_save_foundation_model(
         weights,
         gene_annotations,
         model_metadata,
-        dataset_gene_embeddings,
+        all_gene_embeddings,
         output_dir,
         file_prefix,
     )
@@ -318,31 +319,26 @@ def process_scfoundation(
     )
 
     logger.info("3. Extracting dataset expression embeddings...")
-    dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+    all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        dataset_sets[config.name] = _scfoundation_get_expression_embeddings(
+        all_gene_embeddings.extend(_scfoundation_get_expression_embeddings(
             model,
             config.load_h5ad(),
             gene_annotations,
+            metadata[FM_DEFS.MODEL_NAME],
+            model_variant=None,
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
             batch_size=batch_size,
-        )
+        ))
 
-    dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
-
-    # Set default prefix if not provided
-    if output_prefix is None:
-        output_prefix = SCFOUNDATION_DEFS.MODEL_NAME
-
-    # Build model and save
     _create_and_save_foundation_model(
         weights,
         gene_annotations,
         metadata,
-        dataset_gene_embeddings,
+        all_gene_embeddings,
         output_dir,
         output_prefix,
     )
@@ -428,30 +424,29 @@ def process_scgpt(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
 
-    # 4. Extract dataset expression embeddings
     logger.info("4. Extracting dataset expression embeddings...")
-    dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+    all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        dataset_sets[config.name] = _scgpt_get_expression_embeddings(
-            model=model,
-            adata=config.load_h5ad(),
-            gene_annotations=gene_annotations,
-            vocab=vocab,
+        all_gene_embeddings.extend(_scgpt_get_expression_embeddings(
+            model,
+            config.load_h5ad(),
+            gene_annotations,
+            vocab,
+            model_metadata[FM_DEFS.MODEL_NAME],
+            model_variant=None,
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
             batch_size=batch_size,
-        )
-
-    dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
+        ))
 
     # 5. Create FoundationModel and save
     _create_and_save_foundation_model(
         weights,
         gene_annotations,
         model_metadata,
-        dataset_gene_embeddings,
+        all_gene_embeddings,
         output_dir,
         file_prefix,
     )
@@ -520,29 +515,28 @@ def process_scprint(
         f"   Attention weights: {model_metadata[FM_DEFS.N_LAYERS]} layers × 4 matrices (Q,K,V,O)"
     )
 
-    # 3. Extract dataset expression embeddings
     logger.info("3. Extracting dataset expression embeddings...")
-    dataset_sets: Dict[str, GeneEmbeddingsSet] = {}
+    all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        dataset_sets[config.name] = _scprint_get_expression_embeddings(
+        all_gene_embeddings.extend(_scprint_get_expression_embeddings(
             model,
             config.load_h5ad(),
             gene_annotations,
+            model_metadata[FM_DEFS.MODEL_NAME],
+            model_metadata[FM_DEFS.MODEL_VARIANT],
             dataset_name=config.name,
             dataset_uri=config.uri,
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
             batch_size=batch_size,
-        )
-
-    dataset_gene_embeddings = DatasetGeneEmbeddings(dataset_sets)
+        ))
 
     # 4. Create FoundationModel and save
     _create_and_save_foundation_model(
         weights,
         gene_annotations,
         model_metadata,
-        dataset_gene_embeddings,
+        all_gene_embeddings,
         output_dir,
         file_prefix,
     )
@@ -787,39 +781,16 @@ def _aidocell_get_expression_embeddings(
     model: Any,
     adata: AnnData,
     gene_annotations: pd.DataFrame,
+    model_name: str,
+    model_variant: str,
+    *,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: int = None,
     cells_per_cluster: Optional[int] = None,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
-) -> GeneEmbeddingsSet:
-    """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
-
-    Parameters
-    ----------
-    model : Any
-        The AIDOCell model
-    adata : anndata.AnnData
-        The AnnData object containing the cells to embed
-    gene_annotations : pd.DataFrame
-        The gene annotations
-    dataset_name : Optional[str] = None
-        The name of the dataset
-    dataset_uri : Optional[str] = None
-        The URI of the dataset
-    min_cluster_cells : int, optional
-        Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. If None, then all clusters are included.
-    cells_per_cluster : int, optional
-        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
-    batch_size : int, optional
-        Cells per forward pass when capturing residual streams per cluster.
-
-    Returns
-    -------
-    GeneEmbeddingsSet
-        Expression embeddings for the dataset
-    """
+) -> List[GeneEmbeddings]:
+    """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim)."""
 
     cluster_embeddings, selected_genes, cell_cluster_dict = (
         _aidocell_get_gene_embedding_by_cell_type(
@@ -832,16 +803,16 @@ def _aidocell_get_expression_embeddings(
         )
     )
 
-    expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
+    return _expression_tensor_to_gene_embeddings_set(
+        embeddings_4d=cluster_embeddings,
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
         dataset_name=dataset_name,
         dataset_uri=dataset_uri,
+        model_name=model_name,
+        model_variant=model_variant,
     )
-
-    return expression_embeddings
 
 
 @require_modelgenerator
@@ -1105,22 +1076,25 @@ def _create_and_save_foundation_model(
     weights: FoundationModelWeights,
     gene_annotations: pd.DataFrame,
     model_metadata: Dict,
-    dataset_gene_embeddings: Optional[DatasetGeneEmbeddings],
+    gene_embeddings: List[GeneEmbeddings],
     output_dir: str,
     file_prefix: str,
 ) -> FoundationModel:
     logger.info("Creating FoundationModel and saving...")
 
+    # Validate components before writing anything to disk
+    GeneAnnotations(annotations=gene_annotations)
+    ModelMetadata(**model_metadata)
+
     foundation_model = FoundationModel(
         weights=weights,
         gene_annotations=gene_annotations,
         model_metadata=model_metadata,
-        dataset_gene_embeddings=dataset_gene_embeddings,
     )
 
     store = FoundationModelStore(Path(output_dir) / file_prefix)
     foundation_model.save(store)
-    foundation_model.save_all_residuals(store)
+    store.save_residuals(gene_embeddings)
 
     logger.info("Successfully saved all results!")
     return foundation_model
@@ -1132,12 +1106,11 @@ def _expression_tensor_to_gene_embeddings_set(
     gene_annotations: pd.DataFrame,
     category_dict: Dict[int, str],
     gene_id_column: str = ONTOLOGIES.ENSEMBL_GENE,
-    align_on: str = ONTOLOGIES.ENSEMBL_GENE,
     model_name: Optional[str] = None,
     model_variant: Optional[str] = None,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
-) -> "GeneEmbeddingsSet":
+) -> List[GeneEmbeddings]:
     """Convert a 4D expression embedding tensor into a GeneEmbeddingsSet.
 
     Slices a (n_categories, n_layers, n_genes, embed_dim) tensor along the
@@ -1161,9 +1134,6 @@ def _expression_tensor_to_gene_embeddings_set(
     gene_id_column : str, optional
         Column in ``gene_annotations`` to match ``ordered_genes`` against
         (default: 'ensembl_gene').
-    align_on : str, optional
-        Column used for alignment validation in the resulting
-        ``GeneEmbeddingsSet`` (default: 'ensembl_gene').
     model_name : Optional[str]
         Source model name.
     model_variant : Optional[str]
@@ -1175,9 +1145,7 @@ def _expression_tensor_to_gene_embeddings_set(
 
     Returns
     -------
-    GeneEmbeddingsSet
-        Set of GeneEmbeddings, one per (category, layer) pair, all sharing
-        the same gene vocabulary. Keyed by ``source_label``.
+    List of GeneEmbeddings, one per (category, layer) pair
 
     Raises
     ------
@@ -1259,7 +1227,7 @@ def _expression_tensor_to_gene_embeddings_set(
         f"({n_genes} genes, {n_categories} categories, {n_layers} layers)"
     )
 
-    return GeneEmbeddingsSet.from_gene_embeddings(result, align_on=align_on)
+    return result
 
 
 def _format_base_metadata(
@@ -1729,41 +1697,16 @@ def _scfoundation_get_expression_embeddings(
     model: MaeAutobin,
     adata: AnnData,
     gene_annotations: pd.DataFrame,
+    model_name: str,
+    *,
+    model_variant: Optional[str],
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
-) -> GeneEmbeddingsSet:
-    """Embed each cell type in an AnnData object using per-cluster gene filtering.
-
-    Parameters
-    ----------
-    model : MaeAutobin
-        The scFoundation model.
-    adata : AnnData
-        The AnnData object containing the cells to embed.
-    gene_annotations : pd.DataFrame
-        The gene annotations.
-    dataset_name : str, optional
-        The name of the dataset.
-    dataset_uri : str, optional
-        The URI of the dataset.
-    min_cluster_cells : int, optional
-        Minimum number of cells per cluster to include. Defaults to
-        FM_DEFAULTS.MIN_CLUSTER_CELLS.
-    cells_per_cluster : int, optional
-        Maximum cells sampled per cluster. ``None`` uses all cells.
-        Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER.
-    batch_size : int, optional
-        Cells per forward pass. Defaults to
-        FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
-
-    Returns
-    -------
-    GeneEmbeddingsSet
-        Expression embeddings for the dataset.
-    """
+) -> List[GeneEmbeddings]:
+    """Embed each cell type in an AnnData object using per-cluster gene filtering."""
     all_cluster_embeddings, all_cluster_genes, valid_cell_cluster_dict = (
         _scfoundation_get_gene_embedding_by_cell_type(
             model,
@@ -1798,6 +1741,8 @@ def _scfoundation_get_expression_embeddings(
                 dataset_uri=dataset_uri,
                 category=category_name,
                 layer_idx=layer_idx,
+                model_name=model_name,
+                model_variant=model_variant,
             )
             all_gene_embeddings.append(ge)
 
@@ -1806,11 +1751,7 @@ def _scfoundation_get_expression_embeddings(
         f"({len(valid_cell_cluster_dict)} categories)"
     )
 
-    return GeneEmbeddingsSet.from_gene_embeddings(
-        all_gene_embeddings,
-        align_on=ONTOLOGIES.ENSEMBL_GENE,
-        verbose=True,
-    )
+    return all_gene_embeddings
 
 
 @require_modelgenerator
@@ -2310,42 +2251,16 @@ def _scgpt_get_expression_embeddings(
     adata: AnnData,
     gene_annotations: pd.DataFrame,
     vocab: GeneVocab,
+    model_name: str,
+    *,
+    model_variant: Optional[str],
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = None,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT,
-) -> GeneEmbeddingsSet:
-    """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
-
-    Parameters
-    ----------
-    model : scprint.model.model.scPrint
-        The scPRINT model
-    adata : anndata.AnnData
-        The AnnData object containing the cells to embed
-    gene_annotations : pd.DataFrame
-        The gene annotations
-    vocab : GeneVocab
-        The vocabulary
-    dataset_name : Optional[str] = None
-        The name of the dataset
-    dataset_uri : Optional[str] = None
-        The URI of the dataset
-    min_cluster_cells : int, optional
-        Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
-    cells_per_cluster : int, optional
-        Maximum cells sampled per leiden cluster when embedding. ``None`` (default) uses all cells.
-    batch_size : int, optional
-        Cells per forward pass when capturing residual streams per cluster.
-        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_SCGPT.
-
-    Returns
-    -------
-    GeneEmbeddingsSet
-        Expression embeddings for the dataset
-    """
+) -> List[GeneEmbeddings]:
+    """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim)."""
 
     cluster_embeddings, selected_genes, cell_cluster_dict = (
         _scgpt_get_gene_embedding_by_cell_type(
@@ -2359,16 +2274,16 @@ def _scgpt_get_expression_embeddings(
         )
     )
 
-    expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
+    return _expression_tensor_to_gene_embeddings_set(
+        embeddings_4d=cluster_embeddings,
         ordered_genes=selected_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
         dataset_name=dataset_name,
         dataset_uri=dataset_uri,
+        model_name=model_name,
+        model_variant=model_variant,
     )
-
-    return expression_embeddings
 
 
 @require_scgpt
@@ -3017,12 +2932,15 @@ def _scprint_get_expression_embeddings(
     model: scPrint,
     adata: AnnData,
     gene_annotations: pd.DataFrame,
+    model_name: str,
+    model_variant: str,
+    *,
     dataset_name: Optional[str] = None,
     dataset_uri: Optional[str] = None,
     min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
-) -> Tuple[torch.Tensor, Dict[str, str], List[str]]:
+) -> List[GeneEmbeddings]:
     """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
 
     Parameters
@@ -3033,6 +2951,10 @@ def _scprint_get_expression_embeddings(
         The AnnData object containing the cells to embed
     gene_annotations : pd.DataFrame
         Gene annotations DataFrame
+    model_name : str
+        Foundation-model catalog name (must match saved metadata).
+    model_variant : str
+        scPRINT variant string from metadata (e.g. checkpoint version id).
     dataset_name : Optional[str] = None
         The name of the dataset
     dataset_uri : Optional[str] = None
@@ -3064,16 +2986,16 @@ def _scprint_get_expression_embeddings(
         batch_size=batch_size,
     )
 
-    expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim),
+    return _expression_tensor_to_gene_embeddings_set(
+        embeddings_4d=cluster_embeddings,
         ordered_genes=common_genes,
         gene_annotations=gene_annotations,
         category_dict=cell_cluster_dict,
         dataset_name=dataset_name,
         dataset_uri=dataset_uri,
+        model_name=model_name,
+        model_variant=model_variant,
     )
-
-    return expression_embeddings
 
 
 @require_scprint
