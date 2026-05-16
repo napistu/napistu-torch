@@ -4,12 +4,10 @@ import json
 
 import numpy as np
 import pytest
-import yaml
 from foundation_model_factories import (
-    _clone_fm_with_dge,
-    _make_all_layer_idx_none_dge,
-    _make_layer_grid_dge,
+    _make_layer_grid_embeddings,
     make_foundation_model,
+    make_gene_annotations,
     make_gene_ids,
 )
 
@@ -18,73 +16,7 @@ from napistu_torch.foundation_models.foundation_models import (
     FoundationModel,
     FoundationModelStore,
 )
-
-
-def test_validate_dge_passes_full_layer_grid():
-    gene_ids = make_gene_ids(6)
-    dge = _make_layer_grid_dge(
-        n_layers=3, n_categories=2, gene_ids=gene_ids, model_name="TestModel"
-    )
-    fm = _clone_fm_with_dge(
-        make_foundation_model(n_genes=6, embed_dim=8, n_layers=3, gene_ids=gene_ids),
-        dge,
-    )
-    report = fm.validate_dataset_gene_embeddings(verbose=False)
-    assert report["ok"]
-    assert report["datasets"][0]["distinct_layer_indices"] == (0, 1, 2)
-
-
-def test_validate_dge_fails_without_embeddings():
-    fm = make_foundation_model()
-    report = fm.validate_dataset_gene_embeddings()
-    assert not report["ok"]
-    assert "dataset_gene_embeddings is None" in report["datasets"][0]["errors"][0]
-
-
-def test_validate_dge_fails_all_layer_idx_none():
-    gene_ids = make_gene_ids(5)
-    dge = _make_all_layer_idx_none_dge(gene_ids=gene_ids, n_embeddings=3)
-    fm = _clone_fm_with_dge(
-        make_foundation_model(n_genes=5, embed_dim=8, n_layers=12, gene_ids=gene_ids),
-        dge,
-    )
-    report = fm.validate_dataset_gene_embeddings(verbose=False)
-    assert not report["ok"]
-    assert any(
-        "layer_idx=None" in e and "residual" in e
-        for e in report["datasets"][0]["errors"]
-    )
-
-
-def test_validate_dge_fails_missing_layer():
-    gene_ids = make_gene_ids(5)
-    dge = _make_layer_grid_dge(
-        n_layers=3,
-        n_categories=2,
-        gene_ids=gene_ids,
-        layers_per_emb=[0, 2],
-        model_name="TestModel",
-    )
-    fm = _clone_fm_with_dge(
-        make_foundation_model(n_genes=5, embed_dim=8, n_layers=3, gene_ids=gene_ids),
-        dge,
-    )
-    report = fm.validate_dataset_gene_embeddings(verbose=False)
-    assert not report["ok"]
-    assert any("missing layers [1]" in e for e in report["datasets"][0]["errors"])
-
-
-def test_validate_dge_raises_on_missing_dataset_key():
-    gene_ids = make_gene_ids(4)
-    dge = _make_layer_grid_dge(
-        n_layers=2, n_categories=1, gene_ids=gene_ids, model_name="TestModel"
-    )
-    fm = _clone_fm_with_dge(
-        make_foundation_model(n_genes=4, embed_dim=8, n_layers=2, gene_ids=gene_ids),
-        dge,
-    )
-    with pytest.raises(KeyError):
-        fm.validate_dataset_gene_embeddings(dataset_name="missing_dataset")
+from napistu_torch.foundation_models.gene_embeddings import GeneEmbeddings
 
 
 def test_foundation_model_save(tmp_path):
@@ -112,51 +44,6 @@ def test_foundation_model_save(tmp_path):
     assert meta[FM_DEFS.MODEL_METADATA][FM_DEFS.MODEL_NAME] == "TestModel"
     assert meta[FM_DEFS.MODEL_METADATA][FM_DEFS.N_LAYERS] == 2
     assert FM_DEFS.GENE_ANNOTATIONS in meta
-    assert FM_DEFS.DATASET_GENE_EMBEDDINGS not in meta
-
-
-def test_foundation_model_save_category_residuals(tmp_path):
-    """save_category_residuals() writes arrays, updates index, raises on bad inputs."""
-    gene_ids = make_gene_ids(10)
-    fm_base = make_foundation_model(
-        n_genes=10, embed_dim=8, n_layers=2, gene_ids=gene_ids
-    )
-    dge = _make_layer_grid_dge(
-        n_layers=2,
-        n_categories=3,
-        gene_ids=gene_ids,
-        embed_dim=8,
-        model_name=fm_base.model_name,
-    )
-    fm = _clone_fm_with_dge(fm_base, dge)
-
-    store = FoundationModelStore(tmp_path / fm.disk_name)
-    fm.save(store)
-
-    # Save all three categories
-    for i in range(3):
-        fm.save_category_residuals(store, "ds1", f"cluster_{i}")
-
-    # Index reflects all categories
-    assert set(store.list_categories("ds1")) == {"cluster_0", "cluster_1", "cluster_2"}
-
-    # Arrays have correct shape for one category
-    stem = store.get_stem("ds1", "cluster_0")
-    arrays, metadata_records = store.load_residual_arrays(stem)
-    assert set(arrays.keys()) == {"layer_0", "layer_1"}
-    assert all(arr.shape == (10, 8) for arr in arrays.values())
-    assert len(metadata_records) == 2
-
-    # Error cases
-    fm_no_dge = make_foundation_model(n_genes=10, embed_dim=8, n_layers=2)
-    with pytest.raises(ValueError, match="no dataset_gene_embeddings"):
-        fm_no_dge.save_category_residuals(store, "ds1", "cluster_0")
-
-    with pytest.raises(ValueError, match="not found in model"):
-        fm.save_category_residuals(store, "nonexistent_dataset", "cluster_0")
-
-    with pytest.raises(ValueError, match="not found in dataset"):
-        fm.save_category_residuals(store, "ds1", "nonexistent_category")
 
 
 def test_foundation_model_save_load_roundtrip(tmp_path):
@@ -189,7 +76,6 @@ def test_foundation_model_save_load_roundtrip(tmp_path):
         np.testing.assert_array_equal(orig.W_k, loaded_layer.W_k)
 
     # Load semantics
-    assert loaded.dataset_gene_embeddings is None
     assert loaded.store.model_dir == tmp_path / fm.disk_name
 
 
@@ -200,24 +86,73 @@ def test_foundation_model_load_validates(tmp_path):
         FoundationModel.load(tmp_path / "empty")
 
 
-def test_foundation_model_residuals_roundtrip(tmp_path):
-    """save_all_residuals() / load_category_residuals() roundtrip and error cases."""
+def test_store_save_residuals(tmp_path):
+    """store.save_residuals() writes arrays, updates index, raises on bad inputs."""
     gene_ids = make_gene_ids(10)
-    fm_base = make_foundation_model(
-        n_genes=10, embed_dim=8, n_layers=2, gene_ids=gene_ids
+    fm = make_foundation_model(n_genes=10, embed_dim=8, n_layers=2, gene_ids=gene_ids)
+    embeddings = _make_layer_grid_embeddings(
+        n_layers=2,
+        n_categories=3,
+        gene_ids=gene_ids,
+        embed_dim=8,
+        model_name=fm.model_name,
+        dataset_name="ds1",
     )
-    dge = _make_layer_grid_dge(
+
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
+    store.save_residuals(embeddings)
+
+    # Index reflects all categories
+    assert set(store.list_categories("ds1")) == {"cluster_0", "cluster_1", "cluster_2"}
+
+    # Arrays have correct shape for one category
+    stem = store.get_stem("ds1", "cluster_0")
+    arrays, metadata_records = store.load_residual_arrays(stem)
+    assert set(arrays.keys()) == {"layer_0", "layer_1"}
+    assert all(arr.shape == (10, 8) for arr in arrays.values())
+    assert len(metadata_records) == 2
+
+    # Error cases — missing required metadata fields
+    bad_ge = GeneEmbeddings(
+        embedding=np.zeros((10, 8)),
+        ordered_gene_ids=gene_ids,
+        gene_annotations=make_gene_annotations(gene_ids),
+        dataset_name=None,
+        category="cluster_0",
+        layer_idx=0,
+    )
+    with pytest.raises(ValueError, match="no dataset_name"):
+        store.save_residuals([bad_ge])
+
+    bad_ge_no_layer = GeneEmbeddings(
+        embedding=np.zeros((10, 8)),
+        ordered_gene_ids=gene_ids,
+        gene_annotations=make_gene_annotations(gene_ids),
+        dataset_name="ds1",
+        category="cluster_0",
+        layer_idx=None,
+    )
+    with pytest.raises(ValueError, match="no layer_idx"):
+        store.save_residuals([bad_ge_no_layer])
+
+
+def test_foundation_model_residuals_roundtrip(tmp_path):
+    """store.save_residuals() / load_category_residuals() roundtrip and error cases."""
+    gene_ids = make_gene_ids(10)
+    fm = make_foundation_model(n_genes=10, embed_dim=8, n_layers=2, gene_ids=gene_ids)
+    embeddings = _make_layer_grid_embeddings(
         n_layers=2,
         n_categories=2,
         gene_ids=gene_ids,
         embed_dim=8,
-        model_name=fm_base.model_name,
+        model_name=fm.model_name,
+        dataset_name="ds1",
     )
-    fm = _clone_fm_with_dge(fm_base, dge)
 
     store = FoundationModelStore(tmp_path / fm.disk_name)
     fm.save(store)
-    fm.save_all_residuals(store)
+    store.save_residuals(embeddings)
     loaded = FoundationModel.load(store)
 
     # Shapes, metadata, and array values for one category
@@ -232,79 +167,149 @@ def test_foundation_model_residuals_roundtrip(tmp_path):
 
     # Arrays match originals
     original = {
-        ge.layer_idx: ge.embedding
-        for ge in fm.dataset_gene_embeddings["ds1"].values()
-        if ge.category == "cluster_0"
+        ge.layer_idx: ge.embedding for ge in embeddings if ge.category == "cluster_0"
     }
     for layer_idx, ge in layer_embeddings.items():
         np.testing.assert_array_equal(ge.embedding, original[layer_idx])
 
     # Error cases
+    fm_no_store = make_foundation_model(n_genes=10, embed_dim=8, n_layers=2)
     with pytest.raises(ValueError, match="no store attached"):
-        fm.load_category_residuals("ds1", "cluster_0")
+        fm_no_store.load_category_residuals("ds1", "cluster_0")
 
     with pytest.raises(KeyError, match="not found"):
         loaded.load_category_residuals("ds1", "nonexistent_category")
 
 
-def test_store_lifecycle_and_index(tmp_path):
-    """Initialize, register categories across two datasets, verify persistence."""
-    store = FoundationModelStore(tmp_path / "scGPT")
-    assert not store.is_initialized()
+def test_save_residuals_overwrites_same_category(tmp_path):
+    """Saving the same (dataset, category) twice overwrites silently."""
+    gene_ids = make_gene_ids(5)
+    fm = make_foundation_model(n_genes=5, embed_dim=8, n_layers=2, gene_ids=gene_ids)
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
 
-    store.initialize()
-    assert store.is_initialized()
-    assert store.residuals_dir.exists()
+    embeddings_v1 = _make_layer_grid_embeddings(
+        n_layers=2,
+        n_categories=1,
+        gene_ids=gene_ids,
+        embed_dim=8,
+        model_name=fm.model_name,
+        dataset_name="ds1",
+    )
+    embeddings_v2 = _make_layer_grid_embeddings(
+        n_layers=2,
+        n_categories=1,
+        gene_ids=gene_ids,
+        embed_dim=8,
+        model_name=fm.model_name,
+        dataset_name="ds1",
+        seed=99,
+    )
 
-    # Empty index
-    assert store.list_datasets() == []
-    assert not store.has_category("ds1", "cluster_0")
+    store.save_residuals(embeddings_v1)
+    store.save_residuals(embeddings_v2)
 
-    # Register across two datasets
-    store.register_category("ds1", "adipocyte (0)", "ds1_adipocyte_0")
-    store.register_category("ds1", "T cell", "ds1_T_cell")
-    store.register_category("ds2", "cluster_0", "ds2_cluster_0")
+    # Second save overwrites — only one entry in index
+    assert store.list_categories("ds1") == ["cluster_0"]
 
-    assert set(store.list_datasets()) == {"ds1", "ds2"}
-    assert set(store.list_categories("ds1")) == {"adipocyte (0)", "T cell"}
-    assert store.get_stem("ds1", "adipocyte (0)") == "ds1_adipocyte_0"
-    assert store.has_category("ds2", "cluster_0")
-
-    # Category names with special characters preserved exactly in yaml
-    with open(store.index_path) as f:
-        raw = yaml.safe_load(f)
-    assert raw["datasets"]["ds1"]["adipocyte (0)"] == "ds1_adipocyte_0"
-
-    # Reload from disk — verify persistence
-    store2 = FoundationModelStore(tmp_path / "scGPT")
-    assert set(store2.list_datasets()) == {"ds1", "ds2"}
-    assert store2.get_stem("ds1", "T cell") == "ds1_T_cell"
-
-
-def test_store_residual_array_roundtrip(tmp_path):
-    """save_residual_arrays / load_residual_arrays roundtrip and error cases."""
-    store = FoundationModelStore(tmp_path / "scGPT")
-    store.initialize()
-
-    arrays = {
-        "layer_0": np.random.randn(10, 8).astype(np.float32),
-        "layer_1": np.random.randn(10, 8).astype(np.float32),
+    # Values reflect second save
+    stem = store.get_stem("ds1", "cluster_0")
+    arrays, _ = store.load_residual_arrays(stem)
+    expected = {
+        ge.layer_idx: ge.embedding for ge in embeddings_v2 if ge.category == "cluster_0"
     }
-    metadata_records = [{"layer_idx": 0}, {"layer_idx": 1}]
+    for layer_key, arr in arrays.items():
+        layer_idx = int(layer_key.split("_")[1])
+        np.testing.assert_array_equal(arr, expected[layer_idx])
 
-    store.save_residual_arrays("ds1_cluster_0", arrays, metadata_records)
-    loaded_arrays, loaded_meta = store.load_residual_arrays("ds1_cluster_0")
 
-    assert set(loaded_arrays.keys()) == {"layer_0", "layer_1"}
-    np.testing.assert_array_equal(loaded_arrays["layer_0"], arrays["layer_0"])
-    np.testing.assert_array_equal(loaded_arrays["layer_1"], arrays["layer_1"])
-    assert loaded_meta == metadata_records
+def test_save_residuals_stem_collision_raises(tmp_path):
+    """Categories that sanitize to the same stem raise ValueError."""
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    fm = make_foundation_model(n_genes=5, embed_dim=8, n_layers=1, gene_ids=gene_ids)
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
 
-    # Missing npz
-    with pytest.raises(FileNotFoundError, match="Residual arrays not found"):
-        store.load_residual_arrays("nonexistent_stem")
+    # "cluster (0)" and "cluster_0" both sanitize to "cluster_0"
+    rng = np.random.default_rng(0)
+    embeddings = [
+        GeneEmbeddings(
+            embedding=rng.standard_normal((5, 8)).astype(np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name=fm.model_name,
+            layer_idx=0,
+            dataset_name="ds1",
+            category="cluster (0)",
+        ),
+        GeneEmbeddings(
+            embedding=rng.standard_normal((5, 8)).astype(np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name=fm.model_name,
+            layer_idx=0,
+            dataset_name="ds1",
+            category="cluster_0",
+        ),
+    ]
 
-    # npz present but sidecar missing
-    np.savez(store.residuals_path("orphan"), layer_0=np.zeros((5, 4)))
-    with pytest.raises(FileNotFoundError, match="sidecar is missing"):
-        store.load_residual_arrays("orphan")
+    with pytest.raises(ValueError, match="sanitize to stem"):
+        store.save_residuals(embeddings)
+
+
+def test_save_residuals_missing_dataset_name_raises(tmp_path):
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    fm = make_foundation_model(n_genes=5, embed_dim=8, n_layers=1, gene_ids=gene_ids)
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
+
+    bad = GeneEmbeddings(
+        embedding=np.zeros((5, 8), dtype=np.float32),
+        ordered_gene_ids=gene_ids,
+        gene_annotations=annotations,
+        dataset_name=None,
+        category="cluster_0",
+        layer_idx=0,
+    )
+    with pytest.raises(ValueError, match="no dataset_name"):
+        store.save_residuals([bad])
+
+
+def test_save_residuals_missing_category_raises(tmp_path):
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    fm = make_foundation_model(n_genes=5, embed_dim=8, n_layers=1, gene_ids=gene_ids)
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
+
+    bad = GeneEmbeddings(
+        embedding=np.zeros((5, 8), dtype=np.float32),
+        ordered_gene_ids=gene_ids,
+        gene_annotations=annotations,
+        dataset_name="ds1",
+        category=None,
+        layer_idx=0,
+    )
+    with pytest.raises(ValueError, match="no category"):
+        store.save_residuals([bad])
+
+
+def test_save_residuals_missing_layer_idx_raises(tmp_path):
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    fm = make_foundation_model(n_genes=5, embed_dim=8, n_layers=1, gene_ids=gene_ids)
+    store = FoundationModelStore(tmp_path / fm.disk_name)
+    fm.save(store)
+
+    bad = GeneEmbeddings(
+        embedding=np.zeros((5, 8), dtype=np.float32),
+        ordered_gene_ids=gene_ids,
+        gene_annotations=annotations,
+        dataset_name="ds1",
+        category="cluster_0",
+        layer_idx=None,
+    )
+    with pytest.raises(ValueError, match="no layer_idx"):
+        store.save_residuals([bad])

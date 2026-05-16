@@ -45,7 +45,6 @@ FM_CLASSES = SimpleNamespace(
     ATTENTION_LAYER="AttentionLayer",
     GENE_EMBEDDINGS="GeneEmbeddings",
     GENE_EMBEDDINGS_SET="GeneEmbeddingsSet",
-    DATASET_GENE_EMBEDDINGS="DatasetGeneEmbeddings",
 )
 
 FM_DEFS = SimpleNamespace(
@@ -87,7 +86,6 @@ FM_DEFS = SimpleNamespace(
     DATASET_NAME="dataset_name",
     DATASET_URI="dataset_uri",
     CATEGORY="category",
-    DATASET_GENE_EMBEDDINGS="dataset_gene_embeddings",  # optional DatasetGeneEmbeddings
 )
 
 CELLXGENE_DEFS = SimpleNamespace(

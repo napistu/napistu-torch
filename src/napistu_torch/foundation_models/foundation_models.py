@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -20,10 +19,10 @@ from torch import Tensor
 
 from napistu_torch.foundation_models.constants import FM_DEFS
 from napistu_torch.foundation_models.gene_embeddings import (
-    DatasetGeneEmbeddings,
     GeneEmbeddings,
     _get_model_label,
 )
+from napistu_torch.utils.string_utils import sanitize_filename
 from napistu_torch.utils.torch_utils import cleanup_tensors, ensure_device
 
 logger = logging.getLogger(__name__)
@@ -378,30 +377,25 @@ class FoundationModel(BaseModel):
 
     Attributes
     ----------
-    dataset_expression_embeddings : Optional[DatasetGeneEmbeddings]
-        Contextualized gene embeddings for 0+ datasets, keyed by dataset name.
-        Each dataset contains a GeneEmbeddingsSet (one GeneEmbeddings per
-        category/cell type), which may have different gene vocabularies across
-        datasets (e.g., different HVG selections from scGPT).
-    embed_dim : int
+    embed_dim
         Embedding dimension
-    gene_annotations : pd.DataFrame
+    gene_annotations
         Gene annotations with columns: vocab_name, ensembl_gene, symbol (optional)
-    model_name : str
+    model_name
         Name of the foundation model (e.g., 'scGPT', 'AIDOCell', 'scPRINT')
-    model_variant: Optional[str]
+    model_variant
         Variant of the foundation model (e.g., 'aido_cell_3m', 'aido_cell_10m', 'aido_cell_100m')
-    n_genes : int
+    n_genes
         Number of actual genes (excluding special tokens)
-    n_heads : int
+    n_heads
         Number of attention heads per layer
-    n_layers : int
+    n_layers
         Number of transformer layers
-    n_vocab : int
+    n_vocab
         Total vocabulary size (may include special tokens like <pad>, <cls>)
-    ordered_vocabulary : List[str]
+    ordered_vocabulary
         Vocabulary terms in same order as embedding matrix rows
-    weights : FoundationModelWeights
+    weights
         Model weight matrices (embeddings and attention layers)
 
     Properties
@@ -419,20 +413,11 @@ class FoundationModel(BaseModel):
         Load residual streams and metadata for a (dataset, category) pair.
     save(output_dir, prefix)
         Save foundation model to files.
-    save_all_residuals(output_dir, prefix)
-        Save all per-category residual streams to disk.
-    save_category_residuals(output_dir, prefix, dataset_name, category)
-        Save a single per-category residual stream to disk.
-    validate_dataset_gene_embeddings(...)
-        Post-load checks on dataset gene embeddings from ETL (layer coverage,
-        variance, labels). Distinct from :meth:`validate_dataset_gene_embeddings_field`,
-        which validates the field type at model construction.
     """
 
     model_config = {"frozen": True, "arbitrary_types_allowed": True}
 
     # Core data
-    dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None
     gene_annotations: pd.DataFrame
     weights: FoundationModelWeights
     store: Optional[FoundationModelStore] = None
@@ -452,7 +437,6 @@ class FoundationModel(BaseModel):
         weights: FoundationModelWeights,
         gene_annotations: Union[pd.DataFrame, GeneAnnotations],
         model_metadata: Union[Dict[str, Any], ModelMetadata],
-        dataset_gene_embeddings: Optional[DatasetGeneEmbeddings] = None,
         store: Optional[FoundationModelStore] = None,
         **kwargs,
     ):
@@ -461,16 +445,13 @@ class FoundationModel(BaseModel):
 
         Parameters
         ----------
-        weights : FoundationModelWeights
+        weights
             Model weight matrices
-        gene_annotations : pd.DataFrame or GeneAnnotations
+        gene_annotations
             Gene annotations
-        model_metadata : dict or ModelMetadata
+        model_metadata
             Model metadata containing model_name, n_genes, n_vocab, ordered_vocabulary,
             embed_dim, n_layers, n_heads
-        dataset_gene_embeddings : DatasetGeneEmbeddings, optional
-            Contextualized gene embeddings for 0+ datasets. Each dataset is a
-            GeneEmbeddingsSet containing one GeneEmbeddings per category.
         **kwargs
             Additional keyword arguments (ignored, for compatibility)
 
@@ -508,20 +489,10 @@ class FoundationModel(BaseModel):
             ModelMetadata(**model_metadata)
             metadata_dict = model_metadata
 
-        if dataset_gene_embeddings is not None:
-            if not isinstance(dataset_gene_embeddings, DatasetGeneEmbeddings):
-                raise ValueError(
-                    "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
-                    f"got {type(dataset_gene_embeddings)}"
-                )
-        else:
-            dataset_gene_embeddings = None
-
         # Call parent __init__ with unpacked metadata
         super().__init__(
             weights=weights,
             gene_annotations=gene_annotations_df,
-            dataset_gene_embeddings=dataset_gene_embeddings,
             store=store,
             **metadata_dict,
         )
@@ -771,216 +742,6 @@ class FoundationModel(BaseModel):
             json.dump(combined_metadata, f, indent=2)
 
         logger.info("Successfully saved weights and metadata")
-
-    def save_all_residuals(
-        self,
-        store_or_dir: Union["FoundationModelStore", str, Path],
-    ) -> None:
-        """Save all per-category residual streams to disk.
-
-        Iterates over all datasets and categories in dataset_gene_embeddings,
-        calling save_category_residuals for each. No-op if dataset_gene_embeddings
-        is None.
-
-        Parameters
-        ----------
-        store_or_dir : FoundationModelStore, str, or Path
-            Either an existing FoundationModelStore or a path to the model
-            directory. The store should already be initialized via save().
-        """
-        if self.dataset_gene_embeddings is None:
-            logger.info("No dataset_gene_embeddings to save — skipping residuals.")
-            return
-
-        store = FoundationModelStore.ensure(store_or_dir, validate=False)
-        # Validate consistency if some residuals have already been written
-        if store.index_path.exists():
-            store.validate()
-
-        for dataset_name in self.dataset_gene_embeddings.dataset_names:
-            ge_set = self.dataset_gene_embeddings[dataset_name]
-            categories = sorted(
-                {ge.category for ge in ge_set.values() if ge.category is not None}
-            )
-            logger.info(
-                f"Saving residuals for dataset '{dataset_name}': "
-                f"{len(categories)} categories"
-            )
-            for category in categories:
-                self.save_category_residuals(store, dataset_name, category)
-                logger.info(f"  Saved: {category}")
-
-    def save_category_residuals(
-        self,
-        store_or_dir: Union["FoundationModelStore", str, Path],
-        dataset_name: str,
-        category: str,
-    ) -> None:
-        """Save per-layer residual stream embeddings for one category.
-
-        Creates:
-            {model_dir}/residuals/{stem}.npz
-            {model_dir}/residuals/{stem}_metadata.json
-        and updates:
-            {model_dir}/residuals_index.yaml
-
-        Parameters
-        ----------
-        store_or_dir : FoundationModelStore, str, or Path
-            Either an existing FoundationModelStore or a path to the model
-            directory. The store must already be initialized (i.e., save()
-            called first).
-        dataset_name : str
-            Dataset name (e.g., 'efthymiou2025').
-        category : str
-            Category name (e.g., 'adipocyte (0)'). May contain spaces and
-            special characters — sanitized for the filename, preserved
-            exactly in the index.
-
-        Raises
-        ------
-        ValueError
-            If dataset_gene_embeddings is None, the dataset is not found,
-            or the category is not found in the dataset.
-        """
-        if self.dataset_gene_embeddings is None:
-            raise ValueError(
-                f"Model '{self.full_name}' has no dataset_gene_embeddings. "
-                f"Cannot save residuals."
-            )
-        if dataset_name not in self.dataset_gene_embeddings:
-            raise ValueError(
-                f"Dataset '{dataset_name}' not found in model '{self.full_name}'. "
-                f"Available: {self.dataset_gene_embeddings.dataset_names}"
-            )
-
-        ge_set = self.dataset_gene_embeddings[dataset_name]
-        category_embeddings = sorted(
-            [ge for ge in ge_set.values() if ge.category == category],
-            key=lambda ge: ge.layer_idx,
-        )
-
-        if not category_embeddings:
-            available = sorted(
-                {ge.category for ge in ge_set.values() if ge.category is not None}
-            )
-            raise ValueError(
-                f"Category '{category}' not found in dataset '{dataset_name}' "
-                f"for model '{self.full_name}'. Available: {available}"
-            )
-
-        stem = f"{_sanitize_filename(dataset_name)}" f"_{_sanitize_filename(category)}"
-
-        arrays = {f"layer_{ge.layer_idx}": ge.embedding for ge in category_embeddings}
-        metadata_records = [
-            _gene_embeddings_to_save_dict(ge) for ge in category_embeddings
-        ]
-
-        store = FoundationModelStore.ensure(store_or_dir, validate=True)
-        store.save_residual_arrays(stem, arrays, metadata_records)
-        store.register_category(dataset_name, category, stem)
-
-        logger.info(
-            f"Saved {len(category_embeddings)} layer residuals for "
-            f"'{dataset_name}/{category}'"
-        )
-
-    def validate_dataset_gene_embeddings(
-        self,
-        *,
-        dataset_name: Optional[str] = None,
-        expected_n_layers: Optional[int] = None,
-        std_tol: float = 0.0,
-        spot_check_layers: Optional[Tuple[int, int]] = None,
-        verbose: bool = False,
-        raise_on_fail: bool = False,
-    ) -> Dict[str, Any]:
-        """Validate dataset gene embeddings produced by ETL (layer exports).
-
-        Distinct from :meth:`validate_dataset_gene_embeddings_field`, which only
-        checks that ``dataset_gene_embeddings`` is ``None`` or a
-        ``DatasetGeneEmbeddings`` instance.
-
-        Delegates per dataset to ``GeneEmbeddingsSet._validate_expression_embeddings``.
-
-        When every embedding sets ``layer_idx``, checks that distinct indices match
-        ``range(expected_n_layers)`` (default: ``self.n_layers``), that
-        ``source_label`` contains ``layer_{idx}``, and that each matrix has
-        ``std > std_tol``. If **any** embedding omits ``layer_idx`` while others set it,
-        validation fails (mixed mode). If **all** omit ``layer_idx``, validation fails:
-        layer-wise residual exports are required.
-
-        With ``verbose=True``, logs notebook-style summaries.
-
-        Parameters
-        ----------
-        dataset_name : str, optional
-            Single dataset to check. When ``None``, checks every dataset.
-        expected_n_layers : int, optional
-            Expected number of transformer layers (default: ``self.n_layers``).
-        std_tol : float
-            Minimum acceptable ``embedding.std()`` per embedding (default: ``0``).
-        spot_check_layers : tuple of int, optional
-            Layers ``(i, j)`` for an informational mean comparison. Default picks
-            ``(0, expected_n_layers - 1)`` when ``expected_n_layers > 1``.
-        verbose : bool
-            Log per-embedding details (default: ``False``).
-        raise_on_fail : bool
-            If True, raise ``ValueError`` when any check fails (default: ``False``).
-
-        Returns
-        -------
-        dict
-            ``{"ok": bool, "datasets": [ {...}, ... ]}`` where each dataset row has
-            ``dataset_name``, ``ok``, ``errors`` (list of str), counts,
-            ``distinct_layer_indices``, and ``spot_check_note``.
-
-        Raises
-        ------
-        KeyError
-            If ``dataset_name`` is not present.
-        ValueError
-            If ``raise_on_fail`` is True and a check fails.
-        """
-        exp_n = _validate_expected_layer_count(expected_n_layers, self.n_layers)
-
-        missing_row = DatasetGeneEmbeddings._validate_dataset_gene_embeddings_present(
-            self.dataset_gene_embeddings
-        )
-        if missing_row is not None:
-            out: Dict[str, Any] = {"ok": False, "datasets": [missing_row]}
-            if raise_on_fail:
-                _raise_validation_failures(out["datasets"])
-            return out
-
-        pairs = self.dataset_gene_embeddings._validate_resolve_dataset_slice(
-            dataset_name
-        )
-        datasets = [
-            ge_set._validate_expression_embeddings(
-                dataset_name=nm,
-                expected_n_layers=exp_n,
-                std_tol=std_tol,
-                spot_check_layers=spot_check_layers,
-                verbose=verbose,
-            )
-            for nm, ge_set in pairs
-        ]
-        result = {"ok": all(d["ok"] for d in datasets), "datasets": datasets}
-        if raise_on_fail and not result["ok"]:
-            _raise_validation_failures(datasets)
-        return result
-
-    # pydantic validation
-
-    @field_validator(FM_DEFS.DATASET_GENE_EMBEDDINGS)
-    def validate_dataset_gene_embeddings_field(cls, v):
-        if v is not None and not isinstance(v, DatasetGeneEmbeddings):
-            raise ValueError(
-                "dataset_gene_embeddings must be DatasetGeneEmbeddings or None, "
-                f"got {type(v)}"
-            )
-        return v
 
     @field_validator(FM_DEFS.GENE_ANNOTATIONS)
     def validate_gene_annotations(cls, v):
@@ -1426,6 +1187,8 @@ class FoundationModelStore:
         Return the path to the residual npz for a given stem.
     save_residual_arrays(stem, arrays, metadata_records)
         Write residual arrays and sidecar metadata to disk.
+    save_residuals(embeddings)
+        Write residual arrays and sidecar metadata to disk.
     validate(raise_on_fail=True)
         Validate that the store's index is consistent with files on disk.
 
@@ -1644,6 +1407,61 @@ class FoundationModelStore:
             json.dump(metadata_records, f, indent=2)
         logger.info(f"Saved residual arrays to {self.residuals_path(stem).name}")
 
+    def save_residuals(
+        self,
+        embeddings: List[GeneEmbeddings],
+    ) -> None:
+        """Save residual stream embeddings from a flat list of GeneEmbeddings.
+
+        Groups embeddings by (dataset_name, category), sorts each group by
+        layer_idx, and writes one npz and sidecar metadata file per group,
+        registering each in the index.
+
+        Each GeneEmbeddings must have dataset_name, category, and layer_idx set.
+
+        Parameters
+        ----------
+        embeddings
+            Flat list of GeneEmbeddings, one per (dataset, category, layer).
+
+        Raises
+        ------
+        ValueError
+            If any embedding is missing dataset_name, category, or layer_idx.
+        """
+        from collections import defaultdict
+
+        for ge in embeddings:
+            if ge.dataset_name is None:
+                raise ValueError(
+                    f"GeneEmbeddings '{ge.source_label}' has no dataset_name set."
+                )
+            if ge.category is None:
+                raise ValueError(
+                    f"GeneEmbeddings '{ge.source_label}' has no category set."
+                )
+            if ge.layer_idx is None:
+                raise ValueError(
+                    f"GeneEmbeddings '{ge.source_label}' has no layer_idx set."
+                )
+
+        groups: Dict[Tuple[str, str], List[GeneEmbeddings]] = defaultdict(list)
+        for ge in embeddings:
+            groups[(ge.dataset_name, ge.category)].append(ge)
+
+        for (dataset_name, category), group_embeddings in groups.items():
+            sorted_embeddings = sorted(group_embeddings, key=lambda ge: ge.layer_idx)
+            stem = (
+                f"{sanitize_filename(dataset_name)}" f"_{sanitize_filename(category)}"
+            )
+            arrays = {f"layer_{ge.layer_idx}": ge.embedding for ge in sorted_embeddings}
+            metadata_records = [
+                _gene_embeddings_to_save_dict(ge) for ge in sorted_embeddings
+            ]
+            self.save_residual_arrays(stem, arrays, metadata_records)
+            self.register_category(dataset_name, category, stem)
+            logger.info(f"  Saved: {dataset_name}/{category}")
+
     def validate(self, raise_on_fail: bool = True) -> Dict[str, Any]:
         """Validate that the store's index is consistent with files on disk.
 
@@ -1832,48 +1650,3 @@ def _gene_embeddings_to_save_dict(ge: GeneEmbeddings) -> dict:
         FM_DEFS.DATASET_URI: ge.dataset_uri,
         FM_DEFS.CATEGORY: ge.category,
     }
-
-
-def _sanitize_filename(s: str) -> str:
-    """Sanitize a string for safe use as a filename component.
-
-    Removes characters that are problematic in filenames, collapses
-    whitespace to underscores, and strips leading/trailing separators.
-    The original string is preserved in the residuals index — this is
-    only used to construct the on-disk filename stem.
-
-    Parameters
-    ----------
-    s : str
-        Input string (e.g., a category name like 'adipocyte (0)').
-
-    Returns
-    -------
-    str
-        Filesystem-safe string (e.g., 'adipocyte_0').
-    """
-    s = re.sub(r"[^\w\s-]", "", s)
-    s = re.sub(r"\s+", "_", s)
-    return s.strip("-_")
-
-
-def _raise_validation_failures(dataset_reports: List[Dict[str, Any]]) -> None:
-    """Raise ``ValueError`` summarizing failed dataset validation rows."""
-    parts: List[str] = []
-    for row in dataset_reports:
-        ds_nm = row["dataset_name"]
-        for err in row["errors"]:
-            parts.append(f"[{ds_nm}] {err}")
-    raise ValueError("Validation failed:\n" + "\n".join(parts))
-
-
-def _validate_expected_layer_count(
-    expected_n_layers: Optional[int], fallback: int
-) -> int:
-    """Resolve and sanity-check the transformer depth used for layer coverage."""
-    exp_n = fallback if expected_n_layers is None else expected_n_layers
-    if not isinstance(exp_n, int) or exp_n <= 0:
-        raise ValueError(
-            f"expected_n_layers must be a positive int, got {expected_n_layers!r}"
-        )
-    return exp_n

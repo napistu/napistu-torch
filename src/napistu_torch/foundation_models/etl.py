@@ -54,7 +54,6 @@ from napistu_torch.foundation_models.constants import (
 )
 from napistu_torch.foundation_models.foundation_models import (
     AttentionLayer,
-    DatasetGeneEmbeddings,
     FoundationModel,
     FoundationModelStore,
     FoundationModelWeights,

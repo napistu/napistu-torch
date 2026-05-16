@@ -1,15 +1,14 @@
 ```text
 FoundationModels
-    FoundationModel
+    FoundationModel / FoundationModelStore (foundation model, and its on-disk assets)
         FoundationModelWeights
             GeneEmbeddings (static)
                 GeneAnnotations
             List[AttentionLayer]
-        DatasetGeneEmbeddings
-            GeneEmbeddingsSet (all embeddings for a given dataset)
-                GeneEmbeddings (a single 2D embedding matrix, e.g., of a cell type, cluster, or individual sample)
-                    GeneAnnotations
         ModelMetadata
+    GeneEmbeddingsSet (all embeddings for a given dataset)
+        GeneEmbeddings (a single 2D embedding matrix, e.g., of a cell type, cluster, or individual sample)
+            GeneAnnotations
 
 AttentionPatternsInputs
     LayerwiseAttentionInputs

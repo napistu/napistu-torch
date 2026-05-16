@@ -8,8 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 from foundation_model_factories import (
-    _clone_fm_with_dge,
-    _make_layer_grid_dge,
+    _make_layer_grid_embeddings,
     make_attended_embeddings,
     make_foundation_model,
     make_foundation_models,
@@ -31,7 +30,7 @@ from napistu_torch.configs import (
 )
 from napistu_torch.evaluation.pathways import get_comprehensive_source_membership
 from napistu_torch.foundation_models.attention_patterns import AttentionPatternsInputs
-from napistu_torch.foundation_models.foundation_models import FoundationModels
+from napistu_torch.foundation_models.gene_embeddings import GeneEmbeddingsSet
 from napistu_torch.lightning.workflows import prepare_experiment
 from napistu_torch.load.constants import (
     DEFAULT_ARTIFACTS_NAMES,
@@ -391,11 +390,12 @@ def foundation_models():
 
 
 @pytest.fixture
-def foundation_models_with_dge(foundation_models):
-    models_with_dge = []
+def foundation_models_with_embeddings(foundation_models):
+    """Per-layer residual stream embeddings for all models, grouped by category."""
+    all_embeddings = []
     for model in foundation_models.models:
         gene_ids = model.gene_annotations[ONTOLOGIES.ENSEMBL_GENE].tolist()
-        dge = _make_layer_grid_dge(
+        embeddings = _make_layer_grid_embeddings(
             n_layers=model.n_layers,
             n_categories=2,
             gene_ids=gene_ids,
@@ -403,8 +403,8 @@ def foundation_models_with_dge(foundation_models):
             model_name=model.model_name,
             model_variant=model.model_variant,
         )
-        models_with_dge.append(_clone_fm_with_dge(model, dge))
-    return FoundationModels(models=models_with_dge)
+        all_embeddings.extend(embeddings)
+    return all_embeddings
 
 
 @pytest.fixture
@@ -413,10 +413,16 @@ def attended_embeddings():
 
 
 @pytest.fixture
-def attended_embeddings_set(foundation_models_with_dge):
-    return AttentionPatternsInputs.from_expression(
-        foundation_models_with_dge,
-        dataset_name="ds1",
-        category="cluster_0",
+def attended_embeddings_set(foundation_models, foundation_models_with_embeddings):
+    category_embeddings = [
+        ge for ge in foundation_models_with_embeddings if ge.category == "cluster_0"
+    ]
+    embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+        category_embeddings,
+        align_on=ONTOLOGIES.ENSEMBL_GENE,
         verbose=False,
+    )
+    return AttentionPatternsInputs(
+        embeddings_set=embeddings_set,
+        foundation_models=foundation_models,
     )
