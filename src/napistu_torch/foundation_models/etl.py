@@ -1736,38 +1736,36 @@ def _scfoundation_get_expression_embeddings(
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
 ) -> GeneEmbeddingsSet:
-    """Embed each cell type in an AnnData object as a tensor of shape (n_cells, embed_dim).
+    """Embed each cell type in an AnnData object using per-cluster gene filtering.
 
     Parameters
     ----------
     model : MaeAutobin
-        The scFoundation model
-    adata : anndata.AnnData
-        The AnnData object containing the cells to embed
+        The scFoundation model.
+    adata : AnnData
+        The AnnData object containing the cells to embed.
     gene_annotations : pd.DataFrame
-        The gene annotations
-    vocab : GeneVocab
-        The vocabulary
-    dataset_name : Optional[str] = None
-        The name of the dataset
-    dataset_uri : Optional[str] = None
-        The URI of the dataset
+        The gene annotations.
+    dataset_name : str, optional
+        The name of the dataset.
+    dataset_uri : str, optional
+        The URI of the dataset.
     min_cluster_cells : int, optional
-        Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+        Minimum number of cells per cluster to include. Defaults to
+        FM_DEFAULTS.MIN_CLUSTER_CELLS.
     cells_per_cluster : int, optional
-        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells. Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+        Maximum cells sampled per cluster. ``None`` uses all cells.
+        Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER.
     batch_size : int, optional
-        Cells per forward pass when capturing residual streams per cluster.
-        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
+        Cells per forward pass. Defaults to
+        FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
     GeneEmbeddingsSet
-        Expression embeddings for the dataset
+        Expression embeddings for the dataset.
     """
-
-    cluster_embeddings, selected_genes, cell_cluster_dict = (
+    all_cluster_embeddings, all_cluster_genes, valid_cell_cluster_dict = (
         _scfoundation_get_gene_embedding_by_cell_type(
             model,
             adata,
@@ -1778,16 +1776,42 @@ def _scfoundation_get_expression_embeddings(
         )
     )
 
-    expression_embeddings = _expression_tensor_to_gene_embeddings_set(
-        embeddings_4d=cluster_embeddings,  # (n_clusters, n_layers, n_genes, embed_dim)
-        ordered_genes=selected_genes,
-        gene_annotations=gene_annotations,
-        category_dict=cell_cluster_dict,
-        dataset_name=dataset_name,
-        dataset_uri=dataset_uri,
+    # Each cluster has its own gene set so we build GeneEmbeddings
+    # per (cluster, layer) independently.
+    all_gene_embeddings = []
+    for cluster_idx, (cluster_residuals, cluster_genes) in enumerate(
+        zip(all_cluster_embeddings, all_cluster_genes)
+    ):
+        category_name = valid_cell_cluster_dict[cluster_idx]
+
+        aligned_annotations = filter_and_reorder_df(
+            df=gene_annotations,
+            target_ids=cluster_genes,
+            id_column=ONTOLOGIES.ENSEMBL_GENE,
+        )
+
+        for layer_idx in range(cluster_residuals.shape[0]):
+            ge = GeneEmbeddings(
+                embedding=cluster_residuals[layer_idx].numpy(),
+                ordered_gene_ids=cluster_genes,
+                gene_annotations=aligned_annotations.copy(),
+                dataset_name=dataset_name,
+                dataset_uri=dataset_uri,
+                category=category_name,
+                layer_idx=layer_idx,
+            )
+            all_gene_embeddings.append(ge)
+
+    logger.info(
+        f"Created {len(all_gene_embeddings)} GeneEmbeddings "
+        f"({len(valid_cell_cluster_dict)} categories)"
     )
 
-    return expression_embeddings
+    return GeneEmbeddingsSet.from_gene_embeddings(
+        all_gene_embeddings,
+        align_on=ONTOLOGIES.ENSEMBL_GENE,
+        verbose=True,
+    )
 
 
 @require_modelgenerator
@@ -1798,90 +1822,106 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
-) -> Tuple[torch.Tensor, List[str], Dict[int, str]]:
-    """Get the gene embeddings for each cell type in an AnnData object.
+) -> Tuple[List[torch.Tensor], List[List[str]], Dict[int, str]]:
+    """Get per-cluster layer-wise residual stream embeddings for each cell type.
+
+    Each cluster is processed independently with its own gene subset selected
+    by per-cluster detection rate, with unselected genes zeroed out before
+    the forward pass. This handles scFoundation's architecture which
+    mechanically drops zero-expression genes from the encoder.
 
     Parameters
     ----------
-    model : scprint.model.model.scPrint
-        The scPRINT model
-    adata : anndata.AnnData
-        The AnnData object containing the cells to embed
-    gene_annotations : List[str]
-        The common genes to use for the embeddings
-    min_cluster_cells : Optional[int], optional
-        Minimum number of cells per cluster to include. Clusters smaller than this
-        are excluded. If None, then all clusters are included. Defaults to FM_DEFAULTS.MIN_CLUSTER_CELLS (10).
+    model : MaeAutobin
+        The scFoundation model in eval mode.
+    adata : AnnData
+        The AnnData object containing the cells to embed.
+    gene_annotations : pd.DataFrame
+        The gene annotations aligned to the model vocabulary.
+    min_cluster_cells : int, optional
+        Minimum number of cells per cluster to include. Defaults to
+        FM_DEFAULTS.MIN_CLUSTER_CELLS.
     cells_per_cluster : int, optional
-        Maximum cells sampled per leiden cluster when embedding. ``None`` uses all cells.
-        Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER (100).
+        Maximum cells sampled per cluster. ``None`` uses all cells.
+        Defaults to FM_DEFAULTS.CELLS_PER_CLUSTER.
     batch_size : int, optional
-        Cells per forward pass when capturing residual streams per cluster.
-        Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
+        Cells per forward pass. Defaults to
+        FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
 
     Returns
     -------
-    Tuple[torch.Tensor, List[str], Dict[int, str]]
-        Tuple of (cluster_embeddings, selected_genes, cell_cluster_dict)
-        - cluster_embeddings : torch.Tensor
-            The gene embeddings for each cell type
-        - selected_genes : List[str]
-            The selected genes (ensembl gene ids) which are shared between the model and the adata object.
-        - cell_cluster_dict : Dict[int, str]
-            A dictionary mapping cell type indices to cell type names
+    Tuple[List[torch.Tensor], List[List[str]], Dict[int, str]]
+        - all_cluster_embeddings : List[torch.Tensor]
+            Per-cluster residual streams, each of shape
+            (n_layers, n_selected_genes, embed_dim).
+        - all_cluster_genes : List[List[str]]
+            Per-cluster selected gene IDs (ensembl), parallel to
+            all_cluster_embeddings.
+        - valid_cell_cluster_dict : Dict[int, str]
+            Maps 0-based index to category name, only for clusters
+            that passed filtering.
     """
-
-    # 1. Get indices into model vocabulary
+    # 1. Preprocess dataset
     adata_subset, selected_genes = _scfoundation_preprocess_dataset(
         adata, gene_annotations
     )
 
-    # 2. Get the gene embeddings and filter to selected genes
-    annotations_w_index = gene_annotations.assign(
-        position=range(len(gene_annotations))
-    ).query(f"{ONTOLOGIES.ENSEMBL_GENE} in @selected_genes")
-    annotations_name_to_index = annotations_w_index.set_index(ONTOLOGIES.ENSEMBL_GENE)[
-        "position"
-    ].to_dict()
-
-    with torch.no_grad():
-        gene_positions = [annotations_name_to_index[g] for g in selected_genes]
-        pos_embedding = model.pos_emb.weight[(torch.tensor(gene_positions)), :]
-
-    # 3. Track cell types to setup creating cell-type masks (use adata_subset: cells after QC)
+    # 2. Build cluster list
     cell_clusters, cell_cluster_dict = _get_cell_clusters_and_category_dict(
         adata_subset.obs, min_cluster_cells=min_cluster_cells
     )
 
-    # Allocate output
-    n_layers = len(model.encoder.transformer_encoder)
+    # 3. Per-cluster embedding with per-cluster gene filtering
+    all_cluster_embeddings = []
+    all_cluster_genes = []
+    valid_cluster_indices = []
 
-    cluster_embeddings = torch.zeros(
-        len(cell_clusters),
-        n_layers,
-        len(selected_genes),
-        pos_embedding.shape[1],
-    )
+    for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
 
-    # 4. Embed each cell type
-    with torch.no_grad():
-        for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-            cluster_adata = _leiden_cluster_masked_adata(
-                adata_subset, cluster, cells_per_cluster, cluster_idx=i
-            )
+        cluster_adata = _leiden_cluster_masked_adata(
+            adata_subset, cluster, cells_per_cluster, cluster_idx=i
+        )
 
-            cluster_expr = _cluster_adata_X_to_torch_expression(cluster_adata)
+        cluster_selected_genes, cell_mask = _scfoundation_select_cluster_genes(
+            cluster_adata=cluster_adata,
+            n_genes=2000,
+            min_cell_nonzero=200,
+        )
 
-            # Use batched processing
-            cluster_embeddings[i] = _scfoundation_capture_residual_streams_per_cluster(
-                model=model,
-                expression=cluster_expr,
-                batch_size=batch_size,
-            )
+        if cell_mask.sum() == 0:
+            logger.warning(f"  Cluster {i} has no cells passing filter, skipping.")
+            continue
 
-            logger.info(f"  ✓ Completed cluster {i}")
+        cluster_adata_filtered = cluster_adata[cell_mask]
+        cluster_expr = _cluster_adata_X_to_torch_expression(cluster_adata_filtered)
 
-    return cluster_embeddings, selected_genes, cell_cluster_dict
+        # Zero out genes not in the per-cluster selected set
+        gene_mask = np.array(
+            [g in set(cluster_selected_genes) for g in adata_subset.var_names],
+            dtype=bool,
+        )
+        cluster_expr[:, ~gene_mask] = 0.0
+
+        cluster_residuals = _scfoundation_capture_residual_streams_per_cluster(
+            model=model,
+            expression=cluster_expr,
+            batch_size=batch_size,
+        )
+
+        all_cluster_embeddings.append(cluster_residuals)
+        all_cluster_genes.append(cluster_selected_genes)
+        valid_cluster_indices.append(i)
+        logger.info(
+            f"  ✓ Completed cluster {i} "
+            f"({len(cluster_selected_genes)} genes, {cell_mask.sum()} cells)"
+        )
+
+    valid_cell_cluster_dict = {
+        new_i: cell_cluster_dict[old_i]
+        for new_i, old_i in enumerate(valid_cluster_indices)
+    }
+
+    return all_cluster_embeddings, all_cluster_genes, valid_cell_cluster_dict
 
 
 @require_modelgenerator
@@ -1923,6 +1963,58 @@ def _scfoundation_preprocess_dataset(
     adata_subset = adata_subset[:, selected_genes]
 
     return adata_subset, selected_genes
+
+
+def _scfoundation_select_cluster_genes(
+    cluster_adata: AnnData,
+    n_genes: int = 2000,
+    min_cell_nonzero: int = 200,
+) -> Tuple[List[str], np.ndarray]:
+    """Select top genes by detection rate within a cluster for scFoundation.
+
+    scFoundation's encoder mechanically drops zero-expression genes, so
+    residual streams are only meaningful for genes consistently expressed
+    within the cluster being processed. Selects the top N genes by
+    per-cluster detection rate and filters cells with too few expressed
+    genes after that selection.
+
+    Parameters
+    ----------
+    cluster_adata : AnnData
+        Single cluster's AnnData, already subset to model genes.
+    n_genes : int
+        Number of top genes to select by detection rate (default: 2000).
+    min_cell_nonzero : int
+        Minimum nonzero genes per cell after gene filtering (default: 200).
+
+    Returns
+    -------
+    selected_genes : List[str]
+        Ensembl gene IDs for selected genes, in detection-rate order.
+    cell_mask : np.ndarray
+        Boolean mask over cluster_adata.obs for cells passing the
+        min_cell_nonzero filter.
+    """
+    X = cluster_adata.X.toarray() if issparse(cluster_adata.X) else cluster_adata.X
+
+    # Top N genes by detection rate within this cluster
+    gene_detection = (X != 0).mean(axis=0)
+    n_select = min(n_genes, X.shape[1])
+    top_gene_indices = np.argsort(gene_detection)[::-1][:n_select]
+
+    # Cell filter: require min_cell_nonzero expressed genes after gene selection
+    nonzero_per_cell = (X[:, top_gene_indices] != 0).sum(axis=1)
+    cell_mask = nonzero_per_cell >= min_cell_nonzero
+
+    selected_genes = [cluster_adata.var_names[i] for i in top_gene_indices]
+
+    logger.info(
+        f"  Gene filter: {n_select} genes "
+        f"(cutoff detection={gene_detection[top_gene_indices[-1]]:.3f}), "
+        f"cells passing={cell_mask.sum()}/{cluster_adata.n_obs}"
+    )
+
+    return selected_genes, cell_mask
 
 
 @require_scgpt

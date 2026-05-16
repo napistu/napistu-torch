@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from napistu_torch.foundation_models.constants import (
     EMBEDDING_METADATA_FIELDS,
+    GROUP_SCOPING_FIELDS,
     MODEL_NICE_NAMES,
     SCOPING_FIELDS,
 )
@@ -514,7 +515,9 @@ class GeneEmbeddingsSet:
 
         # Build metadata and compute scoped keys
         embedding_metadata = _build_embedding_metadata(data)
-        source_to_scoped, constant_label = _compute_scoped_keys(embedding_metadata)
+        source_to_scoped, constant_label = _compute_scoped_keys_for_fields(
+            embedding_metadata, SCOPING_FIELDS
+        )
 
         # Add scoped keys to metadata
         embedding_metadata[EMBEDDING_METADATA_FIELDS.SCOPED_KEY] = embedding_metadata[
@@ -1262,68 +1265,58 @@ def _build_embedding_metadata(
     return pd.DataFrame(rows)
 
 
-def _compute_scoped_keys(
-    embedding_metadata: pd.DataFrame,
+def _build_group_scoped_keys(
+    groups: Dict[Tuple[str, str], Dict[int, "GeneEmbeddings"]],
 ) -> Tuple[Dict[str, str], str]:
-    """Compute minimal scoped keys and a constant label from embedding metadata.
+    group_representative_embeddings = {
+        f"{full_name}/{category}": next(iter(layer_embeddings.values()))
+        for (full_name, category), layer_embeddings in groups.items()
+    }
+    group_metadata = _build_embedding_metadata(group_representative_embeddings)
+    return _compute_scoped_keys_for_fields(group_metadata, GROUP_SCOPING_FIELDS)
 
-    For each scoping field (model_label, dataset_name, category, layer_idx):
-    - If the field is constant and non-None across all embeddings, it goes into
-      the constant_label and is excluded from keys.
-    - If the field varies (or is a mix of None and values), it stays in the keys.
 
-    None values are excluded from both keys and labels.
+def _compute_scoped_keys_for_fields(
+    embedding_metadata: pd.DataFrame,
+    scoping_fields: List[str],
+) -> Tuple[Dict[str, str], str]:
+    """Compute minimal scoped keys using a specified set of scoping fields.
+
+    Core implementation shared by _compute_scoped_keys (full, with layer_idx)
+    and group-level scoping in AttentionPatternsInputs (without layer_idx).
 
     Parameters
     ----------
     embedding_metadata : pd.DataFrame
-        Output of _build_embedding_metadata. Must contain columns:
-        source_label, model_label, dataset_name, category, layer_idx.
+        Output of _build_embedding_metadata.
+    scoping_fields : List[str]
+        Ordered fields to consider, e.g. SCOPING_FIELDS or GROUP_SCOPING_FIELDS.
 
     Returns
     -------
     source_to_scoped : Dict[str, str]
         Mapping from source_label to scoped key.
     constant_label : str
-        "/"-joined label of constant non-None fields
-        (e.g., "scGPT / efthymiou2025"). Empty string if nothing is constant.
+        " / "-joined label of constant non-None fields.
 
     Raises
     ------
     ValueError
         If scoped keys are not unique.
-
-    Examples
-    --------
-    >>> # Same model + dataset, different categories
-    >>> # constant_label = "scGPT / efthymiou2025"
-    >>> # keys: "adipocyte (0)", "T_cell"
-
-    >>> # Different models, no dataset/category
-    >>> # constant_label = ""
-    >>> # keys: "scGPT", "scPRINT", "AIDOCell_aido_cell_100m"
-
-    >>> # Same model + dataset + category, multiple layers
-    >>> # constant_label = "scGPT / efthymiou2025 / adipocyte (0)"
-    >>> # keys: "layer_0", "layer_5", "layer_11"
     """
     constant_parts = []
     varying_fields = []
 
-    for field in SCOPING_FIELDS:
+    for field in scoping_fields:
         non_null_values = embedding_metadata[field].dropna().unique()
 
         if len(non_null_values) == 0:
-            # All None — skip
             continue
         elif len(non_null_values) == 1 and embedding_metadata[field].notna().all():
-            # Constant non-None across all embeddings
             constant_parts.append(_format_scoping_value(field, non_null_values[0]))
         else:
-            # Varies across embeddings
             varying_fields.append(field)
 
-    # Build scoped keys from varying fields
     source_to_scoped = {}
     for _, row in embedding_metadata.iterrows():
         key_parts = []
@@ -1332,8 +1325,6 @@ def _compute_scoped_keys(
             if pd.notna(val) and val is not None:
                 key_parts.append(_format_scoping_value(field, val))
 
-        # Fallback to source_label if no varying fields produce a key
-        # (e.g., single embedding where everything is constant)
         scoped_key = (
             "/".join(key_parts)
             if key_parts
@@ -1341,7 +1332,6 @@ def _compute_scoped_keys(
         )
         source_to_scoped[row[EMBEDDING_METADATA_FIELDS.SOURCE_LABEL]] = scoped_key
 
-    # Validate uniqueness
     scoped_values = list(source_to_scoped.values())
     if len(scoped_values) != len(set(scoped_values)):
         counts = Counter(scoped_values)
@@ -1351,9 +1341,7 @@ def _compute_scoped_keys(
             f"This indicates a bug in the scoping logic or duplicate embeddings."
         )
 
-    constant_label = " / ".join(constant_parts)
-
-    return source_to_scoped, constant_label
+    return source_to_scoped, " / ".join(constant_parts)
 
 
 def _align_gene_embeddings(
