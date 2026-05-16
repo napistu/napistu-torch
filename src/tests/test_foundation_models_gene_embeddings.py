@@ -10,19 +10,19 @@ from foundation_model_factories import (
 )
 from napistu.ontologies.constants import ONTOLOGIES
 
-from napistu_torch.foundation_models.constants import FM_DEFS
+from napistu_torch.foundation_models.constants import FM_DEFS, SCOPING_FIELDS
 from napistu_torch.foundation_models.gene_embeddings import (
     GeneEmbeddings,
     GeneEmbeddingsSet,
     _build_embedding_metadata,
-    _compute_scoped_keys,
+    _compute_scoped_keys_for_fields,
 )
 
 
 def _scope(embeddings):
     data = {emb.source_label: emb for emb in embeddings}
     metadata = _build_embedding_metadata(data)
-    return _compute_scoped_keys(metadata)
+    return _compute_scoped_keys_for_fields(metadata, SCOPING_FIELDS)
 
 
 def test_gene_embeddings_rejects_3d_array():
