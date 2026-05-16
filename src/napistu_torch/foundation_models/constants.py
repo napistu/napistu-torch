@@ -123,6 +123,14 @@ SCOPING_FIELDS = [
     EMBEDDING_METADATA_FIELDS.CATEGORY,
 ]
 
+# Scoping fields for AttentionPatternsInputs — layer_idx is internal to
+# LayerwiseAttentionInputs and should never appear in group-level keys
+GROUP_SCOPING_FIELDS = [
+    EMBEDDING_METADATA_FIELDS.MODEL_LABEL,
+    EMBEDDING_METADATA_FIELDS.DATASET_NAME,
+    EMBEDDING_METADATA_FIELDS.CATEGORY,
+]
+
 FM_EDGELIST = SimpleNamespace(
     FROM_GENE="from_gene",
     TO_GENE="to_gene",

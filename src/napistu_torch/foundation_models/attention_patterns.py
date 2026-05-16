@@ -29,6 +29,7 @@ from napistu_torch.foundation_models.foundation_models import (
 from napistu_torch.foundation_models.gene_embeddings import (
     GeneEmbeddings,
     GeneEmbeddingsSet,
+    _build_group_scoped_keys,
     _get_model_label,
 )
 from napistu_torch.utils.base_utils import normalize_and_validate_indices
@@ -768,18 +769,22 @@ class AttentionPatternsInputs:
         groups = _group_embeddings_by_model_and_category(
             embeddings_set, embedding_to_model
         )
+        source_to_scoped, constant_label = _build_group_scoped_keys(groups)
 
         attended: Dict[str, LayerwiseAttentionInputs] = {}
         for group_key, layer_embeddings in groups.items():
             full_name, category = group_key
             model = foundation_models.get_model(full_name)
-            attended[f"{full_name}/{category}"] = LayerwiseAttentionInputs(
+            raw_key = f"{full_name}/{category}"
+            scoped_key = source_to_scoped[raw_key]
+            attended[scoped_key] = LayerwiseAttentionInputs(
                 residual_stream_embeddings=layer_embeddings,
                 foundation_model=model,
             )
 
         self.embeddings_set = embeddings_set
         self.attended_embeddings = attended
+        self.constant_label = constant_label
 
     @property
     def common_gene_ids(self) -> List[str]:
@@ -1031,12 +1036,17 @@ class AttentionPatternsInputs:
                 layer_embeddings = _get_category_layer_embeddings(
                     ge_set, category, model, dataset_name
                 )
+                expression_embeddings.extend(layer_embeddings)
             else:
-                layer_embeddings = model.load_category_residuals(
-                    dataset_name, category
-                ).values()
+                layer_embeddings = model.load_category_residuals(dataset_name, category)
+                expression_embeddings.extend(layer_embeddings.values())
 
-        expression_embeddings.extend(layer_embeddings)
+            if not layer_embeddings:
+                raise ValueError(
+                    f"Model '{model.full_name}' produced no embeddings for "
+                    f"dataset '{dataset_name}', category '{category}'. "
+                    f"Check that save_all_residuals was run for this model."
+                )
 
         embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
             expression_embeddings, align_on=align_on, verbose=verbose

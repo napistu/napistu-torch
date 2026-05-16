@@ -19,6 +19,7 @@ from napistu_torch.foundation_models.foundation_models import FoundationModels
 from napistu_torch.foundation_models.gene_embeddings import (
     GeneEmbeddings,
     GeneEmbeddingsSet,
+    _build_group_scoped_keys,
     _get_model_label,
 )
 
@@ -211,3 +212,42 @@ def test_group_embeddings_by_model_and_category():
             ge_single,
             {list(ge_single.keys())[0]: "ModelB"},  # deliberate mismatch
         )
+
+
+def test_build_group_scoped_keys_excludes_layer():
+    genes = make_gene_ids(5)
+    annotations = make_gene_annotations(genes)
+
+    # Two models, two layers, one category — simulates what __init__ passes
+    groups = {
+        ("ModelA", "cluster_0"): {
+            i: GeneEmbeddings(
+                embedding=np.random.randn(5, 8).astype(np.float32),
+                ordered_gene_ids=genes,
+                gene_annotations=annotations,
+                model_name="ModelA",
+                layer_idx=i,
+                dataset_name="ds1",
+                category="cluster_0",
+            )
+            for i in range(2)
+        },
+        ("ModelB", "cluster_0"): {
+            i: GeneEmbeddings(
+                embedding=np.random.randn(5, 8).astype(np.float32),
+                ordered_gene_ids=genes,
+                gene_annotations=annotations,
+                model_name="ModelB",
+                layer_idx=i,
+                dataset_name="ds1",
+                category="cluster_0",
+            )
+            for i in range(2)
+        },
+    }
+
+    source_to_scoped, constant_label = _build_group_scoped_keys(groups)
+
+    assert set(source_to_scoped.values()) == {"ModelA", "ModelB"}
+    assert constant_label == "ds1 / cluster_0"
+    assert not any("layer" in key for key in source_to_scoped.values())
