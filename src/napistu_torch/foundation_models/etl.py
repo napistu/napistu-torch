@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import warnings
+from collections.abc import Collection
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -49,8 +50,12 @@ from napistu_torch.foundation_models.constants import (
     FM_DEFAULTS,
     FM_DEFS,
     SCFOUNDATION_DEFS,
+    SCFOUNDATION_GENE_SELECTION_LEVELS,
+    SCFOUNDATION_GENE_SELECTION_METHODS,
     SCGPT_DEFS,
     SCPRINT_DEFS,
+    VALID_SCFOUNDATION_GENE_SELECTION_LEVELS,
+    VALID_SCFOUNDATION_GENE_SELECTION_METHODS,
 )
 from napistu_torch.foundation_models.foundation_models import (
     AttentionLayer,
@@ -188,18 +193,20 @@ def process_aidocell(
     logger.info("3. Extracting dataset expression embeddings...")
     all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        all_gene_embeddings.extend(_aidocell_get_expression_embeddings(
-            model,
-            config.load_h5ad(),
-            gene_annotations,
-            model_metadata[FM_DEFS.MODEL_NAME],
-            model_metadata[FM_DEFS.MODEL_VARIANT],
-            dataset_name=config.name,
-            dataset_uri=config.uri,
-            min_cluster_cells=min_cluster_cells,
-            cells_per_cluster=cells_per_cluster,
-            batch_size=batch_size,
-        ))
+        all_gene_embeddings.extend(
+            _aidocell_get_expression_embeddings(
+                model,
+                config.load_h5ad(),
+                gene_annotations,
+                model_metadata[FM_DEFS.MODEL_NAME],
+                model_metadata[FM_DEFS.MODEL_VARIANT],
+                dataset_name=config.name,
+                dataset_uri=config.uri,
+                min_cluster_cells=min_cluster_cells,
+                cells_per_cluster=cells_per_cluster,
+                batch_size=batch_size,
+            )
+        )
 
     # 4. Create FoundationModel and save
     _create_and_save_foundation_model(
@@ -218,12 +225,15 @@ def process_aidocell(
 def process_scfoundation(
     output_dir: str,
     checkpoint_path: Optional[str] = None,
-    output_prefix: Optional[str] = None,
     cache_dir: Optional[str] = None,
     datasets_config: Optional[DatasetsConfig] = None,
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    cluster_n_genes: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_N_GENES,
+    cluster_min_cell_nonzero: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_MIN_CELL_NONZERO,
+    gene_selection_level: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL,
+    gene_selection_method: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD,
 ) -> None:
     """Process scFoundation checkpoint and save to disk.
 
@@ -233,8 +243,6 @@ def process_scfoundation(
         Directory to save processed model
     checkpoint_path : str, optional
         Path to local checkpoint. If None, downloads from HuggingFace.
-    output_prefix : str, optional
-        Prefix for output files (default: "scFoundation")
     cache_dir : str, optional
         Cache directory for HuggingFace downloads
     datasets_config : DatasetsConfig, optional
@@ -249,6 +257,20 @@ def process_scfoundation(
         Cells per forward pass when capturing residual streams per cluster.
         Default from FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE (conservative
         for GPU memory).
+    cluster_n_genes : int, optional
+        Number of top genes by within-cluster detection rate to retain before the
+        forward pass. Default from FM_DEFAULTS.SCFOUNDATION_CLUSTER_N_GENES.
+    cluster_min_cell_nonzero : int, optional
+        Minimum number of nonzero genes (among those ``cluster_n_genes``) required
+        per cell to include the cell after gene filtering. Default from
+        FM_DEFAULTS.SCFOUNDATION_CLUSTER_MIN_CELL_NONZERO.
+    gene_selection_level : str, optional
+        Whether gene lists are chosen globally across the preprocessed dataset or
+        per Leiden cluster. Use ``SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL`` or
+        ``PER_CLUSTER``. Default from FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL.
+    gene_selection_method : str, optional
+        How to rank genes: ``SCFOUNDATION_GENE_SELECTION_METHODS.DETECTION`` or
+        ``HVG``. Default from FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD.
 
     Returns
     -------
@@ -273,6 +295,7 @@ def process_scfoundation(
     )
 
     logger.info("Extracting: scFoundation")
+    file_prefix = SCFOUNDATION_DEFS.MODEL_NAME
 
     # Download checkpoint if needed
     if checkpoint_path is None:
@@ -321,18 +344,24 @@ def process_scfoundation(
     logger.info("3. Extracting dataset expression embeddings...")
     all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        all_gene_embeddings.extend(_scfoundation_get_expression_embeddings(
-            model,
-            config.load_h5ad(),
-            gene_annotations,
-            metadata[FM_DEFS.MODEL_NAME],
-            model_variant=None,
-            dataset_name=config.name,
-            dataset_uri=config.uri,
-            min_cluster_cells=min_cluster_cells,
-            cells_per_cluster=cells_per_cluster,
-            batch_size=batch_size,
-        ))
+        all_gene_embeddings.extend(
+            _scfoundation_get_expression_embeddings(
+                model,
+                config.load_h5ad(),
+                gene_annotations,
+                metadata[FM_DEFS.MODEL_NAME],
+                model_variant=None,
+                dataset_name=config.name,
+                dataset_uri=config.uri,
+                min_cluster_cells=min_cluster_cells,
+                cells_per_cluster=cells_per_cluster,
+                batch_size=batch_size,
+                cluster_n_genes=cluster_n_genes,
+                cluster_min_cell_nonzero=cluster_min_cell_nonzero,
+                gene_selection_level=gene_selection_level,
+                gene_selection_method=gene_selection_method,
+            )
+        )
 
     _create_and_save_foundation_model(
         weights,
@@ -340,7 +369,7 @@ def process_scfoundation(
         metadata,
         all_gene_embeddings,
         output_dir,
-        output_prefix,
+        file_prefix,
     )
 
     return None
@@ -427,19 +456,21 @@ def process_scgpt(
     logger.info("4. Extracting dataset expression embeddings...")
     all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        all_gene_embeddings.extend(_scgpt_get_expression_embeddings(
-            model,
-            config.load_h5ad(),
-            gene_annotations,
-            vocab,
-            model_metadata[FM_DEFS.MODEL_NAME],
-            model_variant=None,
-            dataset_name=config.name,
-            dataset_uri=config.uri,
-            min_cluster_cells=min_cluster_cells,
-            cells_per_cluster=cells_per_cluster,
-            batch_size=batch_size,
-        ))
+        all_gene_embeddings.extend(
+            _scgpt_get_expression_embeddings(
+                model,
+                config.load_h5ad(),
+                gene_annotations,
+                vocab,
+                model_metadata[FM_DEFS.MODEL_NAME],
+                model_variant=None,
+                dataset_name=config.name,
+                dataset_uri=config.uri,
+                min_cluster_cells=min_cluster_cells,
+                cells_per_cluster=cells_per_cluster,
+                batch_size=batch_size,
+            )
+        )
 
     # 5. Create FoundationModel and save
     _create_and_save_foundation_model(
@@ -518,18 +549,20 @@ def process_scprint(
     logger.info("3. Extracting dataset expression embeddings...")
     all_gene_embeddings: List[GeneEmbeddings] = []
     for config in datasets_config.data.values():
-        all_gene_embeddings.extend(_scprint_get_expression_embeddings(
-            model,
-            config.load_h5ad(),
-            gene_annotations,
-            model_metadata[FM_DEFS.MODEL_NAME],
-            model_metadata[FM_DEFS.MODEL_VARIANT],
-            dataset_name=config.name,
-            dataset_uri=config.uri,
-            min_cluster_cells=min_cluster_cells,
-            cells_per_cluster=cells_per_cluster,
-            batch_size=batch_size,
-        ))
+        all_gene_embeddings.extend(
+            _scprint_get_expression_embeddings(
+                model,
+                config.load_h5ad(),
+                gene_annotations,
+                model_metadata[FM_DEFS.MODEL_NAME],
+                model_metadata[FM_DEFS.MODEL_VARIANT],
+                dataset_name=config.name,
+                dataset_uri=config.uri,
+                min_cluster_cells=min_cluster_cells,
+                cells_per_cluster=cells_per_cluster,
+                batch_size=batch_size,
+            )
+        )
 
     # 4. Create FoundationModel and save
     _create_and_save_foundation_model(
@@ -561,6 +594,10 @@ def _aidocell_capture_residual_streams_per_cluster(
     The encoder returns n_layers+1 hidden states; the first n_layers are the
     residual streams; the last (post-final-norm) is skipped.
 
+    Runs in bfloat16 to reduce memory pressure (the model was trained in bfloat16).
+    Hidden states are upcast to float32 before accumulation to preserve precision
+    across the running sum.
+
     Parameters
     ----------
     model : Any
@@ -584,7 +621,8 @@ def _aidocell_capture_residual_streams_per_cluster(
 
     t_expression = expression.to(device)
     t_gene_positions = gene_positions.to(device)
-    t_model = model.to(device)
+    t_model = model.to(device).to(torch.bfloat16)
+    t_expression = t_expression.to(torch.bfloat16)
 
     n_cells, n_genes = t_expression.shape
     n_layers = t_model.get_num_layer()
@@ -603,7 +641,7 @@ def _aidocell_capture_residual_streams_per_cluster(
             position_ids = t_gene_positions.unsqueeze(0).expand(bsz, -1)
 
             outputs = t_model.encoder(
-                input_ids=batch_expr.float(),
+                input_ids=batch_expr,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 output_hidden_states=True,
@@ -613,7 +651,9 @@ def _aidocell_capture_residual_streams_per_cluster(
             # hidden_states: tuple of n_layers+1 tensors, each (batch, n_genes, embed_dim)
             # First n_layers are pre-layer residual streams; last is post-final-norm (skip)
             for layer_idx in range(n_layers):
-                residual_sums[layer_idx] += outputs.hidden_states[layer_idx].sum(dim=0)
+                residual_sums[layer_idx] += (
+                    outputs.hidden_states[layer_idx].to(torch.float32).sum(dim=0)
+                )
 
             del batch_expr, attention_mask, position_ids, outputs
             empty_cache(device)
@@ -1371,6 +1411,7 @@ def _leiden_cluster_masked_adata(
     *,
     cluster_idx: int,
     random_state: Optional[int] = None,
+    log_subsample: bool = True,
 ) -> AnnData:
     """Slice ``adata`` to one ``leiden_scVI`` cluster and apply ``cells_per_cluster`` cap.
 
@@ -1378,6 +1419,10 @@ def _leiden_cluster_masked_adata(
     ----------
     cluster_idx : int
         Index of this cluster in the embedding loop (for logging only).
+    log_subsample : bool, default=True
+        If True, log ``n_before -> n_after`` for this subsampling step. Set False when
+        the caller applies ``cells_per_cluster`` later (e.g. scFoundation after gene
+        filtering) so logs reflect the final cell count once.
 
     Returns
     -------
@@ -1391,9 +1436,10 @@ def _leiden_cluster_masked_adata(
         cells_per_cluster,
         random_state=random_state,
     )
-    logger.info(
-        f"Cluster {cluster_idx}: {n_before} cells -> {cluster_adata.n_obs} cells"
-    )
+    if log_subsample:
+        logger.info(
+            f"Cluster {cluster_idx}: {n_before} cells -> {cluster_adata.n_obs} cells"
+        )
     return cluster_adata
 
 
@@ -1705,8 +1751,12 @@ def _scfoundation_get_expression_embeddings(
     min_cluster_cells: int = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    cluster_n_genes: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_N_GENES,
+    cluster_min_cell_nonzero: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_MIN_CELL_NONZERO,
+    gene_selection_level: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL,
+    gene_selection_method: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD,
 ) -> List[GeneEmbeddings]:
-    """Embed each cell type in an AnnData object using per-cluster gene filtering."""
+    """Embed each cell type in an AnnData object using scFoundation gene selection."""
     all_cluster_embeddings, all_cluster_genes, valid_cell_cluster_dict = (
         _scfoundation_get_gene_embedding_by_cell_type(
             model,
@@ -1715,6 +1765,10 @@ def _scfoundation_get_expression_embeddings(
             min_cluster_cells=min_cluster_cells,
             cells_per_cluster=cells_per_cluster,
             batch_size=batch_size,
+            cluster_n_genes=cluster_n_genes,
+            cluster_min_cell_nonzero=cluster_min_cell_nonzero,
+            gene_selection_level=gene_selection_level,
+            gene_selection_method=gene_selection_method,
         )
     )
 
@@ -1762,6 +1816,10 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     min_cluster_cells: Optional[int] = FM_DEFAULTS.MIN_CLUSTER_CELLS,
     cells_per_cluster: Optional[int] = FM_DEFAULTS.CELLS_PER_CLUSTER,
     batch_size: int = FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE,
+    cluster_n_genes: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_N_GENES,
+    cluster_min_cell_nonzero: int = FM_DEFAULTS.SCFOUNDATION_CLUSTER_MIN_CELL_NONZERO,
+    gene_selection_level: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL,
+    gene_selection_method: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD,
 ) -> Tuple[List[torch.Tensor], List[List[str]], Dict[int, str]]:
     """Get per-cluster layer-wise residual stream embeddings for each cell type.
 
@@ -1787,6 +1845,17 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     batch_size : int, optional
         Cells per forward pass. Defaults to
         FM_DEFAULTS.RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE.
+    cluster_n_genes : int, optional
+        Number of genes to select; passed to :func:`_scfoundation_select_genes`.
+    cluster_min_cell_nonzero : int, optional
+        Min nonzero genes per cell among selected genes; passed to
+        :func:`_scfoundation_select_genes`.
+    gene_selection_level : str, optional
+        ``SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL`` or ``PER_CLUSTER``.
+        Default from FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL.
+    gene_selection_method : str, optional
+        ``SCFOUNDATION_GENE_SELECTION_METHODS.DETECTION`` or ``HVG``.
+        Default from FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD.
 
     Returns
     -------
@@ -1801,10 +1870,13 @@ def _scfoundation_get_gene_embedding_by_cell_type(
             Maps 0-based index to category name, only for clusters
             that passed filtering.
     """
-    # 1. Preprocess dataset
-    adata_subset, selected_genes = _scfoundation_preprocess_dataset(
-        adata, gene_annotations
+    _validate_scfoundation_gene_selection_args(
+        gene_selection_level=gene_selection_level,
+        gene_selection_method=gene_selection_method,
     )
+
+    # 1. Preprocess dataset
+    adata_subset, _ = _scfoundation_preprocess_dataset(adata, gene_annotations)
 
     # 2. Build cluster list
     cell_clusters, cell_cluster_dict = _get_cell_clusters_and_category_dict(
@@ -1816,30 +1888,76 @@ def _scfoundation_get_gene_embedding_by_cell_type(
     all_cluster_genes = []
     valid_cluster_indices = []
 
+    if gene_selection_level == SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL:
+        global_selected_genes, _ = _scfoundation_select_genes(
+            cluster_adata=adata_subset,  # full dataset, not a single cluster
+            n_genes=cluster_n_genes,
+            min_cell_nonzero=0,  # no cell filter at global stage
+            method=gene_selection_method,
+        )
+        logger.info(
+            f"Global gene selection ({gene_selection_method}): "
+            f"{len(global_selected_genes)} genes"
+        )
+
     for i, cluster in enumerate(cell_clusters["leiden_scVI"]):
-
         cluster_adata = _leiden_cluster_masked_adata(
-            adata_subset, cluster, cells_per_cluster, cluster_idx=i
+            adata_subset,
+            cluster,
+            cells_per_cluster=None,
+            cluster_idx=i,
+            log_subsample=False,
         )
+        n_cells_leiden = int(cluster_adata.n_obs)
 
-        cluster_selected_genes, cell_mask = _scfoundation_select_cluster_genes(
-            cluster_adata=cluster_adata,
-            n_genes=2000,
-            min_cell_nonzero=200,
-        )
+        if gene_selection_level == SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL:
+            cluster_selected_genes = global_selected_genes
+            X = (
+                cluster_adata.X.toarray()
+                if issparse(cluster_adata.X)
+                else cluster_adata.X
+            )
+            gene_mask = np.array(
+                [g in set(cluster_selected_genes) for g in adata_subset.var_names],
+                dtype=bool,
+            )
+            nonzero_per_cell = (X[:, gene_mask] != 0).sum(axis=1)
+            cell_mask = nonzero_per_cell >= cluster_min_cell_nonzero
+        else:
+            cluster_selected_genes, cell_mask = _scfoundation_select_genes(
+                cluster_adata=cluster_adata,
+                n_genes=cluster_n_genes,
+                min_cell_nonzero=cluster_min_cell_nonzero,
+                method=gene_selection_method,
+            )
+            gene_mask = np.array(
+                [g in set(cluster_selected_genes) for g in adata_subset.var_names],
+                dtype=bool,
+            )
 
         if cell_mask.sum() == 0:
             logger.warning(f"  Cluster {i} has no cells passing filter, skipping.")
             continue
 
+        # Apply cells_per_cluster cap AFTER gene selection
         cluster_adata_filtered = cluster_adata[cell_mask]
+        cluster_adata_filtered = _limit_cluster_adata_cells(
+            cluster_adata_filtered, cells_per_cluster
+        )
+        n_cells_forward = int(cluster_adata_filtered.n_obs)
+        n_after_gene_filter = int(cell_mask.sum())
+        cap_suffix = (
+            f" (cells_per_cluster={cells_per_cluster})"
+            if cells_per_cluster is not None
+            else ""
+        )
+        logger.info(
+            f"Cluster {i}: {n_cells_leiden} cells -> {n_after_gene_filter} after gene "
+            f"filter -> {n_cells_forward} cells in forward pass{cap_suffix}"
+        )
         cluster_expr = _cluster_adata_X_to_torch_expression(cluster_adata_filtered)
 
         # Zero out genes not in the per-cluster selected set
-        gene_mask = np.array(
-            [g in set(cluster_selected_genes) for g in adata_subset.var_names],
-            dtype=bool,
-        )
         cluster_expr[:, ~gene_mask] = 0.0
 
         cluster_residuals = _scfoundation_capture_residual_streams_per_cluster(
@@ -1848,12 +1966,18 @@ def _scfoundation_get_gene_embedding_by_cell_type(
             batch_size=batch_size,
         )
 
+        # extract only the selected gene rows from the full residual stream
+        selected_gene_indices = np.array(
+            [adata_subset.var_names.get_loc(g) for g in cluster_selected_genes]
+        )
+        cluster_residuals = cluster_residuals[:, selected_gene_indices, :]
+
         all_cluster_embeddings.append(cluster_residuals)
         all_cluster_genes.append(cluster_selected_genes)
         valid_cluster_indices.append(i)
         logger.info(
             f"  ✓ Completed cluster {i} "
-            f"({len(cluster_selected_genes)} genes, {cell_mask.sum()} cells)"
+            f"({len(cluster_selected_genes)} genes, {n_cells_forward} cells)"
         )
 
     valid_cell_cluster_dict = {
@@ -1905,54 +2029,83 @@ def _scfoundation_preprocess_dataset(
     return adata_subset, selected_genes
 
 
-def _scfoundation_select_cluster_genes(
+def _scfoundation_select_genes(
     cluster_adata: AnnData,
     n_genes: int = 2000,
     min_cell_nonzero: int = 200,
+    method: str = FM_DEFAULTS.SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD,
 ) -> Tuple[List[str], np.ndarray]:
-    """Select top genes by detection rate within a cluster for scFoundation.
+    """Select top genes and filter cells for scFoundation residual stream capture.
 
     scFoundation's encoder mechanically drops zero-expression genes, so
     residual streams are only meaningful for genes consistently expressed
-    within the cluster being processed. Selects the top N genes by
-    per-cluster detection rate and filters cells with too few expressed
-    genes after that selection.
+    within the cluster being processed. Supports two gene selection strategies:
+    - 'detection': top N genes by detection rate (fraction of cells expressing)
+    - 'hvg': highly variable genes using scanpy's seurat flavor
 
     Parameters
     ----------
     cluster_adata : AnnData
-        Single cluster's AnnData, already subset to model genes.
+        AnnData subset to select genes from. For global selection this is the
+        full preprocessed dataset; for per-cluster selection this is one cluster.
+        Must already be log-normalized for 'hvg' flavor.
     n_genes : int
-        Number of top genes to select by detection rate (default: 2000).
+        Number of genes to select (default: 2000).
     min_cell_nonzero : int
-        Minimum nonzero genes per cell after gene filtering (default: 200).
+        Minimum nonzero genes per cell after gene selection. Pass 0 to skip
+        cell filtering (e.g. for global gene selection).
+    method : str
+        Gene selection method. One of FM_DEFAULTS.SCFOUNDATION_GENE_SELECTION_METHOD
+        values: 'detection' or 'hvg' (default: 'detection').
 
     Returns
     -------
     selected_genes : List[str]
-        Ensembl gene IDs for selected genes, in detection-rate order.
+        Ensembl gene IDs for selected genes.
     cell_mask : np.ndarray
         Boolean mask over cluster_adata.obs for cells passing the
-        min_cell_nonzero filter.
+        min_cell_nonzero filter. All True if min_cell_nonzero=0.
     """
+    import scanpy as sc
+
+    if method == SCFOUNDATION_GENE_SELECTION_METHODS.HVG:
+        adata_copy = cluster_adata.copy()
+        sc.pp.highly_variable_genes(
+            adata_copy,
+            n_top_genes=min(n_genes, adata_copy.n_vars),
+            flavor="seurat",  # expects log-normalized input
+            inplace=True,
+        )
+        selected_genes = adata_copy.var_names[
+            adata_copy.var["highly_variable"]
+        ].tolist()
+        logger.info(f"  Gene filter: {len(selected_genes)} HVGs selected")
+
+    elif method == SCFOUNDATION_GENE_SELECTION_METHODS.DETECTION:
+        X = cluster_adata.X.toarray() if issparse(cluster_adata.X) else cluster_adata.X
+        gene_detection = (X != 0).mean(axis=0)
+        n_select = min(n_genes, X.shape[1])
+        top_gene_indices = np.argsort(gene_detection)[::-1][:n_select]
+        selected_genes = [cluster_adata.var_names[i] for i in top_gene_indices]
+        logger.info(
+            f"  Gene filter: {n_select} genes "
+            f"(cutoff detection={gene_detection[top_gene_indices[-1]]:.3f})"
+        )
+    else:
+        raise ValueError(
+            f"Unknown gene selection method '{method}'. "
+            f"Valid options: {sorted(VALID_SCFOUNDATION_GENE_SELECTION_METHODS)}"
+        )
+
+    # Cell filter
     X = cluster_adata.X.toarray() if issparse(cluster_adata.X) else cluster_adata.X
-
-    # Top N genes by detection rate within this cluster
-    gene_detection = (X != 0).mean(axis=0)
-    n_select = min(n_genes, X.shape[1])
-    top_gene_indices = np.argsort(gene_detection)[::-1][:n_select]
-
-    # Cell filter: require min_cell_nonzero expressed genes after gene selection
-    nonzero_per_cell = (X[:, top_gene_indices] != 0).sum(axis=1)
+    gene_mask = np.array(
+        [g in set(selected_genes) for g in cluster_adata.var_names], dtype=bool
+    )
+    nonzero_per_cell = (X[:, gene_mask] != 0).sum(axis=1)
     cell_mask = nonzero_per_cell >= min_cell_nonzero
 
-    selected_genes = [cluster_adata.var_names[i] for i in top_gene_indices]
-
-    logger.info(
-        f"  Gene filter: {n_select} genes "
-        f"(cutoff detection={gene_detection[top_gene_indices[-1]]:.3f}), "
-        f"cells passing={cell_mask.sum()}/{cluster_adata.n_obs}"
-    )
+    logger.info(f"  cells passing gene filter={cell_mask.sum()}/{cluster_adata.n_obs}")
 
     return selected_genes, cell_mask
 
@@ -2686,9 +2839,10 @@ def _scprint_capture_residual_streams_per_cluster(
 ) -> torch.Tensor:
     """Capture layer-wise residual streams for a cluster of cells, averaged across cells.
 
-    Uses pre-hooks on each transformer block to capture the hidden_states tensor
-    entering each block. In scPRINT's prenorm architecture this is LayerNorm(residual),
-    which is what each block's attention reads from.
+    Uses forward hooks on each block's norm1 to capture the normalized residual
+    stream entering the attention mixer. In scPRINT's prenorm architecture, norm1
+    is applied to the accumulated residual before attention, so its output is exactly
+    what the Q/K/V weight matrices operate on.
 
     Cell embedding tokens are stripped using the actual prepended token count, which
     may differ from model.cell_embs_count when depth_atinput or use_metacell_token
@@ -2740,18 +2894,21 @@ def _scprint_capture_residual_streams_per_cluster(
         (n_layers, n_genes, embed_dim), dtype=torch.float32, device=device
     )
 
-    def make_pre_hook(layer_idx, sums):
-        def hook(module, inputs):
-            # inputs[0]: (batch, actual_cell_tokens + n_genes, embed_dim)
-            # strip cell embedding tokens, keep gene tokens only
-            gene_hidden = inputs[0][:, actual_cell_tokens:, :]
+    def make_norm1_hook(layer_idx, sums, actual_cell_tokens):
+        def hook(module, inputs, output):
+            # output is norm1(residual) — exactly what mixer sees
+            gene_hidden = output[:, actual_cell_tokens:, :]
             sums[layer_idx] += gene_hidden.sum(dim=0)
 
         return hook
 
     handles = []
     for i, block in enumerate(t_model.transformer.blocks):
-        handles.append(block.register_forward_pre_hook(make_pre_hook(i, residual_sums)))
+        handles.append(
+            block.norm1.register_forward_hook(
+                make_norm1_hook(i, residual_sums, actual_cell_tokens)
+            )
+        )
 
     try:
         with memory_manager(device), torch.no_grad():
@@ -3275,3 +3432,30 @@ def _split_qkv_weights(
     w_v = qkv_weight[2 * embed_dim :, :]
 
     return w_q, w_k, w_v
+
+
+def _validate_allowed_string(
+    value: str, allowed: Collection[str], param_name: str
+) -> None:
+    allowed_set = frozenset(allowed)
+    if value not in allowed_set:
+        raise ValueError(
+            f"{param_name} must be one of {sorted(allowed_set)}, got {value!r}"
+        )
+
+
+def _validate_scfoundation_gene_selection_args(
+    *,
+    gene_selection_level: str,
+    gene_selection_method: str,
+) -> None:
+    _validate_allowed_string(
+        gene_selection_level,
+        VALID_SCFOUNDATION_GENE_SELECTION_LEVELS,
+        "gene_selection_level",
+    )
+    _validate_allowed_string(
+        gene_selection_method,
+        VALID_SCFOUNDATION_GENE_SELECTION_METHODS,
+        "gene_selection_method",
+    )

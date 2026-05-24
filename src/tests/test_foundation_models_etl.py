@@ -7,7 +7,12 @@ import numpy as np
 from foundation_model_factories import make_gene_ids
 from scipy.sparse import csr_matrix
 
-from napistu_torch.foundation_models.etl import _scfoundation_select_cluster_genes
+from napistu_torch.foundation_models.constants import (
+    SCFOUNDATION_GENE_SELECTION_METHODS,
+)
+from napistu_torch.foundation_models.etl import _scfoundation_select_genes
+
+_DETECTION = SCFOUNDATION_GENE_SELECTION_METHODS.DETECTION
 
 
 @dataclass
@@ -47,8 +52,11 @@ def test_returns_top_n_genes_by_detection():
     )
 
     adata = _make_cluster_adata(expr, gene_ids)
-    selected, cell_mask = _scfoundation_select_cluster_genes(
-        adata, n_genes=20, min_cell_nonzero=0
+    selected, cell_mask = _scfoundation_select_genes(
+        adata,
+        n_genes=20,
+        min_cell_nonzero=0,
+        method=_DETECTION,
     )
 
     assert len(selected) == 20
@@ -63,8 +71,11 @@ def test_n_genes_larger_than_available_returns_all():
     expr = rng.uniform(1, 5, (n_cells, n_genes))
 
     adata = _make_cluster_adata(expr, gene_ids)
-    selected, cell_mask = _scfoundation_select_cluster_genes(
-        adata, n_genes=100, min_cell_nonzero=0
+    selected, cell_mask = _scfoundation_select_genes(
+        adata,
+        n_genes=100,
+        min_cell_nonzero=0,
+        method=_DETECTION,
     )
 
     assert len(selected) == n_genes
@@ -81,8 +92,11 @@ def test_cell_mask_filters_low_expression_cells():
     expr[10:, :5] = rng.uniform(1, 5, (10, 5))
 
     adata = _make_cluster_adata(expr, gene_ids)
-    selected, cell_mask = _scfoundation_select_cluster_genes(
-        adata, n_genes=30, min_cell_nonzero=20
+    selected, cell_mask = _scfoundation_select_genes(
+        adata,
+        n_genes=30,
+        min_cell_nonzero=20,
+        method=_DETECTION,
     )
 
     assert cell_mask[:10].all()
@@ -96,8 +110,11 @@ def test_all_zero_expression():
     expr = np.zeros((n_cells, n_genes))
 
     adata = _make_cluster_adata(expr, gene_ids)
-    selected, cell_mask = _scfoundation_select_cluster_genes(
-        adata, n_genes=10, min_cell_nonzero=1
+    selected, cell_mask = _scfoundation_select_genes(
+        adata,
+        n_genes=10,
+        min_cell_nonzero=1,
+        method=_DETECTION,
     )
 
     assert len(selected) == 10
@@ -116,11 +133,17 @@ def test_sparse_and_dense_inputs_match():
     adata_sparse = _make_cluster_adata(expr, gene_ids)
     adata_dense = _FakeAdata(X=expr, var_names=gene_ids)
 
-    selected_sparse, mask_sparse = _scfoundation_select_cluster_genes(
-        adata_sparse, n_genes=15, min_cell_nonzero=5
+    selected_sparse, mask_sparse = _scfoundation_select_genes(
+        adata_sparse,
+        n_genes=15,
+        min_cell_nonzero=5,
+        method=_DETECTION,
     )
-    selected_dense, mask_dense = _scfoundation_select_cluster_genes(
-        adata_dense, n_genes=15, min_cell_nonzero=5
+    selected_dense, mask_dense = _scfoundation_select_genes(
+        adata_dense,
+        n_genes=15,
+        min_cell_nonzero=5,
+        method=_DETECTION,
     )
 
     assert selected_sparse == selected_dense

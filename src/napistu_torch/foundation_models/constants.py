@@ -93,16 +93,6 @@ CELLXGENE_DEFS = SimpleNamespace(
     LEIDEN_SCVI="leiden_scVI",
 )
 
-FM_DEFAULTS = SimpleNamespace(
-    MIN_CLUSTER_CELLS=10,
-    CELLS_PER_CLUSTER=100,
-    # Residual-stream capture defaults differ by model family:
-    # Memory-heavy encoders (AIDOCell, scFoundation, similar): one cell per forward pass.
-    RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE=1,
-    # scGPT residual capture default.
-    RESIDUAL_STREAM_BATCH_SIZE_SCGPT=64,
-)
-
 EMBEDDING_METADATA_FIELDS = SimpleNamespace(
     MODEL_NAME=FM_DEFS.MODEL_NAME,
     MODEL_VARIANT=FM_DEFS.MODEL_VARIANT,
@@ -175,6 +165,30 @@ COMPARE_EMBEDDINGS_SETTINGS = SimpleNamespace(
 )
 
 # scFoundation constants
+SCFOUNDATION_GENE_SELECTION_LEVELS = SimpleNamespace(
+    GLOBAL="global",
+    PER_CLUSTER="per_cluster",
+)
+
+VALID_SCFOUNDATION_GENE_SELECTION_LEVELS = frozenset(
+    {
+        SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL,
+        SCFOUNDATION_GENE_SELECTION_LEVELS.PER_CLUSTER,
+    }
+)
+
+SCFOUNDATION_GENE_SELECTION_METHODS = SimpleNamespace(
+    DETECTION="detection",
+    HVG="hvg",
+)
+
+VALID_SCFOUNDATION_GENE_SELECTION_METHODS = frozenset(
+    {
+        SCFOUNDATION_GENE_SELECTION_METHODS.DETECTION,
+        SCFOUNDATION_GENE_SELECTION_METHODS.HVG,
+    }
+)
+
 SCFOUNDATION_DEFS = SimpleNamespace(
     MODEL_NAME=FOUNDATION_MODEL_NAMES.SCFOUNDATION,
     REPO_ID="genbio-ai/scFoundation",
@@ -241,4 +255,19 @@ SCGPT_DEFS = SimpleNamespace(
     MASK_VALUE=-1,
     PAD_VALUE=-2,
     N_INPUT_BINS=51,
+)
+
+FM_DEFAULTS = SimpleNamespace(
+    MIN_CLUSTER_CELLS=10,
+    CELLS_PER_CLUSTER=100,
+    # scFoundation gene selection (:func:`_scfoundation_select_genes`).
+    SCFOUNDATION_CLUSTER_N_GENES=2000,
+    SCFOUNDATION_CLUSTER_MIN_CELL_NONZERO=200,
+    SCFOUNDATION_DEFAULT_GENE_SELECTION_LEVEL=SCFOUNDATION_GENE_SELECTION_LEVELS.GLOBAL,
+    SCFOUNDATION_DEFAULT_GENE_SELECTION_METHOD=SCFOUNDATION_GENE_SELECTION_METHODS.HVG,
+    # Residual-stream capture defaults differ by model family:
+    # Memory-heavy encoders (AIDOCell, scFoundation, similar): one cell per forward pass.
+    RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE=1,
+    # scGPT residual capture default.
+    RESIDUAL_STREAM_BATCH_SIZE_SCGPT=64,
 )

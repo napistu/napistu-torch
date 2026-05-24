@@ -12,7 +12,7 @@ from napistu_torch.utils.string_utils import sanitize_filename
         ("simple", "simple"),
         ("cluster  A  B", "cluster_A_B"),
         ("my-dataset", "my-dataset"),
-        ("path/to\\name", "pathname"),
+        ("path/to\\name", "pathtoname"),
         ("___leading___", "leading"),
         ("--trim-edges--", "trim-edges"),
         ("α_cell", "α_cell"),

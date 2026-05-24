@@ -11,6 +11,7 @@ from napistu_torch.utils.constants import (
 from napistu_torch.utils.statistics import (
     _compute_rank_shift_for_group,
     calculate_rank_shift,
+    compare_top_k_union_ranks,
 )
 
 
@@ -161,4 +162,199 @@ def test_calculate_rank_shift_alternatives_and_methods():
     assert (
         result_w[RANK_SHIFT_SUMMARIES.MEAN_QUANTILE].iloc[0]
         == result_tt[RANK_SHIFT_SUMMARIES.MEAN_QUANTILE].iloc[0]
+    )
+
+
+def _tiny_top_k_union_with_optional_extra_partition(include_extra_partition: bool):
+    """
+    Build a minimal fake top-k-union-style table matching attention_patterns.compare().
+
+    Partitions use ``model`` and ``layer``. Query partition (A, 0) has two edges whose
+    global ``attention_rank`` is within top_k=2.
+
+    Optionally add a disjoint third model ``C`` with edges unrelated to query top-k —
+    analogous to stuffing an extra foundation model into a multi-model compare run.
+    """
+    max_rank = 100
+    top_k = 2
+
+    noise_pair = ("h1", "h2")
+
+    rows: list = []
+    # Core edges whose (A, layer 0) attention_rank is ≤ top_k; other layers give mid ranks.
+    rows.extend(
+        [
+            {
+                "model": "A",
+                "layer": 0,
+                "from_gene": "g1",
+                "to_gene": "g2",
+                "attention_rank": 1,
+            },
+            {
+                "model": "A",
+                "layer": 0,
+                "from_gene": "g3",
+                "to_gene": "g4",
+                "attention_rank": 2,
+            },
+            {
+                "model": "A",
+                "layer": 1,
+                "from_gene": "g1",
+                "to_gene": "g2",
+                "attention_rank": 85,
+            },
+            {
+                "model": "A",
+                "layer": 1,
+                "from_gene": "g3",
+                "to_gene": "g4",
+                "attention_rank": 86,
+            },
+            {
+                "model": "B",
+                "layer": 0,
+                "from_gene": "g1",
+                "to_gene": "g2",
+                "attention_rank": 40,
+            },
+            {
+                "model": "B",
+                "layer": 0,
+                "from_gene": "g3",
+                "to_gene": "g4",
+                "attention_rank": 41,
+            },
+            {
+                "model": "B",
+                "layer": 1,
+                "from_gene": "g1",
+                "to_gene": "g2",
+                "attention_rank": 50,
+            },
+            {
+                "model": "B",
+                "layer": 1,
+                "from_gene": "g3",
+                "to_gene": "g4",
+                "attention_rank": 51,
+            },
+        ]
+    )
+
+    if include_extra_partition:
+        # Third model participates in the union via edges that never intersect the
+        # query partition's top-k gene pairs — still requires full-matrix rows under
+        # real extraction; here only C's own layers are listed against its edge.
+        rows.extend(
+            [
+                {
+                    "model": "C",
+                    "layer": 0,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 1,
+                },
+                {
+                    "model": "C",
+                    "layer": 1,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 70,
+                },
+                # Rows for noise edge on legacy models so union is symmetric (mirrors pipeline)
+                {
+                    "model": "A",
+                    "layer": 0,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 99,
+                },
+                {
+                    "model": "A",
+                    "layer": 1,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 92,
+                },
+                {
+                    "model": "B",
+                    "layer": 0,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 93,
+                },
+                {
+                    "model": "B",
+                    "layer": 1,
+                    "from_gene": noise_pair[0],
+                    "to_gene": noise_pair[1],
+                    "attention_rank": 94,
+                },
+            ]
+        )
+
+    return pd.DataFrame(rows), max_rank, top_k
+
+
+def test_compare_top_k_union_ranks_marginal_invariance_under_extra_partitions():
+    """
+    Rank-agreement summaries for a fixed query partition should not change when disjoint
+    extra edges / models are appended to ``top_k_union`` (provided max_rank/top_k unchanged).
+
+    This reproduces one failure mode reported for multi-model compares: pairwise
+    statistics should remain well-defined margins of one another; if they drift when
+    an unrelated model enters the union, something upstream merged or normed incorrectly.
+
+    xfailing this assertion would localize a regression to compare_top_k_union_ranks /
+    preprocessing rather than embedding alignment differences.
+    """
+    df_small, mr, tk = _tiny_top_k_union_with_optional_extra_partition(
+        include_extra_partition=False
+    )
+    df_big, mr2, tk2 = _tiny_top_k_union_with_optional_extra_partition(
+        include_extra_partition=True
+    )
+    assert (mr, tk) == (mr2, tk2)
+
+    grouping = ["model", "layer"]
+    defining = ["from_gene", "to_gene"]
+
+    res_small = compare_top_k_union_ranks(
+        df_small,
+        grouping_vars=grouping,
+        defining_vars=defining,
+        top_k=tk,
+        max_rank=mr,
+        rank_col="attention_rank",
+    )
+    res_big = compare_top_k_union_ranks(
+        df_big,
+        grouping_vars=grouping,
+        defining_vars=defining,
+        top_k=tk,
+        max_rank=mr,
+        rank_col="attention_rank",
+    )
+
+    # Restrict to summaries that involve only models A,B (ignore any row involving C).
+    key_cols = ["query_model", "query_layer", "eval_model", "eval_layer"]
+    res_big_ab = res_big[
+        (~res_big["eval_model"].eq("C")) & (~res_big["query_model"].eq("C"))
+    ].sort_values(key_cols)
+    res_small_s = res_small.sort_values(key_cols)
+
+    cols_cmp = (
+        key_cols
+        + [RANK_SHIFT_SUMMARIES.MEAN_QUANTILE, RANK_SHIFT_SUMMARIES.MEDIAN_QUANTILE]
+        + [
+            RANK_SHIFT_SUMMARIES.MIN_QUANTILE,
+            RANK_SHIFT_SUMMARIES.MAX_QUANTILE,
+        ]
+    )
+    pd.testing.assert_frame_equal(
+        res_big_ab.reset_index(drop=True)[cols_cmp],
+        res_small_s.reset_index(drop=True)[cols_cmp],
+        check_dtype=False,
     )

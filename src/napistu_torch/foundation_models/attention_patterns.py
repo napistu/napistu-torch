@@ -1031,15 +1031,8 @@ class AttentionPatternsInputs:
         expression_embeddings: List[GeneEmbeddings] = []
 
         for model in foundation_models.models:
-            if model.dataset_gene_embeddings is not None:
-                ge_set = model.dataset_gene_embeddings[dataset_name]
-                layer_embeddings = _get_category_layer_embeddings(
-                    ge_set, category, model, dataset_name
-                )
-                expression_embeddings.extend(layer_embeddings)
-            else:
-                layer_embeddings = model.load_category_residuals(dataset_name, category)
-                expression_embeddings.extend(layer_embeddings.values())
+            layer_embeddings = model.load_category_residuals(dataset_name, category)
+            expression_embeddings.extend(layer_embeddings.values())
 
             if not layer_embeddings:
                 raise ValueError(
