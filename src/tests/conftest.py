@@ -19,8 +19,8 @@ from napistu.network.constants import (
     NAPISTU_WEIGHTING_STRATEGIES,
 )
 from napistu.network.net_create import process_napistu_graph
-from napistu.sbml_dfs_core import SBML_dfs
 from napistu.ontologies.constants import ONTOLOGIES
+from napistu.sbml_dfs_core import SBML_dfs
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from napistu_torch.configs import (
