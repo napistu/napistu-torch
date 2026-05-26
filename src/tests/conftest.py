@@ -19,6 +19,7 @@ from napistu.network.constants import (
     NAPISTU_WEIGHTING_STRATEGIES,
 )
 from napistu.network.net_create import process_napistu_graph
+from napistu.sbml_dfs_core import SBML_dfs
 from napistu.ontologies.constants import ONTOLOGIES
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
@@ -102,27 +103,30 @@ def pw_index(test_data_path):
 
 
 @pytest.fixture
-def sbml_dfs(pw_index):
-    """Create a consensus SBML_dfs model from metabolism test data."""
+def sbml_dfs(pw_index, test_data_path):
+    """Create a consensus SBML_dfs model from metabolism test data.
 
-    # Create SBML_dfs dictionary
-    sbml_dfs_dict = consensus.construct_sbml_dfs_dict(pw_index)
-
-    # Create consensus model
-    return consensus.construct_consensus_model(sbml_dfs_dict, pw_index)
+    Builds from SBML when libsbml is available (``napistu[etl]``); otherwise
+    falls back to a pre-built pickle for CI and minimal installs.
+    """
+    pickle_path = os.path.join(test_data_path, "sbml_dfs.pkl")
+    try:
+        sbml_dfs_dict = consensus.construct_sbml_dfs_dict(pw_index)
+        return consensus.construct_consensus_model(sbml_dfs_dict, pw_index)
+    except ImportError:
+        if not os.path.isfile(pickle_path):
+            raise
+        return SBML_dfs.from_pickle(pickle_path)
 
 
 @pytest.fixture
 def napistu_graph(sbml_dfs):
-    """Create a NapistuGraph from sbml_dfs_metabolism with directed=True and topology weighting."""
-
-    napistu_graph = process_napistu_graph(
+    """Create a NapistuGraph from sbml_dfs with directed=True and topology weighting."""
+    return process_napistu_graph(
         sbml_dfs,
         directed=True,
         weighting_strategy=NAPISTU_WEIGHTING_STRATEGIES.TOPOLOGY,
     )
-
-    return napistu_graph
 
 
 @pytest.fixture
