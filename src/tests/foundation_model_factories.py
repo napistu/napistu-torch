@@ -19,7 +19,6 @@ from napistu_torch.foundation_models.foundation_models import (
     ModelMetadata,
 )
 from napistu_torch.foundation_models.gene_embeddings import (
-    DatasetGeneEmbeddings,
     GeneEmbeddings,
     GeneEmbeddingsSet,
 )
@@ -93,7 +92,7 @@ def _make_gene_emb(
 # ---------------------------------------------------------------------------
 
 
-def _make_layer_grid_dge(
+def _make_layer_grid_embeddings(
     *,
     n_layers: int,
     n_categories: int,
@@ -104,14 +103,15 @@ def _make_layer_grid_dge(
     model_variant: Optional[str] = None,
     dataset_name: str = "ds1",
     gene_annotations: Optional[pd.DataFrame] = None,
-) -> DatasetGeneEmbeddings:
-    """Expression embeddings: one matrix per (category, layer) pair."""
+    seed: int = 42,
+) -> List[GeneEmbeddings]:
+    """Per-layer residual stream embeddings: one GeneEmbeddings per (category, layer)."""
     annotations = (
         gene_annotations
         if gene_annotations is not None
         else make_gene_annotations(gene_ids)
     )
-    rng = np.random.default_rng(42)
+    rng = np.random.default_rng(seed)
     mats: List[GeneEmbeddings] = []
     layers_cycle = (
         layers_per_emb if layers_per_emb is not None else list(range(n_layers))
@@ -133,17 +133,16 @@ def _make_layer_grid_dge(
                 )
             )
 
-    ges = GeneEmbeddingsSet.from_gene_embeddings(mats)
-    return DatasetGeneEmbeddings({dataset_name: ges})
+    return mats
 
 
-def _make_all_layer_idx_none_dge(
+def _make_all_layer_idx_none_embeddings(
     *,
     gene_ids: List[str],
     n_embeddings: int = 2,
     embed_dim: int = 8,
     dataset_key: str = "ds1",
-) -> DatasetGeneEmbeddings:
+) -> List[GeneEmbeddings]:
     """Legacy-style embeddings with layer_idx=None (for validation failure tests)."""
     annotations = make_gene_annotations(gene_ids)
     rng = np.random.default_rng(0)
@@ -161,32 +160,7 @@ def _make_all_layer_idx_none_dge(
                 category=f"cluster_{i}",
             )
         )
-    ges = GeneEmbeddingsSet.from_gene_embeddings(mats)
-    return DatasetGeneEmbeddings({dataset_key: ges})
-
-
-def _metadata_dict_from_model(fm: FoundationModel) -> dict:
-    return {
-        FM_DEFS.MODEL_NAME: fm.model_name,
-        FM_DEFS.MODEL_VARIANT: fm.model_variant,
-        FM_DEFS.N_GENES: fm.n_genes,
-        FM_DEFS.N_VOCAB: fm.n_vocab,
-        FM_DEFS.ORDERED_VOCABULARY: fm.ordered_vocabulary,
-        FM_DEFS.EMBED_DIM: fm.embed_dim,
-        FM_DEFS.N_LAYERS: fm.n_layers,
-        FM_DEFS.N_HEADS: fm.n_heads,
-    }
-
-
-def _clone_fm_with_dge(
-    fm: FoundationModel, dge: DatasetGeneEmbeddings
-) -> FoundationModel:
-    return FoundationModel(
-        weights=fm.weights,
-        gene_annotations=fm.gene_annotations,
-        model_metadata=_metadata_dict_from_model(fm),
-        dataset_gene_embeddings=dge,
-    )
+    return mats
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +349,7 @@ def make_attended_embeddings(
         gene_ids=gene_ids,
         seed=seed,
     )
-    dge = _make_layer_grid_dge(
+    embeddings = _make_layer_grid_embeddings(
         n_layers=n_layers,
         n_categories=1,
         gene_ids=gene_ids,
@@ -384,10 +358,7 @@ def make_attended_embeddings(
         model_variant=model.model_variant,
         dataset_name=dataset_name,
     )
-    ge_set = dge[dataset_name]
-    residual_map = {
-        ge.layer_idx: ge for ge in ge_set.values() if ge.category == category
-    }
+    residual_map = {ge.layer_idx: ge for ge in embeddings if ge.category == category}
     return LayerwiseAttentionInputs(
         residual_stream_embeddings=residual_map,
         foundation_model=model,
@@ -412,10 +383,10 @@ def make_attended_embeddings_set(
         n_heads=n_heads,
         seed=seed,
     )
-    models_with_dge: List[FoundationModel] = []
+    all_embeddings: List[GeneEmbeddings] = []
     for model in fm.models:
         gene_ids = model.gene_annotations[ONTOLOGIES.ENSEMBL_GENE].tolist()
-        dge = _make_layer_grid_dge(
+        embeddings = _make_layer_grid_embeddings(
             n_layers=model.n_layers,
             n_categories=2,
             gene_ids=gene_ids,
@@ -424,12 +395,18 @@ def make_attended_embeddings_set(
             model_variant=model.model_variant,
             dataset_name="ds1",
         )
-        models_with_dge.append(_clone_fm_with_dge(model, dge))
-    fm_with_dge = FoundationModels(models=models_with_dge)
-    attended_set = AttentionPatternsInputs.from_expression(
-        fm_with_dge,
-        dataset_name="ds1",
-        category="cluster_0",
+        all_embeddings.extend(embeddings)
+
+    # Filter to a single category and align across models
+    category_embeddings = [ge for ge in all_embeddings if ge.category == "cluster_0"]
+    embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+        category_embeddings,
+        align_on=ONTOLOGIES.ENSEMBL_GENE,
         verbose=False,
+    )
+
+    attended_set = AttentionPatternsInputs(
+        embeddings_set=embeddings_set,
+        foundation_models=fm,
     )
     return attended_set, shared_ids

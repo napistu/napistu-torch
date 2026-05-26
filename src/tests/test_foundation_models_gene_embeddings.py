@@ -7,6 +7,9 @@ from foundation_model_factories import (
     SCOPING_TEST_GENES,
     _make_gene_annotations,
     _make_gene_emb,
+    _make_layer_grid_embeddings,
+    make_gene_annotations,
+    make_gene_ids,
 )
 from napistu.ontologies.constants import ONTOLOGIES
 
@@ -23,6 +26,22 @@ def _scope(embeddings):
     data = {emb.source_label: emb for emb in embeddings}
     metadata = _build_embedding_metadata(data)
     return _compute_scoped_keys_for_fields(metadata, SCOPING_FIELDS)
+
+
+def _make_ges(embeddings):
+    """Build a GeneEmbeddingsSet from a flat list, no alignment."""
+    return GeneEmbeddingsSet.from_gene_embeddings(embeddings)
+
+
+def _validate(ges, expected_n_layers=3, **kwargs):
+    return ges._validate_expression_embeddings(
+        dataset_name="ds1",
+        expected_n_layers=expected_n_layers,
+        std_tol=0.0,
+        spot_check_layers=None,
+        verbose=False,
+        **kwargs,
+    )
 
 
 def test_gene_embeddings_rejects_3d_array():
@@ -174,3 +193,138 @@ def test_scoping_varying_layer():
     )
     assert len(set(scoped.values())) == 3
     assert constant == "scGPT / ds1 / adipocyte"
+
+
+def test_validate_full_layer_grid_passes():
+    gene_ids = make_gene_ids(6)
+    embeddings = _make_layer_grid_embeddings(
+        n_layers=3,
+        n_categories=1,
+        gene_ids=gene_ids,
+        model_name="TestModel",
+        dataset_name="ds1",
+    )
+    ges = _make_ges(embeddings)
+    report = _validate(ges, expected_n_layers=3)
+    assert report["ok"]
+    assert report["distinct_layer_indices"] == (0, 1, 2)
+
+
+def test_validate_all_layer_idx_none_fails():
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    rng = np.random.default_rng(0)
+    embeddings = [
+        GeneEmbeddings(
+            embedding=rng.standard_normal((5, 8)).astype(np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=None,
+            dataset_name="ds1",
+            category=f"cluster_{i}",
+        )
+        for i in range(3)
+    ]
+    ges = _make_ges(embeddings)
+    report = _validate(ges, expected_n_layers=3)
+    assert not report["ok"]
+    assert any("layer_idx=None" in e for e in report["errors"])
+
+
+def test_validate_mixed_layer_idx_fails():
+    """Some layer_idx set, some None — should fail."""
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    rng = np.random.default_rng(0)
+
+    embeddings = [
+        GeneEmbeddings(
+            embedding=rng.standard_normal((5, 8)).astype(np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=0,
+            dataset_name="ds1",
+            category="cluster_0",
+        ),
+        GeneEmbeddings(
+            embedding=rng.standard_normal((5, 8)).astype(np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=None,
+            dataset_name="ds1",
+            category="cluster_1",
+        ),
+    ]
+    ges = _make_ges(embeddings)
+    report = _validate(ges, expected_n_layers=2)
+    assert not report["ok"]
+    assert any("Mixed layer_idx" in e for e in report["errors"])
+
+
+def test_validate_missing_layer_fails():
+    gene_ids = make_gene_ids(5)
+    embeddings = _make_layer_grid_embeddings(
+        n_layers=3,
+        n_categories=1,
+        gene_ids=gene_ids,
+        model_name="TestModel",
+        dataset_name="ds1",
+        layers_per_emb=[0, 2],  # layer 1 missing
+    )
+    ges = _make_ges(embeddings)
+    report = _validate(ges, expected_n_layers=3)
+    assert not report["ok"]
+    assert any("missing layers [1]" in e for e in report["errors"])
+
+
+def test_validate_constant_embedding_fails_std_tol():
+    gene_ids = make_gene_ids(5)
+    annotations = make_gene_annotations(gene_ids)
+    embeddings = [
+        GeneEmbeddings(
+            embedding=np.zeros((5, 8), dtype=np.float32),
+            ordered_gene_ids=gene_ids,
+            gene_annotations=annotations,
+            model_name="TestModel",
+            layer_idx=i,
+            dataset_name="ds1",
+            category="cluster_0",
+        )
+        for i in range(3)
+    ]
+    ges = _make_ges(embeddings)
+    report = ges._validate_expression_embeddings(
+        dataset_name="ds1",
+        expected_n_layers=3,
+        std_tol=0.0,  # std must be strictly above 0
+        spot_check_layers=None,
+        verbose=False,
+    )
+    assert not report["ok"]
+    assert any("std" in e for e in report["errors"])
+
+
+def test_validate_spot_check_note_populated():
+    gene_ids = make_gene_ids(6)
+    embeddings = _make_layer_grid_embeddings(
+        n_layers=3,
+        n_categories=1,
+        gene_ids=gene_ids,
+        model_name="TestModel",
+        dataset_name="ds1",
+    )
+    ges = _make_ges(embeddings)
+    report = ges._validate_expression_embeddings(
+        dataset_name="ds1",
+        expected_n_layers=3,
+        std_tol=0.0,
+        spot_check_layers=None,  # auto-picks (0, 2)
+        verbose=False,
+    )
+    assert report["ok"]
+    assert report["spot_check_note"] is not None
+    assert "layer 0" in report["spot_check_note"]
+    assert "layer 2" in report["spot_check_note"]

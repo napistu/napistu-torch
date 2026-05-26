@@ -37,7 +37,6 @@ from napistu_torch.foundation_models.foundation_models import (
     ModelMetadata,
 )
 from napistu_torch.foundation_models.gene_embeddings import (
-    DatasetGeneEmbeddings,
     GeneEmbeddings,
     GeneEmbeddingsSet,
 )
@@ -47,7 +46,6 @@ __all__ = [
     "AttentionPatternsInputs",
     "COMPARE_EMBEDDINGS_COMPARISONS",
     "COMPARE_EMBEDDINGS_SETTINGS",
-    "DatasetGeneEmbeddings",
     "FM_DEFS",
     "FM_EDGELIST",
     "FM_LAYER_CONSENSUS_METHODS",

@@ -45,7 +45,6 @@ FM_CLASSES = SimpleNamespace(
     ATTENTION_LAYER="AttentionLayer",
     GENE_EMBEDDINGS="GeneEmbeddings",
     GENE_EMBEDDINGS_SET="GeneEmbeddingsSet",
-    DATASET_GENE_EMBEDDINGS="DatasetGeneEmbeddings",
 )
 
 FM_DEFS = SimpleNamespace(
@@ -87,22 +86,11 @@ FM_DEFS = SimpleNamespace(
     DATASET_NAME="dataset_name",
     DATASET_URI="dataset_uri",
     CATEGORY="category",
-    DATASET_GENE_EMBEDDINGS="dataset_gene_embeddings",  # optional DatasetGeneEmbeddings
 )
 
 CELLXGENE_DEFS = SimpleNamespace(
     CELL_TYPE="cell_type",
     LEIDEN_SCVI="leiden_scVI",
-)
-
-FM_DEFAULTS = SimpleNamespace(
-    MIN_CLUSTER_CELLS=10,
-    CELLS_PER_CLUSTER=100,
-    # Residual-stream capture defaults differ by model family:
-    # Memory-heavy encoders (AIDOCell, scFoundation, similar): one cell per forward pass.
-    RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE=1,
-    # scGPT residual capture default.
-    RESIDUAL_STREAM_BATCH_SIZE_SCGPT=64,
 )
 
 EMBEDDING_METADATA_FIELDS = SimpleNamespace(
@@ -243,4 +231,16 @@ SCGPT_DEFS = SimpleNamespace(
     MASK_VALUE=-1,
     PAD_VALUE=-2,
     N_INPUT_BINS=51,
+)
+
+FM_DEFAULTS = SimpleNamespace(
+    MIN_CLUSTER_CELLS=10,
+    CELLS_PER_CLUSTER=100,
+    # Minimum cells expressing a gene needed to report conditional mean residuals.
+    SCFOUNDATION_MIN_CELLS_PER_GENE_EMBEDDING=2,
+    # Residual-stream capture defaults differ by model family:
+    # Memory-heavy encoders (AIDOCell, scFoundation, similar): one cell per forward pass.
+    RESIDUAL_STREAM_BATCH_SIZE_MEM_SAFE=1,
+    # scGPT residual capture default.
+    RESIDUAL_STREAM_BATCH_SIZE_SCGPT=64,
 )

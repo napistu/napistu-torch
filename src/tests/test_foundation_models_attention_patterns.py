@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from foundation_model_factories import (
-    _clone_fm_with_dge,
-    _make_layer_grid_dge,
+    _make_layer_grid_embeddings,
     make_foundation_model_pair,
     make_gene_annotations,
     make_gene_ids,
@@ -115,10 +114,12 @@ def test_different_vocab_alignment_no_nans():
         use_different_vocab=True,
         seed=42,
     )
-    models_with_dge = []
+    fm = FoundationModels(models=[model_a, model_b])
+
+    all_embeddings = []
     for m in (model_a, model_b):
         gene_ids = m.gene_annotations[ONTOLOGIES.ENSEMBL_GENE].tolist()
-        dge = _make_layer_grid_dge(
+        embeddings = _make_layer_grid_embeddings(
             n_layers=m.n_layers,
             n_categories=1,
             gene_ids=gene_ids,
@@ -127,14 +128,19 @@ def test_different_vocab_alignment_no_nans():
             model_variant=m.model_variant,
             gene_annotations=m.gene_annotations,
         )
-        models_with_dge.append(_clone_fm_with_dge(m, dge))
-    fm = FoundationModels(models=models_with_dge)
-    attended_set = AttentionPatternsInputs.from_expression(
-        fm,
-        dataset_name="ds1",
-        category="cluster_0",
+        all_embeddings.extend(embeddings)
+
+    category_embeddings = [ge for ge in all_embeddings if ge.category == "cluster_0"]
+    embeddings_set = GeneEmbeddingsSet.from_gene_embeddings(
+        category_embeddings,
+        align_on=ONTOLOGIES.ENSEMBL_GENE,
         verbose=False,
     )
+    attended_set = AttentionPatternsInputs(
+        embeddings_set=embeddings_set,
+        foundation_models=fm,
+    )
+
     result = attended_set.get_top_attentions(k=20, reextract_union=True)
     pivot = result.pivot(
         index=["from_gene", "to_gene"],
