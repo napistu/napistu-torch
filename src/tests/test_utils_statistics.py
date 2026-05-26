@@ -358,3 +358,25 @@ def test_compare_top_k_union_ranks_marginal_invariance_under_extra_partitions():
         res_small_s.reset_index(drop=True)[cols_cmp],
         check_dtype=False,
     )
+
+
+def test_compare_top_k_union_ranks_empty_top_k_union_raises():
+    """Empty grouping partitions must fail fast instead of ambiguous concat."""
+    empty_union = pd.DataFrame(
+        {
+            "layer": pd.Series(dtype=int),
+            "from_gene": pd.Series(dtype=str),
+            "to_gene": pd.Series(dtype=str),
+            "attention_rank": pd.Series(dtype=float),
+            "attention": pd.Series(dtype=float),
+        }
+    )
+    with pytest.raises(ValueError, match="no partitions"):
+        compare_top_k_union_ranks(
+            empty_union,
+            grouping_vars=["layer"],
+            defining_vars=["from_gene", "to_gene"],
+            top_k=10,
+            max_rank=100,
+            rank_col="attention_rank",
+        )

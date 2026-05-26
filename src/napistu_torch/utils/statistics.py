@@ -148,23 +148,23 @@ def compare_top_k_union_ranks(
 
     Parameters
     ----------
-    top_k_union : pd.DataFrame
+    top_k_union :
         The top-k attention pairs of a given partition.
-    grouping_vars : list
+    grouping_vars :
         The variables to group by.
-    defining_vars : list
+    defining_vars :
         The variables to define the top-k attention pairs.
-    top_k : int
+    top_k :
         The number of top-k attention pairs considered (this should match the value used to create top_k_union)
-    max_rank : int
+    max_rank :
         The maximum rank considered.
-    rank_col : str
+    rank_col :
         The column name of the ranks.
-    test_method : str, optional
+    test_method :
         Statistical test to use (default: "wilcoxon").
         - "wilcoxon": Wilcoxon signed-rank test (non-parametric)
         - "ttest": One-sample t-test (parametric)
-    alternative : str, optional
+    alternative :
         Alternative hypothesis for the test (default: "two-sided").
         - "greater": selected queries have higher quantiles than 0.5
         - "less": selected queries have lower quantiles than 0.5
@@ -172,10 +172,18 @@ def compare_top_k_union_ranks(
 
     Returns
     -------
-    pd.DataFrame
-        A DataFrame containing the rank agreement between the top-k attention pairs of a given partition and all other partitions.
+    A DataFrame containing the rank agreement between the top-k attention pairs of a given partition and all other partitions.
     """
     partitions = top_k_union[grouping_vars].drop_duplicates().reset_index(drop=True)
+
+    if partitions.empty:
+        raise ValueError(
+            "compare_top_k_union_ranks: no partitions from top_k_union with "
+            f"grouping_vars={grouping_vars!r} — often `top_k_union` is empty "
+            "(upstream get_top_attentions / get_specific_attentions produced no "
+            "rows, or gene pairs were dropped in _edgelist_to_indices)."
+        )
+
     eval_renaming_map = {var: f"eval_{var}" for var in grouping_vars}
     query_cols = [f"query_{var}" for var in grouping_vars]
 

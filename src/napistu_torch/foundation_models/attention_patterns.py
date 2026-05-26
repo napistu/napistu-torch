@@ -849,7 +849,8 @@ class AttentionPatternsInputs:
             COMPARE_EMBEDDINGS_COMPARISONS.RESIDUAL_STREAM_CORRELATIONS
             in comparison_types
         ):
-            logger.info("Calculating residual stream correlations...")
+            if verbose:
+                logger.info("Calculating residual stream correlations...")
             comparisons[COMPARE_EMBEDDINGS_COMPARISONS.RESIDUAL_STREAM_CORRELATIONS] = (
                 self.embeddings_set.compare_embeddings(verbose=verbose)
             )
@@ -860,7 +861,8 @@ class AttentionPatternsInputs:
 
         # within model layer x layer comparisons (correlations and rank agreement)
         if COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS in comparison_types:
-            logger.info("Calculating within model layer x layer comparisons...")
+            if verbose:
+                logger.info("Calculating within model layer x layer comparisons...")
             (
                 comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_CORRELATIONS],
                 comparisons[COMPARE_EMBEDDINGS_COMPARISONS.MODEL_LAYER_RANK_AGREEMENT],
@@ -878,7 +880,8 @@ class AttentionPatternsInputs:
             COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
             in comparison_types
         ):
-            logger.info("Calculating cross model x layer top attentions...")
+            if verbose:
+                logger.info("Calculating cross model x layer top attentions...")
             comparisons[
                 COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_TOP_ATTENTIONS
             ] = self.get_top_attentions(
@@ -898,9 +901,10 @@ class AttentionPatternsInputs:
             COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
             in comparison_types
         ):
-            logger.info(
-                "Comparing ranks of topK attentions in one model/layer to all other models/layers..."
-            )
+            if verbose:
+                logger.info(
+                    "Comparing ranks of topK attentions in one model/layer to all other models/layers..."
+                )
             comparisons[
                 COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_X_LAYER_RANK_AGREEMENT
             ] = compare_top_k_union_ranks(
@@ -922,7 +926,8 @@ class AttentionPatternsInputs:
             COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
             in comparison_types
         ):
-            logger.info("Calculating cross model consensus top attentions...")
+            if verbose:
+                logger.info("Calculating cross model consensus top attentions...")
             comparisons[
                 COMPARE_EMBEDDINGS_COMPARISONS.CROSS_MODEL_CONSENSUS_TOP_ATTENTIONS
             ] = self.get_consensus_top_attentions(
@@ -1370,7 +1375,8 @@ class AttentionPatternsInputs:
         top_attention_edges = []
 
         for key, ae in self.attended_embeddings.items():
-            logger.info(f"Computing top-k attention for {key}...")
+            if verbose:
+                logger.info(f"Computing top-k attention for {key}...")
 
             model_top_k = ae.get_top_attentions(
                 k=k,
@@ -1387,7 +1393,8 @@ class AttentionPatternsInputs:
         all_top_edges = pd.concat(top_attention_edges, ignore_index=True)
 
         if reextract_union:
-            logger.info("Re-extracting top edges from every embedding and layer...")
+            if verbose:
+                logger.info("Re-extracting top edges from every embedding and layer...")
 
             reextracted = self.get_specific_attentions(
                 all_top_edges,

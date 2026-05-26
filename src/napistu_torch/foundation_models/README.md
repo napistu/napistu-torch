@@ -1,6 +1,9 @@
 1. FM-centric / ETL view (serialization, single-model directory)
 
-Purpose: isolate environments, freeze weights, stash whatever the forward pass emitted — no requirement that different categories/clusters share row order or gene set.
+Purpose: isolate environments, freeze weights, stash whatever the forward pass emitted —
+no requirement that different categories/clusters share row order or gene set.
+
+For **scFoundation**, residuals use a **category-specific vocabulary**: only genes whose cluster-mean residual is finite after ``min_cells_per_gene_embedding`` gating.
 
 ```text
 FoundationModelStore  (one directory per model variant: disk layout + index only)
